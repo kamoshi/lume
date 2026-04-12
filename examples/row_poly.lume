@@ -10,4 +10,13 @@ let bot   = { name: "R2D2", online: true, version: 3 }
 let aliceName = getName alice
 let botName   = getName bot
 
-{ getName, aliceName, botName }
+-- Record update: alice starts without a `score` field.
+-- The updated record carries all of alice's original fields plus `score`.
+let aliceWithScore = { alice | score: 95 }
+
+-- This function only requires a `score` field — it works on any record that has one.
+let getScore = { score, .. } -> score
+
+let aliceScore = getScore aliceWithScore
+
+{ getName, aliceName, botName, getScore, aliceWithScore, aliceScore }

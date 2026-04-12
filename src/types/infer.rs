@@ -543,13 +543,14 @@ impl Checker {
         }
         new_fields.sort_by(|a, b| a.0.cmp(&b.0));
 
-        // The base must be a record with at least these fields.
-        let row_var = self.fresh_var();
-        let expected = Ty::Record(Row { fields: new_fields.clone(), tail: RowTail::Open(row_var) });
-        self.unify(base_ty, expected)?;
+        // Unify base with an empty open row to capture all its fields into base_rv.
+        // This allows adding new fields (extension), not just overriding existing ones.
+        let base_rv = self.fresh_var();
+        let open_base = Ty::Record(Row { fields: vec![], tail: RowTail::Open(base_rv) });
+        self.unify(base_ty, open_base)?;
 
-        // Result shares the same open tail (extra fields pass through).
-        Ok(Ty::Record(Row { fields: new_fields, tail: RowTail::Open(row_var) }))
+        // Result: override fields on top of whatever base had (via base_rv).
+        Ok(Ty::Record(Row { fields: new_fields, tail: RowTail::Open(base_rv) }))
     }
 
     fn infer_field_access(
