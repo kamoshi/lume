@@ -1,4 +1,5 @@
 mod ast;
+mod codegen;
 mod error;
 mod lexer;
 mod parser;
@@ -38,6 +39,17 @@ fn run_file(path: &str) -> bool {
     }
 }
 
+fn js_file(path: &str) -> bool {
+    let program = match load(path) { Some(p) => p, None => return false };
+    // Typecheck first so we only emit valid programs
+    match types::infer::check_program(&program) {
+        Ok(_) => {}
+        Err(e) => { eprintln!("{path}: type error: {e}"); return false; }
+    }
+    print!("{}", codegen::emit(&program));
+    true
+}
+
 fn dump_file(path: &str) -> bool {
     let program = match load(path) { Some(p) => p, None => return false };
     match types::infer::elaborate(&program) {
@@ -60,18 +72,20 @@ fn main() {
 
     let (cmd, paths): (&str, &[String]) = match args.as_slice() {
         [] => {
-            eprintln!("Usage: lume [dump] <file.lume> [file.lume ...]");
+            eprintln!("Usage: lume [check|dump|js] <file.lume> ...");
             std::process::exit(1);
         }
         [first, rest @ ..] if first == "dump" => ("dump", rest),
+        [first, rest @ ..] if first == "js"   => ("js",   rest),
         paths => ("check", paths),
     };
 
     let mut all_ok = true;
     for path in paths {
         let ok = match cmd {
-            "dump"  => dump_file(path),
-            _       => run_file(path),
+            "dump" => dump_file(path),
+            "js"   => js_file(path),
+            _      => run_file(path),
         };
         if !ok { all_ok = false; }
     }
