@@ -1,0 +1,13 @@
+-- row_poly.lume
+-- Demonstrates row polymorphism: a function that works on any record
+-- containing at least a `name` field, regardless of what else is in it.
+
+let getName = { name, .. } -> name
+
+let alice = { name: "Alice", age: 30, role: "admin" }
+let bot   = { name: "R2D2", online: true, version: 3 }
+
+let aliceName = getName alice
+let botName   = getName bot
+
+{ getName, aliceName, botName }

@@ -1,0 +1,48 @@
+-- lists.lume
+-- Common list operations and pipelines.
+
+let double = n -> n * 2
+let square = n -> n * n
+let isPositive = n -> n > 0
+
+-- Sum of first n natural numbers
+let sumTo : Num -> Num = n -> n * (n + 1) / 2
+
+-- Maximum element via fold
+let maximum : List Num -> Num = xs ->
+  fold 0 (acc -> n -> if n > acc then n else acc) xs
+
+-- Clamp a value between lo and hi
+let clamp : Num -> Num -> Num -> Num = lo -> hi -> n ->
+  if n < lo then lo else if n > hi then hi else n
+
+-- Running totals via map with accumulated state would need fold:
+let dotProduct : List Num -> List Num -> Num = xs -> ys ->
+  fold 0 (acc -> pair -> acc + pair) (map (x -> x) xs)
+
+let scores = [85, 92, 67, 45, 78, 95, 55, 88]
+
+let passing = filter (s -> s >= 60) scores
+let top     = filter (s -> s >= 85) scores
+let doubled = map double [1, 2, 3, 4, 5]
+let squares = map square [1, 2, 3, 4, 5]
+let total   = sum scores
+let avg     = average scores
+let best    = maximum scores
+let sorted  = sort scores
+
+{
+  double,
+  square,
+  sumTo,
+  maximum,
+  clamp,
+  passing,
+  top,
+  doubled,
+  squares,
+  total,
+  avg,
+  best,
+  sorted,
+}

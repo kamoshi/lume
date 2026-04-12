@@ -1,0 +1,34 @@
+-- grader.lume
+-- Assigns letter grades to numeric scores (spec §14).
+
+type Grade =
+  | A
+  | B
+  | C
+  | Fail
+
+let toGrade : Num -> Grade =
+  | s if s >= 90 -> A
+  | s if s >= 75 -> B
+  | s if s >= 60 -> C
+  | _            -> Fail
+
+let gradeLabel : Grade -> Text =
+  | A    -> "A"
+  | B    -> "B"
+  | C    -> "C"
+  | Fail -> "Fail"
+
+let passing : Num -> Bool = s -> s >= 60
+
+let process = students ->
+  students
+    |> filter ({ score, .. } -> score >= 0)
+    |> map ({ name, score, .. } -> { name, grade: gradeLabel (toGrade score) })
+
+{
+  toGrade,
+  gradeLabel,
+  passing,
+  process,
+}

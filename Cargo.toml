@@ -1,0 +1,8 @@
+[package]
+name = "lume"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "lume"
+path = "src/main.rs"

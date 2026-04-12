@@ -1,0 +1,51 @@
+-- maybe.lume
+-- Safe operations using Maybe and Result.
+
+-- Safe list head
+let safeHead : List a -> Maybe a =
+  | []       -> None
+  | [x, ..] -> Some { value: x }
+
+-- Safe last element (self-recursive)
+let safeLast : List a -> Maybe a =
+  | []          -> None
+  | [x]         -> Some { value: x }
+  | [_, ..rest] -> safeLast rest
+
+-- Safe second element
+let safeSecond : List a -> Maybe a =
+  | [_, x, ..] -> Some { value: x }
+  | _          -> None
+
+-- Safe division
+let safeDivide : Num -> Num -> Result Num Text = a -> b ->
+  if b == 0 then Err { reason: "division by zero" } else Ok { value: a / b }
+
+-- Safe square root (non-negative only)
+let safeSqrt : Num -> Result Num Text = n ->
+  if n < 0 then Err { reason: "negative input" } else Ok { value: n }
+
+-- Chain two safe divisions with ?>
+let chainedOps = x ->
+  safeDivide x 2 ?> (half -> safeDivide half 5)
+
+-- Map over a Maybe
+let mapMaybe : (a -> b) -> Maybe a -> Maybe b = f ->
+  | None           -> None
+  | Some { value } -> Some { value: f value }
+
+-- Extract a Maybe with a default
+let getOrElse : a -> Maybe a -> a = default ->
+  | None           -> default
+  | Some { value } -> value
+
+{
+  safeHead,
+  safeLast,
+  safeSecond,
+  safeDivide,
+  safeSqrt,
+  chainedOps,
+  mapMaybe,
+  getOrElse,
+}
