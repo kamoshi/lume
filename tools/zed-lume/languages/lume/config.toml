@@ -1,0 +1,5 @@
+name = "lume"
+grammar = "lume"
+path_suffixes = ["lume"]
+line_comments = ["-- "]
+language_servers = ["lume-lsp"]

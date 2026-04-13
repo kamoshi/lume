@@ -9,3 +9,13 @@
 !examples/**
 !spec.md
 !parser.md
+
+!tools/
+!tools/zed-lume/
+!tools/zed-lume/Cargo.toml
+!tools/zed-lume/Cargo.lock
+!tools/zed-lume/extension.toml
+!tools/zed-lume/src/
+!tools/zed-lume/src/**
+!tools/zed-lume/languages/
+!tools/zed-lume/languages/**

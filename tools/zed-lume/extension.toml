@@ -1,0 +1,17 @@
+id = "lume"
+name = "Lume"
+version = "0.0.1"
+schema_version = 1
+authors = ["Maciej"]
+description = "Support for the Lume functional language"
+
+languages = ["lume"]
+
+[language_servers.lume-lsp]
+name = "Lume LSP"
+language = "lume"
+
+[grammars.lume]
+repository = "file:///Users/kamov/Desktop/tree-sitter-lume"
+rev = "3839130082f9acd25cfff2c032cbaef916326457"
+path = ""
