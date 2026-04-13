@@ -1,3 +1,5 @@
+use crate::error::Span;
+
 /// The complete AST for a Lume source file.
 ///
 /// ```
@@ -60,8 +62,17 @@ pub struct Binding {
 
 // ── Expressions ───────────────────────────────────────────────────────────────
 
+/// An expression together with its source location.
 #[derive(Debug, Clone)]
-pub enum Expr {
+pub struct Expr {
+    pub kind: ExprKind,
+    pub span: Span,
+}
+
+/// The expression payload — identical to the old `Expr` enum, but now children
+/// are `Box<Expr>` (the wrapper) so every node in the tree carries a span.
+#[derive(Debug, Clone)]
+pub enum ExprKind {
     // Literals
     Number(f64),
     Text(String),

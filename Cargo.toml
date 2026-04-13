@@ -3,6 +3,19 @@ name = "lume"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "lume"
+path = "src/lib.rs"
+
 [[bin]]
 name = "lume"
 path = "src/main.rs"
+
+[[bin]]
+name = "lume-lsp"
+path = "src/bin/lsp.rs"
+
+[dependencies]
+tower-lsp = "0.20"
+tokio = { version = "1", features = ["full"] }
+dashmap = "5"

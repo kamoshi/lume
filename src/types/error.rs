@@ -1,5 +1,6 @@
 use std::fmt;
 use crate::types::{Ty, TyVar};
+use crate::error::Span;
 
 #[derive(Debug, Clone)]
 pub enum TypeError {
@@ -40,5 +41,24 @@ impl fmt::Display for TypeError {
             TypeError::ResultPipeNonResult(ty) =>
                 write!(f, "?> requires a Result type on the left, got `{}`", ty),
         }
+    }
+}
+
+/// A `TypeError` paired with the source location where it was raised.
+#[derive(Debug, Clone)]
+pub struct TypeErrorAt {
+    pub error: TypeError,
+    pub span: Span,
+}
+
+impl TypeErrorAt {
+    pub fn new(error: TypeError, span: Span) -> Self {
+        TypeErrorAt { error, span }
+    }
+}
+
+impl fmt::Display for TypeErrorAt {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "[{}] {}", self.span, self.error)
     }
 }

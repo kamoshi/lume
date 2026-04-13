@@ -103,7 +103,7 @@ impl fmt::Display for ParseError {
 pub enum LumeError {
     Lex(LexError),
     Parse(ParseError),
-    Type(crate::types::TypeError),
+    Type(crate::types::TypeErrorAt),
 }
 
 impl fmt::Display for LumeError {
@@ -124,6 +124,6 @@ impl From<ParseError> for LumeError {
     fn from(e: ParseError) -> Self { LumeError::Parse(e) }
 }
 
-impl From<crate::types::TypeError> for LumeError {
-    fn from(e: crate::types::TypeError) -> Self { LumeError::Type(e) }
+impl From<crate::types::TypeErrorAt> for LumeError {
+    fn from(e: crate::types::TypeErrorAt) -> Self { LumeError::Type(e) }
 }

@@ -130,11 +130,11 @@ impl Emitter {
     }
 
     fn emit_expr(&mut self, expr: &Expr) {
-        match expr {
-            Expr::Number(n) => self.emit_number(*n),
-            Expr::Text(s) => self.emit_string(s),
-            Expr::Bool(b) => self.out.push_str(if *b { "true" } else { "false" }),
-            Expr::List(items) => {
+        match &expr.kind {
+            ExprKind::Number(n) => self.emit_number(*n),
+            ExprKind::Text(s) => self.emit_string(s),
+            ExprKind::Bool(b) => self.out.push_str(if *b { "true" } else { "false" }),
+            ExprKind::List(items) => {
                 self.out.push('[');
                 for (i, item) in items.iter().enumerate() {
                     if i > 0 { self.out.push_str(", "); }
@@ -142,12 +142,12 @@ impl Emitter {
                 }
                 self.out.push(']');
             }
-            Expr::Ident(name) => self.out.push_str(&js_ident(name)),
-            Expr::TypeIdent(name) => {
+            ExprKind::Ident(name) => self.out.push_str(&js_ident(name)),
+            ExprKind::TypeIdent(name) => {
                 // Capitalised identifier without payload — unit variant
                 self.out.push_str(&format!("{{ $tag: \"{}\" }}", name));
             }
-            Expr::Record { base, fields, .. } => {
+            ExprKind::Record { base, fields, .. } => {
                 self.out.push_str("{ ");
                 let mut first = true;
                 if let Some(base_expr) = base {
@@ -166,18 +166,18 @@ impl Emitter {
                 }
                 self.out.push_str(" }");
             }
-            Expr::FieldAccess { record, field } => {
+            ExprKind::FieldAccess { record, field } => {
                 self.emit_access_target(record);
                 self.out.push('.');
                 self.out.push_str(field);
             }
-            Expr::Variant { name, payload } => match payload {
+            ExprKind::Variant { name, payload } => match payload {
                 None => {
                     self.out.push_str(&format!("{{ $tag: \"{}\" }}", name));
                 }
                 Some(payload_expr) => {
                     self.out.push_str(&format!("{{ $tag: \"{}\"", name));
-                    if let Expr::Record { fields, .. } = payload_expr.as_ref() {
+                    if let ExprKind::Record { fields, .. } = &payload_expr.kind {
                         for f in fields {
                             self.out.push_str(", ");
                             self.out.push_str(&f.name);
@@ -190,19 +190,19 @@ impl Emitter {
                     self.out.push_str(" }");
                 }
             },
-            Expr::Lambda { param, body } => self.emit_lambda(param, body),
-            Expr::Apply { func, arg } => {
+            ExprKind::Lambda { param, body } => self.emit_lambda(param, body),
+            ExprKind::Apply { func, arg } => {
                 self.emit_call_target(func);
                 self.out.push('(');
                 self.emit_expr(arg);
                 self.out.push(')');
             }
-            Expr::Binary { op, left, right } => self.emit_binary(op, left, right),
-            Expr::Unary { op, operand } => match op {
+            ExprKind::Binary { op, left, right } => self.emit_binary(op, left, right),
+            ExprKind::Unary { op, operand } => match op {
                 UnOp::Neg => { self.out.push('-'); self.emit_call_target(operand); }
                 UnOp::Not => { self.out.push('!'); self.emit_call_target(operand); }
             },
-            Expr::If { cond, then_branch, else_branch } => {
+            ExprKind::If { cond, then_branch, else_branch } => {
                 self.out.push('(');
                 self.emit_expr(cond);
                 self.out.push_str(" ? ");
@@ -211,7 +211,7 @@ impl Emitter {
                 self.emit_expr(else_branch);
                 self.out.push(')');
             }
-            Expr::Match(arms) => self.emit_match_fn(arms),
+            ExprKind::Match(arms) => self.emit_match_fn(arms),
         }
     }
 
@@ -240,21 +240,21 @@ impl Emitter {
 
     /// Parens around complex expressions in field-access position.
     fn emit_access_target(&mut self, expr: &Expr) {
-        match expr {
-            Expr::Ident(_) | Expr::FieldAccess { .. } => self.emit_expr(expr),
+        match &expr.kind {
+            ExprKind::Ident(_) | ExprKind::FieldAccess { .. } => self.emit_expr(expr),
             _ => { self.out.push('('); self.emit_expr(expr); self.out.push(')'); }
         }
     }
 
     /// Parens around expressions that can't be a callee or unary operand without them.
     fn emit_call_target(&mut self, expr: &Expr) {
-        match expr {
-            Expr::Ident(_)
-            | Expr::FieldAccess { .. }
-            | Expr::Apply { .. }
-            | Expr::Number(_)
-            | Expr::Text(_)
-            | Expr::Bool(_) => self.emit_expr(expr),
+        match &expr.kind {
+            ExprKind::Ident(_)
+            | ExprKind::FieldAccess { .. }
+            | ExprKind::Apply { .. }
+            | ExprKind::Number(_)
+            | ExprKind::Text(_)
+            | ExprKind::Bool(_) => self.emit_expr(expr),
             _ => { self.out.push('('); self.emit_expr(expr); self.out.push(')'); }
         }
     }
@@ -265,7 +265,7 @@ impl Emitter {
             self.out.push_str(" => ");
             // A record literal as a concise arrow body is ambiguous with a block statement.
             // JS requires parens: `x => ({ ... })` rather than `x => { ... }`.
-            let needs_parens = matches!(body, Expr::Record { .. });
+            let needs_parens = matches!(body.kind, ExprKind::Record { .. });
             if needs_parens { self.out.push('('); }
             self.emit_expr(body);
             if needs_parens { self.out.push(')'); }

@@ -1,7 +1,7 @@
 pub mod error;
 pub mod infer;
 
-pub use error::TypeError;
+pub use error::{TypeError, TypeErrorAt};
 pub use infer::{Checker, TypeEnv, VariantEnv, VariantInfo, build_variant_env, builtin_env};
 
 use std::collections::{HashMap, HashSet};

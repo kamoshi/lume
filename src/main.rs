@@ -170,44 +170,44 @@ mod tests {
 
     #[test]
     fn parse_number_literal() {
-        assert!(matches!(parse_expr("42"), Expr::Number(n) if n == 42.0));
+        assert!(matches!(parse_expr("42").kind, ExprKind::Number(n) if n == 42.0));
     }
 
     #[test]
     fn parse_bool_literals() {
-        assert!(matches!(parse_expr("true"), Expr::Bool(true)));
-        assert!(matches!(parse_expr("false"), Expr::Bool(false)));
+        assert!(matches!(parse_expr("true").kind, ExprKind::Bool(true)));
+        assert!(matches!(parse_expr("false").kind, ExprKind::Bool(false)));
     }
 
     #[test]
     fn parse_text_literal() {
-        assert!(matches!(parse_expr(r#""hello""#), Expr::Text(s) if s == "hello"));
+        assert!(matches!(parse_expr(r#""hello""#).kind, ExprKind::Text(ref s) if s == "hello"));
     }
 
     #[test]
     fn parse_identifier() {
-        assert!(matches!(parse_expr("foo"), Expr::Ident(s) if s == "foo"));
+        assert!(matches!(parse_expr("foo").kind, ExprKind::Ident(ref s) if s == "foo"));
     }
 
     #[test]
     fn parse_field_access() {
         let expr = parse_expr("alice.name");
-        assert!(matches!(expr, Expr::FieldAccess { field, .. } if field == "name"));
+        assert!(matches!(expr.kind, ExprKind::FieldAccess { ref field, .. } if field == "name"));
     }
 
     #[test]
     fn parse_binary_add() {
         let expr = parse_expr("1 + 2");
-        assert!(matches!(expr, Expr::Binary { op: BinOp::Add, .. }));
+        assert!(matches!(expr.kind, ExprKind::Binary { op: BinOp::Add, .. }));
     }
 
     #[test]
     fn parse_binary_precedence() {
         // 1 + 2 * 3  should be  1 + (2 * 3)
         let expr = parse_expr("1 + 2 * 3");
-        if let Expr::Binary { op, right, .. } = expr {
+        if let ExprKind::Binary { op, right, .. } = expr.kind {
             assert_eq!(op, BinOp::Add);
-            assert!(matches!(*right, Expr::Binary { op: BinOp::Mul, .. }));
+            assert!(matches!(right.kind, ExprKind::Binary { op: BinOp::Mul, .. }));
         } else {
             panic!("expected Binary");
         }
@@ -216,41 +216,41 @@ mod tests {
     #[test]
     fn parse_pipe() {
         let expr = parse_expr("x |> double");
-        assert!(matches!(expr, Expr::Binary { op: BinOp::Pipe, .. }));
+        assert!(matches!(expr.kind, ExprKind::Binary { op: BinOp::Pipe, .. }));
     }
 
     #[test]
     fn parse_concat() {
         let expr = parse_expr(r#""hello" ++ " world""#);
-        assert!(matches!(expr, Expr::Binary { op: BinOp::Concat, .. }));
+        assert!(matches!(expr.kind, ExprKind::Binary { op: BinOp::Concat, .. }));
     }
 
     #[test]
     fn parse_if_expr() {
         let expr = parse_expr("if x > 0 then 1 else 0");
-        assert!(matches!(expr, Expr::If { .. }));
+        assert!(matches!(expr.kind, ExprKind::If { .. }));
     }
 
     #[test]
     fn parse_lambda_simple() {
         let expr = parse_expr("n -> n * 2");
-        assert!(matches!(expr, Expr::Lambda { .. }));
+        assert!(matches!(expr.kind, ExprKind::Lambda { .. }));
     }
 
     #[test]
     fn parse_function_application() {
         let expr = parse_expr("double 5");
-        assert!(matches!(expr, Expr::Apply { .. }));
+        assert!(matches!(expr.kind, ExprKind::Apply { .. }));
     }
 
     #[test]
     fn parse_empty_list() {
-        assert!(matches!(parse_expr("[]"), Expr::List(v) if v.is_empty()));
+        assert!(matches!(parse_expr("[]").kind, ExprKind::List(ref v) if v.is_empty()));
     }
 
     #[test]
     fn parse_list() {
-        assert!(matches!(parse_expr("[1, 2, 3]"), Expr::List(v) if v.len() == 3));
+        assert!(matches!(parse_expr("[1, 2, 3]").kind, ExprKind::List(ref v) if v.len() == 3));
     }
 
     #[test]
@@ -258,7 +258,7 @@ mod tests {
         // Records are parsed as standalone atoms; as arguments they need parens.
         let tokens = lex(r#"{ name: "Alice", age: 30 }"#);
         let (_, expr) = parser::parse_expr(&tokens).expect("parse error");
-        if let Expr::Record { fields, base, .. } = expr {
+        if let ExprKind::Record { fields, base, .. } = expr.kind {
             assert!(base.is_none());
             assert_eq!(fields.len(), 2);
             assert_eq!(fields[0].name, "name");
@@ -271,7 +271,7 @@ mod tests {
     fn parse_record_update() {
         let tokens = lex("{ alice | age: 31 }");
         let (_, expr) = parser::parse_expr(&tokens).expect("parse error");
-        if let Expr::Record { base, fields, .. } = expr {
+        if let ExprKind::Record { base, fields, .. } = expr.kind {
             assert!(base.is_some());
             assert_eq!(fields.len(), 1);
             assert_eq!(fields[0].name, "age");
@@ -283,31 +283,31 @@ mod tests {
     #[test]
     fn parse_variant_unit() {
         let expr = parse_expr("North");
-        assert!(matches!(expr, Expr::Variant { name, payload: None } if name == "North"));
+        assert!(matches!(expr.kind, ExprKind::Variant { ref name, payload: None } if name == "North"));
     }
 
     #[test]
     fn parse_variant_with_payload() {
         let expr = parse_expr("Circle { radius: 5 }");
-        assert!(matches!(expr, Expr::Variant { name, payload: Some(_) } if name == "Circle"));
+        assert!(matches!(expr.kind, ExprKind::Variant { ref name, payload: Some(_) } if name == "Circle"));
     }
 
     #[test]
     fn parse_match_expr() {
         let expr = parse_expr("| A -> 1 | B -> 2");
-        assert!(matches!(expr, Expr::Match(arms) if arms.len() == 2));
+        assert!(matches!(expr.kind, ExprKind::Match(ref arms) if arms.len() == 2));
     }
 
     #[test]
     fn parse_unary_not() {
         let expr = parse_expr("not true");
-        assert!(matches!(expr, Expr::Unary { op: UnOp::Not, .. }));
+        assert!(matches!(expr.kind, ExprKind::Unary { op: UnOp::Not, .. }));
     }
 
     #[test]
     fn parse_unary_neg() {
         let expr = parse_expr("-5");
-        assert!(matches!(expr, Expr::Unary { op: UnOp::Neg, .. }));
+        assert!(matches!(expr.kind, ExprKind::Unary { op: UnOp::Neg, .. }));
     }
 
     // ── Pattern parsing ──────────────────────────────────────────────────────
