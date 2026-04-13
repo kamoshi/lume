@@ -1,0 +1,23 @@
+-- math.lume
+-- Basic numeric utilities, usable as an imported module.
+
+let pi = 3.14159
+
+let abs : Num -> Num = n -> if n < 0 then 0 - n else n
+
+let pow2 : Num -> Num = n -> n * n
+
+let clamp : Num -> Num -> Num -> Num =
+  lo -> hi -> n ->
+    if n < lo then lo else if n > hi then hi else n
+
+let lerp : Num -> Num -> Num -> Num =
+  a -> b -> t -> a + (b - a) * t
+
+{
+  pi,
+  abs,
+  pow2,
+  clamp,
+  lerp,
+}

@@ -1,10 +1,13 @@
 mod ast;
+mod bundle;
 mod codegen;
 mod error;
 mod lexer;
+mod loader;
 mod parser;
 mod types;
 
+use std::path::Path;
 use error::LumeError;
 use lexer::Lexer;
 
@@ -14,45 +17,72 @@ fn parse(src: &str) -> Result<ast::Program, LumeError> {
     Ok(program)
 }
 
-fn typecheck(src: &str) -> Result<types::Ty, LumeError> {
-    let program = parse(src)?;
-    let ty = types::infer::check_program(&program)?;
-    Ok(ty)
-}
-
 fn load(path: &str) -> Option<ast::Program> {
     let src = match std::fs::read_to_string(path) {
         Ok(s) => s,
-        Err(e) => { eprintln!("{path}: {e}"); return None; }
+        Err(e) => {
+            eprintln!("{path}: {e}");
+            return None;
+        }
     };
     match parse(&src) {
         Ok(p) => Some(p),
-        Err(e) => { eprintln!("{path}: parse error: {e}"); None }
+        Err(e) => {
+            eprintln!("{path}: parse error: {e}");
+            None
+        }
     }
 }
 
 fn run_file(path: &str) -> bool {
-    let program = match load(path) { Some(p) => p, None => return false };
-    match types::infer::check_program(&program) {
-        Ok(ty) => { println!("{path}: ok  —  exports : {ty}"); true }
-        Err(e) => { eprintln!("{path}: type error: {e}"); false }
+    let program = match load(path) {
+        Some(p) => p,
+        None => return false,
+    };
+    match types::infer::check_program(&program, Some(Path::new(path))) {
+        Ok(ty) => {
+            println!("{path}: ok  —  exports : {ty}");
+            true
+        }
+        Err(e) => {
+            eprintln!("{path}: type error: {e}");
+            false
+        }
     }
 }
 
 fn js_file(path: &str) -> bool {
-    let program = match load(path) { Some(p) => p, None => return false };
-    // Typecheck first so we only emit valid programs
-    match types::infer::check_program(&program) {
+    let b = match bundle::collect(Path::new(path)) {
+        Ok(b) => b,
+        Err(e) => { eprintln!("{path}: {e}"); return false; }
+    };
+    match types::infer::check_program(&b.last().unwrap().program, Some(Path::new(path))) {
         Ok(_) => {}
         Err(e) => { eprintln!("{path}: type error: {e}"); return false; }
     }
-    print!("{}", codegen::emit(&program));
+    print!("{}", codegen::js::emit(&b));
+    true
+}
+
+fn lua_file(path: &str) -> bool {
+    let b = match bundle::collect(Path::new(path)) {
+        Ok(b) => b,
+        Err(e) => { eprintln!("{path}: {e}"); return false; }
+    };
+    match types::infer::check_program(&b.last().unwrap().program, Some(Path::new(path))) {
+        Ok(_) => {}
+        Err(e) => { eprintln!("{path}: type error: {e}"); return false; }
+    }
+    print!("{}", codegen::lua::emit(&b));
     true
 }
 
 fn dump_file(path: &str) -> bool {
-    let program = match load(path) { Some(p) => p, None => return false };
-    match types::infer::elaborate(&program) {
+    let program = match load(path) {
+        Some(p) => p,
+        None => return false,
+    };
+    match types::infer::elaborate(&program, Some(Path::new(path))) {
         Ok((bindings, exports)) => {
             let width = bindings.iter().map(|b| b.name.len()).max().unwrap_or(0);
             println!("{path}:");
@@ -63,7 +93,10 @@ fn dump_file(path: &str) -> bool {
             println!("  {:<width$} : {}", "exports", exports);
             true
         }
-        Err(e) => { eprintln!("{path}: type error: {e}"); false }
+        Err(e) => {
+            eprintln!("{path}: type error: {e}");
+            false
+        }
     }
 }
 
@@ -72,11 +105,13 @@ fn main() {
 
     let (cmd, paths): (&str, &[String]) = match args.as_slice() {
         [] => {
-            eprintln!("Usage: lume [check|dump|js] <file.lume> ...");
+            eprintln!("Usage: lume [check|dump|js|lua] <file.lume> ...");
             std::process::exit(1);
         }
-        [first, rest @ ..] if first == "dump" => ("dump", rest),
-        [first, rest @ ..] if first == "js"   => ("js",   rest),
+        [first, rest @ ..] if first == "check" => ("check", rest),
+        [first, rest @ ..] if first == "dump"  => ("dump",  rest),
+        [first, rest @ ..] if first == "js"    => ("js",    rest),
+        [first, rest @ ..] if first == "lua"   => ("lua",   rest),
         paths => ("check", paths),
     };
 
@@ -84,13 +119,18 @@ fn main() {
     for path in paths {
         let ok = match cmd {
             "dump" => dump_file(path),
-            "js"   => js_file(path),
-            _      => run_file(path),
+            "js" => js_file(path),
+            "lua" => lua_file(path),
+            _ => run_file(path),
         };
-        if !ok { all_ok = false; }
+        if !ok {
+            all_ok = false;
+        }
     }
 
-    if !all_ok { std::process::exit(1); }
+    if !all_ok {
+        std::process::exit(1);
+    }
 }
 
 #[cfg(test)]
@@ -140,7 +180,9 @@ mod tests {
         use crate::lexer::Token;
         let toks = lex("42 3.14");
         assert!(matches!(toks[0].token, Token::Number(n) if n == 42.0));
-        assert!(matches!(toks[1].token, Token::Number(n) if (n - 3.14).abs() < 1e-9));
+        assert!(
+            matches!(toks[1].token, Token::Number(n) if (n - std::f64::consts::PI).abs() < 1e-9)
+        );
     }
 
     #[test]
@@ -154,8 +196,15 @@ mod tests {
     fn lex_comment_ignored() {
         use crate::lexer::Token;
         let toks = lex("42 -- this is a comment\n99");
-        let nums: Vec<_> = toks.iter()
-            .filter_map(|t| if let Token::Number(n) = t.token { Some(n) } else { None })
+        let nums: Vec<_> = toks
+            .iter()
+            .filter_map(|t| {
+                if let Token::Number(n) = t.token {
+                    Some(n)
+                } else {
+                    None
+                }
+            })
             .collect();
         assert_eq!(nums, vec![42.0, 99.0]);
     }
@@ -207,7 +256,10 @@ mod tests {
         let expr = parse_expr("1 + 2 * 3");
         if let ExprKind::Binary { op, right, .. } = expr.kind {
             assert_eq!(op, BinOp::Add);
-            assert!(matches!(right.kind, ExprKind::Binary { op: BinOp::Mul, .. }));
+            assert!(matches!(
+                right.kind,
+                ExprKind::Binary { op: BinOp::Mul, .. }
+            ));
         } else {
             panic!("expected Binary");
         }
@@ -216,13 +268,25 @@ mod tests {
     #[test]
     fn parse_pipe() {
         let expr = parse_expr("x |> double");
-        assert!(matches!(expr.kind, ExprKind::Binary { op: BinOp::Pipe, .. }));
+        assert!(matches!(
+            expr.kind,
+            ExprKind::Binary {
+                op: BinOp::Pipe,
+                ..
+            }
+        ));
     }
 
     #[test]
     fn parse_concat() {
         let expr = parse_expr(r#""hello" ++ " world""#);
-        assert!(matches!(expr.kind, ExprKind::Binary { op: BinOp::Concat, .. }));
+        assert!(matches!(
+            expr.kind,
+            ExprKind::Binary {
+                op: BinOp::Concat,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -283,13 +347,17 @@ mod tests {
     #[test]
     fn parse_variant_unit() {
         let expr = parse_expr("North");
-        assert!(matches!(expr.kind, ExprKind::Variant { ref name, payload: None } if name == "North"));
+        assert!(
+            matches!(expr.kind, ExprKind::Variant { ref name, payload: None } if name == "North")
+        );
     }
 
     #[test]
     fn parse_variant_with_payload() {
         let expr = parse_expr("Circle { radius: 5 }");
-        assert!(matches!(expr.kind, ExprKind::Variant { ref name, payload: Some(_) } if name == "Circle"));
+        assert!(
+            matches!(expr.kind, ExprKind::Variant { ref name, payload: Some(_) } if name == "Circle")
+        );
     }
 
     #[test]

@@ -1,7 +1,8 @@
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use crate::ast::{
-    self, Binding, BinOp, Expr, ExprKind, FieldPattern, Literal, ListPattern, MatchArm, Pattern,
-    Program, RecordField, RecordPattern, TopItem, UnOp,
+    self, Binding, BinOp, Expr, ExprKind, Literal, ListPattern, MatchArm, Pattern,
+    Program, RecordField, RecordPattern, TopItem, UnOp, UseBinding, UseDecl,
 };
 use crate::error::Span;
 use crate::types::{
@@ -177,6 +178,12 @@ pub fn builtin_env() -> (TypeEnv, VariantEnv) {
         Box::new(Ty::Func(Box::new(list_a.clone()), Box::new(list_a.clone()))),
     )));
 
+    // print : Text -> {}
+    env.insert("print".into(), Scheme::mono(Ty::Func(
+        Box::new(Ty::Text),
+        Box::new(Ty::Record(Row { fields: vec![], tail: RowTail::Closed })),
+    )));
+
     // Text functions
     env.insert("trim".into(), Scheme::mono(Ty::Func(Box::new(Ty::Text), Box::new(Ty::Text))));
     env.insert("toUpper".into(), Scheme::mono(Ty::Func(Box::new(Ty::Text), Box::new(Ty::Text))));
@@ -244,17 +251,19 @@ pub fn builtin_env() -> (TypeEnv, VariantEnv) {
     (env, var_env)
 }
 
+/// Return type of `instantiate_variant`: (result_type, optional payload fields).
+type VariantInstance = (Ty, Option<Vec<(String, Ty)>>);
+
 // ── The typechecker ───────────────────────────────────────────────────────────
 
 pub struct Checker {
     pub subst: Subst,
     pub variant_env: VariantEnv,
-    hover_map: Vec<(Span, Ty)>,
 }
 
 impl Checker {
     pub fn new(variant_env: VariantEnv) -> Self {
-        Checker { subst: Subst::new(), variant_env, hover_map: Vec::new() }
+        Checker { subst: Subst::new(), variant_env }
     }
 
     fn fresh_var(&mut self) -> TyVar { self.subst.fresh_var() }
@@ -355,7 +364,7 @@ impl Checker {
     fn instantiate_variant(
         &mut self,
         name: &str,
-    ) -> Result<(Ty, Option<Vec<(String, Ty)>>), TypeError> {
+    ) -> Result<VariantInstance, TypeError> {
         let info = self.variant_env.lookup(name)
             .ok_or_else(|| TypeError::UnboundVariant(name.to_string()))?
             .clone();  // clone to release the borrow before calling lower_ty
@@ -412,19 +421,11 @@ impl Checker {
                 None => Err(TypeErrorAt::new(TypeError::UnboundVariable(name.clone()), span.clone())),
             },
 
-            // TypeIdent never produced by the parser — treat as unit variant.
-            ExprKind::TypeIdent(name) => {
-                let (result_ty, _) = self.instantiate_variant(name)
-                    .map_err(|e| TypeErrorAt::new(e, span.clone()))?;
-                Ok(result_ty)
-            }
-
             ExprKind::Variant { name, payload: None } => {
                 let (result_ty, payload_ty) = self.instantiate_variant(name)
                     .map_err(|e| TypeErrorAt::new(e, span.clone()))?;
-                if payload_ty.is_some() {
+                if let Some(fields) = payload_ty {
                     // Has a payload but none was given; return as a constructor function.
-                    let fields = payload_ty.unwrap();
                     let row = Row { fields, tail: RowTail::Closed };
                     let result_ty_c = result_ty.clone();
                     Ok(Ty::Func(Box::new(Ty::Record(row)), Box::new(result_ty_c)))
@@ -896,12 +897,73 @@ impl Checker {
 
     // ── Program-level checking ────────────────────────────────────────────────
 
+    /// Extract the type of `field` from a (possibly-open) record type.
+    fn extract_field_ty(&self, ty: &Ty, field: &str) -> Option<Ty> {
+        if let Ty::Record(row) = ty {
+            let row = self.subst.apply_row(row);
+            row.fields.into_iter().find(|(k, _)| k == field).map(|(_, t)| t)
+        } else {
+            None
+        }
+    }
+
+    /// Inject bindings from `uses` into `env`, loading modules via `loader`.
+    /// Does nothing if `base` is `None` (e.g. LSP / in-memory source).
+    fn apply_imports(
+        &mut self,
+        uses: &[UseDecl],
+        base: Option<&Path>,
+        loader: &mut crate::loader::Loader,
+        env: &mut TypeEnv,
+    ) -> Result<(), TypeErrorAt> {
+        let base = match base {
+            Some(b) => b,
+            None => return Ok(()),
+        };
+        for u in uses {
+            let scheme = loader.load(&u.path, base)?;
+
+            match &u.binding {
+                UseBinding::Ident(name) => {
+                    // Import the whole module as a record value.
+                    let ty = self.instantiate(&scheme);
+                    env.insert(name.clone(), Scheme::mono(ty));
+                }
+                UseBinding::Record(rp) => {
+                    // Destructured import: give each field its own scheme so
+                    // polymorphic functions remain usable polymorphically.
+                    let module_ty = self.instantiate(&scheme);
+                    let module_ty = self.subst.apply(&module_ty);
+                    for f in &rp.fields {
+                        let field_ty =
+                            self.extract_field_ty(&module_ty, &f.name).ok_or_else(|| {
+                                TypeErrorAt::new(
+                                    TypeError::FieldNotFound {
+                                        field: f.name.clone(),
+                                        record_ty: module_ty.clone(),
+                                    },
+                                    crate::error::Span::default(),
+                                )
+                            })?;
+                        let s = self.generalise(env, &field_ty);
+                        env.insert(f.name.clone(), s);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Type-check a full program, returning the type of the export expression.
     pub fn check_program(
         &mut self,
         program: &Program,
         mut env: TypeEnv,
+        base: Option<&Path>,
+        loader: &mut crate::loader::Loader,
     ) -> Result<Ty, TypeErrorAt> {
+        self.apply_imports(&program.uses, base, loader, &mut env)?;
+
         for item in &program.items {
             if let TopItem::Binding(binding) = item {
                 env = self.check_binding(binding, env)?;
@@ -977,12 +1039,16 @@ impl Checker {
 // ── Public entry points ───────────────────────────────────────────────────────
 
 /// Type-check a full program. Returns the inferred type of the module exports.
-pub fn check_program(program: &Program) -> Result<Ty, TypeErrorAt> {
+///
+/// `path` is the file being checked; it is used to resolve relative `use`
+/// paths.  Pass `None` when checking an in-memory buffer (imports are skipped).
+pub fn check_program(program: &Program, path: Option<&Path>) -> Result<Ty, TypeErrorAt> {
     let (env, mut var_env) = builtin_env();
     let prog_vars = build_variant_env(&program.items);
     var_env.merge(prog_vars);
     let mut checker = Checker::new(var_env);
-    checker.check_program(program, env)
+    let mut loader = crate::loader::Loader::new();
+    checker.check_program(program, env, path, &mut loader)
 }
 
 /// One binding entry in the elaborated output.
@@ -993,12 +1059,21 @@ pub struct BindingInfo {
 
 /// Type-check a program and return the inferred scheme for every named
 /// top-level binding (in source order) plus the type of the export expression.
-pub fn elaborate(program: &Program) -> Result<(Vec<BindingInfo>, Ty), TypeErrorAt> {
+///
+/// `path` is the file being checked; it is used to resolve relative `use`
+/// paths.  Pass `None` when checking an in-memory buffer (imports are skipped).
+pub fn elaborate(
+    program: &Program,
+    path: Option<&Path>,
+) -> Result<(Vec<BindingInfo>, Ty), TypeErrorAt> {
     let (env, mut var_env) = builtin_env();
     let prog_vars = build_variant_env(&program.items);
     var_env.merge(prog_vars);
     let mut checker = Checker::new(var_env);
+    let mut loader = crate::loader::Loader::new();
     let mut env = env;
+
+    checker.apply_imports(&program.uses, path, &mut loader, &mut env)?;
 
     let mut bindings: Vec<BindingInfo> = Vec::new();
 

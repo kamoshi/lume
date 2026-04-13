@@ -6,6 +6,7 @@ use std::fmt;
 pub struct Span {
     pub line: usize,
     pub col: usize,
+    #[allow(dead_code)]
     pub len: usize,
 }
 

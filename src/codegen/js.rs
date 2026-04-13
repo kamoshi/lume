@@ -1,7 +1,11 @@
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use crate::ast::*;
+use crate::bundle::BundleModule;
 
 /// Escape JS reserved words to avoid syntax errors in generated code.
-fn js_ident(name: &str) -> std::borrow::Cow<str> {
+fn js_ident(name: &str) -> std::borrow::Cow<'_, str> {
+    #[rustfmt::skip]
     const RESERVED: &[&str] = &[
         "break", "case", "catch", "class", "const", "continue", "debugger",
         "default", "delete", "do", "else", "enum", "export", "extends",
@@ -17,14 +21,58 @@ fn js_ident(name: &str) -> std::borrow::Cow<str> {
     }
 }
 
-pub fn emit(program: &Program) -> String {
-    let mut e = Emitter { out: String::new(), needs_result_bind: false };
-    e.emit_program(program);
+pub fn emit(bundle: &[BundleModule]) -> String {
+    let module_vars: HashMap<PathBuf, String> = bundle
+        .iter()
+        .map(|m| (m.canonical.clone(), m.var.clone()))
+        .collect();
+
+    let mut e = Emitter {
+        out: String::new(),
+        needs_result_bind: false,
+        needs_print: false,
+        needs_show: false,
+        module_vars,
+    };
+
+    let last = bundle.len().saturating_sub(1);
+    for (i, m) in bundle.iter().enumerate() {
+        e.emit_module(&m.program, &m.canonical, &m.var, i == last);
+    }
+
+    let mut preamble = String::new();
     if e.needs_result_bind {
-        e.out.insert_str(
-            0,
+        preamble.push_str(
             "function $resultBind(r, f) {\n  return r.$tag === \"Ok\" ? f(r.value) : r;\n}\n\n",
         );
+    }
+    if e.needs_show {
+        preamble.push_str(concat!(
+            "function show(x) {\n",
+            "  if (x === null || x === undefined) return \"{}\";\n",
+            "  if (typeof x === \"string\") return x;\n",
+            "  if (typeof x === \"number\") return String(x);\n",
+            "  if (typeof x === \"boolean\") return x ? \"true\" : \"false\";\n",
+            "  if (Array.isArray(x)) return \"[\" + x.map(show).join(\", \") + \"]\";\n",
+            "  if (typeof x === \"object\") {\n",
+            "    if (\"$tag\" in x) {\n",
+            "      const rest = Object.entries(x).filter(([k]) => k !== \"$tag\");\n",
+            "      if (rest.length === 0) return x.$tag;\n",
+            "      return x.$tag + \" { \" + rest.map(([k, v]) => k + \": \" + show(v)).join(\", \") + \" }\";\n",
+            "    }\n",
+            "    const entries = Object.entries(x);\n",
+            "    if (entries.length === 0) return \"{}\";\n",
+            "    return \"{ \" + entries.map(([k, v]) => k + \": \" + show(v)).join(\", \") + \" }\";\n",
+            "  }\n",
+            "  return String(x);\n",
+            "}\n\n",
+        ));
+    }
+    if e.needs_print {
+        preamble.push_str("const print = (x) => (console.log(x), {});\n\n");
+    }
+    if !preamble.is_empty() {
+        e.out.insert_str(0, &preamble);
     }
     e.out
 }
@@ -32,12 +80,19 @@ pub fn emit(program: &Program) -> String {
 struct Emitter {
     out: String,
     needs_result_bind: bool,
+    needs_print: bool,
+    needs_show: bool,
+    module_vars: HashMap<PathBuf, String>,
 }
 
 impl Emitter {
-    fn emit_program(&mut self, program: &Program) {
+    fn emit_module(&mut self, program: &Program, canonical: &Path, var: &str, is_entry: bool) {
+        if !is_entry {
+            self.out.push_str(&format!("const {} = (() => {{\n", var));
+        }
+
         for u in &program.uses {
-            self.emit_use(u);
+            self.emit_use(u, canonical);
         }
         if !program.uses.is_empty() {
             self.out.push('\n');
@@ -53,29 +108,61 @@ impl Emitter {
             }
         }
 
-        self.out.push_str("\nexport default ");
-        self.emit_expr(&program.exports);
-        self.out.push_str(";\n");
+        if is_entry {
+            self.out.push_str("\nexport default ");
+            self.emit_expr(&program.exports);
+            self.out.push_str(";\n");
+        } else {
+            self.out.push_str("\nreturn ");
+            self.emit_expr(&program.exports);
+            self.out.push_str(";\n");
+            self.out.push_str("})();\n\n");
+        }
     }
 
-    fn emit_use(&mut self, u: &UseDecl) {
-        let raw = &u.path;
-        let path = if raw.ends_with(".lume") {
-            format!("{}.js", &raw[..raw.len() - 5])
-        } else {
-            format!("{}.js", raw)
-        };
-        match &u.binding {
-            UseBinding::Ident(name) => {
-                self.out.push_str(&format!("import {} from \"{}\";\n", name, path));
-            }
-            UseBinding::Record(rp) => {
-                let names: Vec<_> = rp.fields.iter().map(|f| f.name.clone()).collect();
-                self.out.push_str(&format!(
-                    "import {{ {} }} from \"{}\";\n",
-                    names.join(", "),
-                    path
-                ));
+    fn emit_use(&mut self, u: &UseDecl, base: &Path) {
+        // Try to resolve to a bundled module var first.
+        let mod_var = crate::loader::resolve_path(&u.path, base)
+            .ok()
+            .and_then(|p| self.module_vars.get(&p).cloned());
+
+        match mod_var {
+            Some(mv) => match &u.binding {
+                UseBinding::Ident(name) => {
+                    self.out
+                        .push_str(&format!("const {} = {};\n", js_ident(name), mv));
+                }
+                UseBinding::Record(rp) => {
+                    let names: Vec<_> = rp.fields.iter().map(|f| js_ident(&f.name).to_string()).collect();
+                    self.out.push_str(&format!(
+                        "const {{ {} }} = {};\n",
+                        names.join(", "),
+                        mv
+                    ));
+                }
+            },
+            None => {
+                // Fall back to import statement.
+                let raw = &u.path;
+                let path = if raw.ends_with(".lume") {
+                    format!("{}.js", &raw[..raw.len() - 5])
+                } else {
+                    format!("{}.js", raw)
+                };
+                match &u.binding {
+                    UseBinding::Ident(name) => {
+                        self.out
+                            .push_str(&format!("import {} from \"{}\";\n", name, path));
+                    }
+                    UseBinding::Record(rp) => {
+                        let names: Vec<_> = rp.fields.iter().map(|f| f.name.clone()).collect();
+                        self.out.push_str(&format!(
+                            "import {{ {} }} from \"{}\";\n",
+                            names.join(", "),
+                            path
+                        ));
+                    }
+                }
             }
         }
     }
@@ -97,7 +184,9 @@ impl Emitter {
                 self.out.push_str("{ ");
                 let mut first = true;
                 for f in &rp.fields {
-                    if !first { self.out.push_str(", "); }
+                    if !first {
+                        self.out.push_str(", ");
+                    }
                     first = false;
                     self.out.push_str(&f.name);
                     if let Some(p) = &f.pattern {
@@ -106,7 +195,9 @@ impl Emitter {
                     }
                 }
                 if let Some(Some(rest_name)) = &rp.rest {
-                    if !first { self.out.push_str(", "); }
+                    if !first {
+                        self.out.push_str(", ");
+                    }
                     self.out.push_str(&format!("...{}", js_ident(rest_name)));
                 }
                 self.out.push_str(" }");
@@ -115,12 +206,16 @@ impl Emitter {
                 self.out.push('[');
                 let mut first = true;
                 for elem in &lp.elements {
-                    if !first { self.out.push_str(", "); }
+                    if !first {
+                        self.out.push_str(", ");
+                    }
                     first = false;
                     self.emit_pat_lhs(elem);
                 }
                 if let Some(Some(rest_name)) = &lp.rest {
-                    if !first { self.out.push_str(", "); }
+                    if !first {
+                        self.out.push_str(", ");
+                    }
                     self.out.push_str(&format!("...{}", js_ident(rest_name)));
                 }
                 self.out.push(']');
@@ -137,15 +232,17 @@ impl Emitter {
             ExprKind::List(items) => {
                 self.out.push('[');
                 for (i, item) in items.iter().enumerate() {
-                    if i > 0 { self.out.push_str(", "); }
+                    if i > 0 {
+                        self.out.push_str(", ");
+                    }
                     self.emit_expr(item);
                 }
                 self.out.push(']');
             }
-            ExprKind::Ident(name) => self.out.push_str(&js_ident(name)),
-            ExprKind::TypeIdent(name) => {
-                // Capitalised identifier without payload — unit variant
-                self.out.push_str(&format!("{{ $tag: \"{}\" }}", name));
+            ExprKind::Ident(name) => {
+                if name == "print" { self.needs_print = true; }
+                if name == "show" { self.needs_show = true; }
+                self.out.push_str(&js_ident(name));
             }
             ExprKind::Record { base, fields, .. } => {
                 self.out.push_str("{ ");
@@ -156,7 +253,9 @@ impl Emitter {
                     first = false;
                 }
                 for f in fields {
-                    if !first { self.out.push_str(", "); }
+                    if !first {
+                        self.out.push_str(", ");
+                    }
                     first = false;
                     self.out.push_str(&f.name);
                     if let Some(val) = &f.value {
@@ -199,10 +298,20 @@ impl Emitter {
             }
             ExprKind::Binary { op, left, right } => self.emit_binary(op, left, right),
             ExprKind::Unary { op, operand } => match op {
-                UnOp::Neg => { self.out.push('-'); self.emit_call_target(operand); }
-                UnOp::Not => { self.out.push('!'); self.emit_call_target(operand); }
+                UnOp::Neg => {
+                    self.out.push('-');
+                    self.emit_call_target(operand);
+                }
+                UnOp::Not => {
+                    self.out.push('!');
+                    self.emit_call_target(operand);
+                }
             },
-            ExprKind::If { cond, then_branch, else_branch } => {
+            ExprKind::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
                 self.out.push('(');
                 self.emit_expr(cond);
                 self.out.push_str(" ? ");
@@ -227,12 +336,12 @@ impl Emitter {
         self.out.push('"');
         for c in s.chars() {
             match c {
-                '"'  => self.out.push_str("\\\""),
+                '"' => self.out.push_str("\\\""),
                 '\\' => self.out.push_str("\\\\"),
                 '\n' => self.out.push_str("\\n"),
                 '\r' => self.out.push_str("\\r"),
                 '\t' => self.out.push_str("\\t"),
-                c    => self.out.push(c),
+                c => self.out.push(c),
             }
         }
         self.out.push('"');
@@ -242,7 +351,11 @@ impl Emitter {
     fn emit_access_target(&mut self, expr: &Expr) {
         match &expr.kind {
             ExprKind::Ident(_) | ExprKind::FieldAccess { .. } => self.emit_expr(expr),
-            _ => { self.out.push('('); self.emit_expr(expr); self.out.push(')'); }
+            _ => {
+                self.out.push('(');
+                self.emit_expr(expr);
+                self.out.push(')');
+            }
         }
     }
 
@@ -255,7 +368,11 @@ impl Emitter {
             | ExprKind::Number(_)
             | ExprKind::Text(_)
             | ExprKind::Bool(_) => self.emit_expr(expr),
-            _ => { self.out.push('('); self.emit_expr(expr); self.out.push(')'); }
+            _ => {
+                self.out.push('(');
+                self.emit_expr(expr);
+                self.out.push(')');
+            }
         }
     }
 
@@ -266,9 +383,13 @@ impl Emitter {
             // A record literal as a concise arrow body is ambiguous with a block statement.
             // JS requires parens: `x => ({ ... })` rather than `x => { ... }`.
             let needs_parens = matches!(body.kind, ExprKind::Record { .. });
-            if needs_parens { self.out.push('('); }
+            if needs_parens {
+                self.out.push('(');
+            }
             self.emit_expr(body);
-            if needs_parens { self.out.push(')'); }
+            if needs_parens {
+                self.out.push(')');
+            }
         } else {
             // Refutable pattern: runtime check
             let cond = Self::pattern_cond("$arg", param);
@@ -277,20 +398,23 @@ impl Emitter {
             self.out.push_str(&cond);
             self.out.push_str(") {\n");
             for (lhs, rhs) in &binds {
-                self.out.push_str(&format!("    const {} = {};\n", lhs, rhs));
+                self.out
+                    .push_str(&format!("    const {} = {};\n", lhs, rhs));
             }
             self.out.push_str("    return ");
             self.emit_expr(body);
-            self.out.push_str(";\n  }\n  throw new Error(\"no match\");\n}");
+            self.out
+                .push_str(";\n  }\n  throw new Error(\"no match\");\n}");
         }
     }
 
     fn is_simple_pattern(p: &Pattern) -> bool {
         match p {
             Pattern::Ident(_) | Pattern::Wildcard => true,
-            Pattern::Record(rp) => rp.fields.iter().all(|f| {
-                f.pattern.as_ref().map_or(true, Self::is_simple_pattern)
-            }),
+            Pattern::Record(rp) => rp
+                .fields
+                .iter()
+                .all(|f| f.pattern.as_ref().is_none_or(Self::is_simple_pattern)),
             _ => false,
         }
     }
@@ -304,7 +428,9 @@ impl Emitter {
                 self.out.push_str("({ ");
                 let mut first = true;
                 for f in &rp.fields {
-                    if !first { self.out.push_str(", "); }
+                    if !first {
+                        self.out.push_str(", ");
+                    }
                     first = false;
                     self.out.push_str(&f.name);
                     if let Some(p) = &f.pattern {
@@ -315,7 +441,9 @@ impl Emitter {
                 // Open pattern `{ name, .. }` — JS destructuring naturally ignores extras.
                 // Named rest `{ name, ..rest }` — emit as spread.
                 if let Some(Some(rest_name)) = &rp.rest {
-                    if !first { self.out.push_str(", "); }
+                    if !first {
+                        self.out.push_str(", ");
+                    }
                     self.out.push_str(&format!("...{}", js_ident(rest_name)));
                 }
                 self.out.push_str(" })");
@@ -350,19 +478,19 @@ impl Emitter {
             }
             other => {
                 let js = match other {
-                    BinOp::Add   => " + ",
-                    BinOp::Sub   => " - ",
-                    BinOp::Mul   => " * ",
-                    BinOp::Div   => " / ",
-                    BinOp::Eq    => " === ",
+                    BinOp::Add => " + ",
+                    BinOp::Sub => " - ",
+                    BinOp::Mul => " * ",
+                    BinOp::Div => " / ",
+                    BinOp::Eq => " === ",
                     BinOp::NotEq => " !== ",
-                    BinOp::Lt    => " < ",
-                    BinOp::Gt    => " > ",
-                    BinOp::LtEq  => " <= ",
-                    BinOp::GtEq  => " >= ",
-                    BinOp::And   => " && ",
-                    BinOp::Or    => " || ",
-                    _            => unreachable!(),
+                    BinOp::Lt => " < ",
+                    BinOp::Gt => " > ",
+                    BinOp::LtEq => " <= ",
+                    BinOp::GtEq => " >= ",
+                    BinOp::And => " && ",
+                    BinOp::Or => " || ",
+                    _ => unreachable!(),
                 };
                 self.out.push('(');
                 self.emit_expr(left);
@@ -384,7 +512,8 @@ impl Emitter {
             // Wrap each arm in a block so `const` bindings don't leak between arms.
             self.out.push_str("  {\n");
             for (lhs, rhs) in &binds {
-                self.out.push_str(&format!("    const {} = {};\n", lhs, rhs));
+                self.out
+                    .push_str(&format!("    const {} = {};\n", lhs, rhs));
             }
             if always_matches && !has_guard {
                 // Unconditional arm — return immediately.
@@ -394,9 +523,13 @@ impl Emitter {
             } else {
                 // Guarded or refutable arm.
                 self.out.push_str("    if (");
-                if !always_matches { self.out.push_str(&cond); }
+                if !always_matches {
+                    self.out.push_str(&cond);
+                }
                 if let Some(guard) = &arm.guard {
-                    if !always_matches { self.out.push_str(" && "); }
+                    if !always_matches {
+                        self.out.push_str(" && ");
+                    }
                     self.emit_expr(guard);
                 }
                 self.out.push_str(") {\n      return ");
@@ -405,7 +538,8 @@ impl Emitter {
             }
             self.out.push_str("  }\n");
         }
-        self.out.push_str("  throw new Error(\"incomplete match\");\n}");
+        self.out
+            .push_str("  throw new Error(\"incomplete match\");\n}");
     }
 
     // ── Pattern helpers (pure string computation, no `self.out` mutation) ────────
@@ -416,7 +550,11 @@ impl Emitter {
             Pattern::Wildcard | Pattern::Ident(_) => "true".to_string(),
             Pattern::Literal(lit) => match lit {
                 Literal::Number(n) => {
-                    let s = if n.fract() == 0.0 { format!("{}", *n as i64) } else { format!("{}", n) };
+                    let s = if n.fract() == 0.0 {
+                        format!("{}", *n as i64)
+                    } else {
+                        format!("{}", n)
+                    };
                     format!("{} === {}", var, s)
                 }
                 Literal::Text(s) => format!("{} === \"{}\"", var, s.replace('"', "\\\"")),
@@ -429,18 +567,34 @@ impl Emitter {
                     Some(p) => {
                         // Variant fields live on the same object as the tag.
                         let inner = Self::pattern_cond(var, p);
-                        if inner == "true" { tag } else { format!("({}) && ({})", tag, inner) }
+                        if inner == "true" {
+                            tag
+                        } else {
+                            format!("({}) && ({})", tag, inner)
+                        }
                     }
                 }
             }
             Pattern::Record(rp) => {
-                let conds: Vec<String> = rp.fields.iter()
-                    .filter_map(|f| f.pattern.as_ref().and_then(|p| {
-                        let c = Self::pattern_cond(&format!("{}.{}", var, f.name), p);
-                        if c == "true" { None } else { Some(c) }
-                    }))
+                let conds: Vec<String> = rp
+                    .fields
+                    .iter()
+                    .filter_map(|f| {
+                        f.pattern.as_ref().and_then(|p| {
+                            let c = Self::pattern_cond(&format!("{}.{}", var, f.name), p);
+                            if c == "true" {
+                                None
+                            } else {
+                                Some(c)
+                            }
+                        })
+                    })
                     .collect();
-                if conds.is_empty() { "true".to_string() } else { conds.join(" && ") }
+                if conds.is_empty() {
+                    "true".to_string()
+                } else {
+                    conds.join(" && ")
+                }
             }
             Pattern::List(lp) => {
                 let mut conds = vec![format!("Array.isArray({})", var)];
@@ -451,7 +605,9 @@ impl Emitter {
                 }
                 for (i, elem) in lp.elements.iter().enumerate() {
                     let c = Self::pattern_cond(&format!("{}[{}]", var, i), elem);
-                    if c != "true" { conds.push(c); }
+                    if c != "true" {
+                        conds.push(c);
+                    }
                 }
                 conds.join(" && ")
             }
@@ -486,7 +642,9 @@ impl Emitter {
                 }
                 // Named rest via Object.entries filtering
                 if let Some(Some(rest_name)) = &rp.rest {
-                    let excluded: Vec<_> = rp.fields.iter()
+                    let excluded: Vec<_> = rp
+                        .fields
+                        .iter()
                         .map(|f| format!("\"{}\"", f.name))
                         .collect();
                     out.push((

@@ -11,10 +11,10 @@ pub enum TypeError {
     /// Record unification failed because of this unexpected field.
     RowMismatch(String),
     FieldNotFound { field: String, record_ty: Ty },
-    NotAFunction(Ty),
     ConcatNonConcatenable(Ty),
     GuardNotBool(Ty),
     ResultPipeNonResult(Ty),
+    ImportError(String),
 }
 
 impl fmt::Display for TypeError {
@@ -32,14 +32,14 @@ impl fmt::Display for TypeError {
                 write!(f, "record row mismatch: unexpected field '{}'", field),
             TypeError::FieldNotFound { field, record_ty } =>
                 write!(f, "field '{}' not found in `{}`", field, record_ty),
-            TypeError::NotAFunction(ty) =>
-                write!(f, "not a function: `{}`", ty),
             TypeError::ConcatNonConcatenable(ty) =>
                 write!(f, "cannot concatenate `{}` (only Text, List, or Record)", ty),
             TypeError::GuardNotBool(ty) =>
                 write!(f, "match guard must be Bool, got `{}`", ty),
             TypeError::ResultPipeNonResult(ty) =>
                 write!(f, "?> requires a Result type on the left, got `{}`", ty),
+            TypeError::ImportError(msg) =>
+                write!(f, "import error: {}", msg),
         }
     }
 }

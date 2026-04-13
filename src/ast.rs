@@ -81,13 +81,13 @@ pub enum ExprKind {
 
     // Names
     Ident(String),
-    TypeIdent(String),
 
     /// `{ name: "Alice", age: 30 }`
     /// For record update: `{ alice | age: 31 }` the base is Some(alice).
     Record {
         base: Option<Box<Expr>>,
         fields: Vec<RecordField>,
+        #[allow(dead_code)]
         spread: bool, // ends with `..` (spread pattern for modules)
     },
 

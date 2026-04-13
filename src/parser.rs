@@ -362,12 +362,7 @@ fn parse_pratt(tokens: &[Spanned], min_bp: u8) -> Result<(usize, Expr), ParseErr
     ptr += n;
 
     // ── Infix loop ────────────────────────────────────────────────────────────
-    loop {
-        let tok = match first_token(&tokens[ptr..]) {
-            Some(t) => t,
-            None => break,
-        };
-
+    while let Some(tok) = first_token(&tokens[ptr..]) {
         let (l_bp, r_bp) = match infix_bp(tok) {
             Some(bp) => bp,
             None => break,
@@ -953,18 +948,13 @@ fn parse_type_atom(tokens: &[Spanned]) -> Result<(usize, Type), ParseError> {
             // `Result Num Text` = Con("Result", [Num, Text]) rather than
             // Con("Result", [Con("Num", [Text])]).
             let mut args = Vec::new();
-            loop {
-                match first_token(&tokens[ptr..]) {
-                    Some(
-                        Token::Ident(_) | Token::TypeIdent(_)
-                        | Token::LBrace | Token::LParen,
-                    ) => {
-                        let (n, arg) = parse_type_arg(&tokens[ptr..])?;
-                        ptr += n;
-                        args.push(arg);
-                    }
-                    _ => break,
-                }
+            while let Some(
+                Token::Ident(_) | Token::TypeIdent(_)
+                | Token::LBrace | Token::LParen,
+            ) = first_token(&tokens[ptr..]) {
+                let (n, arg) = parse_type_arg(&tokens[ptr..])?;
+                ptr += n;
+                args.push(arg);
             }
             Ok((ptr, Type::Named { name, args }))
         }

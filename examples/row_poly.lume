@@ -1,6 +1,7 @@
 -- row_poly.lume
 -- Demonstrates row polymorphism: a function that works on any record
 -- containing at least a `name` field, regardless of what else is in it.
+use math = "./math.lume"
 
 let getName = { name, .. } -> name
 
@@ -18,5 +19,7 @@ let aliceWithScore = { alice | score: 95 }
 let getScore = { score, .. } -> score
 
 let aliceScore = getScore aliceWithScore
+
+let {} = aliceScore |> math.pow2 |> show |> print
 
 { getName, aliceName, botName, getScore, aliceWithScore, aliceScore }

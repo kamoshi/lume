@@ -1,0 +1,25 @@
+-- app.lume
+-- Imports from both math and geometry, exercising whole-module and
+-- destructured use declarations.
+
+use math = "./math"
+use { circleArea, hypotSq, boundedArea } = "./geometry"
+
+let radius  = 5
+let area    = circleArea radius
+
+-- whole-module access: math.clamp, math.lerp
+let clamped = math.clamp 0 100 150
+let midpoint = math.lerp 10 20 0.5
+
+-- transitive import: geometry re-exports things from math
+let diag    = hypotSq 3 4
+let safe    = boundedArea 1 10 radius
+
+{
+  area,
+  clamped,
+  midpoint,
+  diag,
+  safe,
+}

@@ -41,7 +41,7 @@ fn error_to_diagnostic(err: LumeError) -> Diagnostic {
 /// Run the full pipeline on `src`, returning elaborated bindings and any
 /// diagnostics.  Returns on the first error; a more advanced implementation
 /// could attempt error recovery and continue.
-fn analyse(src: &str) -> (Vec<BindingInfo>, Vec<Diagnostic>) {
+fn analyse(uri: &Url, src: &str) -> (Vec<BindingInfo>, Vec<Diagnostic>) {
     let tokens = match Lexer::new(src).tokenize() {
         Ok(t) => t,
         Err(e) => return (vec![], vec![error_to_diagnostic(LumeError::Lex(e))]),
@@ -50,7 +50,8 @@ fn analyse(src: &str) -> (Vec<BindingInfo>, Vec<Diagnostic>) {
         Ok(p) => p,
         Err(e) => return (vec![], vec![error_to_diagnostic(LumeError::Parse(e))]),
     };
-    match elaborate(&program) {
+    let path = uri.to_file_path().ok();
+    match elaborate(&program, path.as_deref()) {
         Ok((bindings, _)) => (bindings, vec![]),
         Err(e) => (vec![], vec![error_to_diagnostic(LumeError::Type(e))]),
     }
@@ -165,7 +166,7 @@ impl LanguageServer for Backend {
 impl Backend {
     /// Re-analyse the document, update the binding cache, and push diagnostics.
     async fn refresh(&self, uri: &Url, text: &str) {
-        let (bindings, diagnostics) = analyse(text);
+        let (bindings, diagnostics) = analyse(uri, text);
         self.bindings.insert(uri.clone(), bindings);
         self.client
             .publish_diagnostics(uri.clone(), diagnostics, None)
