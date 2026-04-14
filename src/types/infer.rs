@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use crate::ast::{
-    self, Binding, BinOp, Expr, ExprKind, Literal, ListPattern, MatchArm, Pattern,
-    Program, RecordField, RecordPattern, TopItem, UnOp, UseBinding, UseDecl,
+    self, Binding, BinOp, Expr, ExprKind, Literal, ListPattern, MatchArm, NodeId,
+    Pattern, Program, RecordField, RecordPattern, TopItem, UnOp, UseBinding, UseDecl,
 };
 use crate::error::Span;
 use crate::types::{
@@ -259,11 +259,13 @@ type VariantInstance = (Ty, Option<Vec<(String, Ty)>>);
 pub struct Checker {
     pub subst: Subst,
     pub variant_env: VariantEnv,
+    /// Maps each expression's NodeId to its inferred type (with type vars, resolved at end).
+    pub node_types: HashMap<NodeId, Ty>,
 }
 
 impl Checker {
     pub fn new(variant_env: VariantEnv) -> Self {
-        Checker { subst: Subst::new(), variant_env }
+        Checker { subst: Subst::new(), variant_env, node_types: HashMap::new() }
     }
 
     fn fresh_var(&mut self) -> TyVar { self.subst.fresh_var() }
@@ -398,7 +400,14 @@ impl Checker {
 
     // ── Inference (⇒ mode) ───────────────────────────────────────────────────
 
+    /// Infer the type of `expr`, record it in `node_types`, and return it.
     pub fn infer(&mut self, env: &TypeEnv, expr: &Expr) -> Result<Ty, TypeErrorAt> {
+        let ty = self.infer_inner(env, expr)?;
+        self.node_types.insert(expr.id, ty.clone());
+        Ok(ty)
+    }
+
+    fn infer_inner(&mut self, env: &TypeEnv, expr: &Expr) -> Result<Ty, TypeErrorAt> {
         let span = &expr.span;
         match &expr.kind {
             ExprKind::Number(_) => Ok(Ty::Num),
@@ -531,7 +540,9 @@ impl Checker {
                         TypeError::UnboundVariable(f.name.clone()), span.clone())),
                 }
             };
-            row_fields.push((f.name.clone(), self.subst.apply(&ty)));
+            let ty = self.subst.apply(&ty);
+            self.node_types.insert(f.name_node_id, ty.clone());
+            row_fields.push((f.name.clone(), ty));
         }
         row_fields.sort_by(|a, b| a.0.cmp(&b.0));
         Ok(Ty::Record(Row { fields: row_fields, tail: RowTail::Closed }))
@@ -554,7 +565,9 @@ impl Checker {
                         TypeError::UnboundVariable(f.name.clone()), base.span.clone())),
                 }
             };
-            new_fields.push((f.name.clone(), self.subst.apply(&ty)));
+            let ty = self.subst.apply(&ty);
+            self.node_types.insert(f.name_node_id, ty.clone());
+            new_fields.push((f.name.clone(), ty));
         }
         new_fields.sort_by(|a, b| a.0.cmp(&b.0));
 
@@ -760,11 +773,14 @@ impl Checker {
         match &expr.kind {
             // ── Lambda in check mode: propagate param type directly ──────────
             ExprKind::Lambda { param, body } => {
-                if let Ty::Func(t_param, t_ret) = expected {
+                if let Ty::Func(t_param, t_ret) = expected.clone() {
                     let bindings = self.infer_pattern(param, *t_param)
                         .map_err(|e| TypeErrorAt::new(e, span.clone()))?;
                     let new_env = env.extend_many(bindings);
-                    self.check(&new_env, body, *t_ret)
+                    self.check(&new_env, body, *t_ret)?;
+                    // Record the lambda's type (known from the checked expected type).
+                    self.node_types.insert(expr.id, self.subst.apply(&expected));
+                    Ok(())
                 } else {
                     let inferred = self.infer(env, expr)?;
                     let inferred = self.subst.apply(&inferred);
@@ -801,7 +817,10 @@ impl Checker {
                 Ok(vec![])
             }
 
-            Pattern::Ident(name) => Ok(vec![(name.clone(), expected)]),
+            Pattern::Ident(name, _, node_id) => {
+                self.node_types.insert(*node_id, expected.clone());
+                Ok(vec![(name.clone(), expected)])
+            }
 
             Pattern::Variant { name, payload } => {
                 self.check_variant_pattern(name, payload.as_deref(), expected)
@@ -861,6 +880,8 @@ impl Checker {
             if let Some(sub_pat) = &fp.pattern {
                 bindings.extend(self.infer_pattern(sub_pat, field_ty)?);
             } else {
+                // Shorthand `{ age }` — the field name is the binding.
+                self.node_types.insert(fp.node_id, field_ty.clone());
                 bindings.push((fp.name.clone(), field_ty));
             }
         }
@@ -924,9 +945,10 @@ impl Checker {
             let scheme = loader.load(&u.path, base)?;
 
             match &u.binding {
-                UseBinding::Ident(name) => {
+                UseBinding::Ident(name, _, node_id) => {
                     // Import the whole module as a record value.
                     let ty = self.instantiate(&scheme);
+                    self.node_types.insert(*node_id, ty.clone());
                     env.insert(name.clone(), Scheme::mono(ty));
                 }
                 UseBinding::Record(rp) => {
@@ -946,6 +968,7 @@ impl Checker {
                                 )
                             })?;
                         let s = self.generalise(env, &field_ty);
+                        self.node_types.insert(f.node_id, field_ty);
                         env.insert(f.name.clone(), s);
                     }
                 }
@@ -980,7 +1003,7 @@ impl Checker {
         // For simple name bindings, add a fresh monomorphic placeholder *before*
         // checking the body to support self-recursion.
         let (rec_env, placeholder) = match &binding.pattern {
-            Pattern::Ident(name) => {
+            Pattern::Ident(name, _, _) => {
                 let ph = self.fresh_ty();
                 let ext = env.extend_one(name.clone(), ph.clone());
                 (ext, Some(ph))
@@ -1020,7 +1043,7 @@ impl Checker {
         env: &mut TypeEnv,
     ) -> Result<(), TypeError> {
         match pat {
-            Pattern::Ident(name) => { env.insert(name.clone(), scheme); }
+            Pattern::Ident(name, _, _) => { env.insert(name.clone(), scheme); }
             Pattern::Wildcard => {}
             _ => {
                 let ty = self.instantiate(&scheme);
@@ -1051,18 +1074,15 @@ pub fn check_program(program: &Program, path: Option<&Path>) -> Result<Ty, TypeE
     checker.check_program(program, env, path, &mut loader)
 }
 
-/// One binding entry in the elaborated output.
+/// A named type binding for CLI display.
 pub struct BindingInfo {
     pub name: String,
     pub scheme: Scheme,
 }
 
-/// Type-check a program and return the inferred scheme for every named
-/// top-level binding (in source order) plus the type of the export expression.
-///
-/// `path` is the file being checked; it is used to resolve relative `use`
-/// paths.  Pass `None` when checking an in-memory buffer (imports are skipped).
-pub fn elaborate(
+/// Type-check a program and return top-level binding info for CLI display,
+/// plus the export type.
+pub fn elaborate_bindings(
     program: &Program,
     path: Option<&Path>,
 ) -> Result<(Vec<BindingInfo>, Ty), TypeErrorAt> {
@@ -1075,21 +1095,25 @@ pub fn elaborate(
 
     checker.apply_imports(&program.uses, path, &mut loader, &mut env)?;
 
-    let mut bindings: Vec<BindingInfo> = Vec::new();
-
+    let mut bindings = Vec::new();
     for item in &program.items {
-        if let TopItem::Binding(binding) = item {
-            env = checker.check_binding(binding, env)?;
-            collect_binding_info(&binding.pattern, &env, &checker, &mut bindings);
+        if let TopItem::Binding(b) = item {
+            env = checker.check_binding(b, env)?;
+            collect_binding_info(&b.pattern, &env, &checker, &mut bindings);
         }
     }
 
     let export_ty = checker.infer(&env, &program.exports)?;
     let export_ty = checker.subst.apply(&export_ty);
+
+    // Apply final substitution to binding schemes.
+    for b in &mut bindings {
+        b.scheme = checker.subst.apply_scheme(&b.scheme);
+    }
+
     Ok((bindings, export_ty))
 }
 
-/// Walk a binding pattern and push a `BindingInfo` for every name it binds.
 fn collect_binding_info(
     pat: &Pattern,
     env: &TypeEnv,
@@ -1097,7 +1121,7 @@ fn collect_binding_info(
     out: &mut Vec<BindingInfo>,
 ) {
     match pat {
-        Pattern::Ident(name) => {
+        Pattern::Ident(name, _, _) => {
             if let Some(scheme) = env.lookup(name) {
                 let scheme = checker.subst.apply_scheme(scheme);
                 out.push(BindingInfo { name: name.clone(), scheme });
@@ -1106,7 +1130,7 @@ fn collect_binding_info(
         Pattern::Record(rp) => {
             for fp in &rp.fields {
                 let name = fp.pattern.as_ref()
-                    .and_then(|p| if let Pattern::Ident(n) = p { Some(n) } else { None })
+                    .and_then(|p| if let Pattern::Ident(n, _, _) = p { Some(n) } else { None })
                     .unwrap_or(&fp.name);
                 if let Some(scheme) = env.lookup(name) {
                     let scheme = checker.subst.apply_scheme(scheme);
@@ -1116,4 +1140,53 @@ fn collect_binding_info(
         }
         _ => {}
     }
+}
+
+/// Type-check a program.
+///
+/// Returns:
+/// - `node_types`: a map from every expression's `NodeId` to its fully-resolved type.
+/// - The type of the module export expression.
+///
+/// `path` is the file being checked; it is used to resolve relative `use`
+/// paths.  Pass `None` when checking an in-memory buffer (imports are skipped).
+pub fn elaborate(
+    program: &Program,
+    path: Option<&Path>,
+) -> Result<(HashMap<NodeId, Ty>, Ty), TypeErrorAt> {
+    let (env, mut var_env) = builtin_env();
+    let prog_vars = build_variant_env(&program.items);
+    var_env.merge(prog_vars);
+    let mut checker = Checker::new(var_env);
+    let mut loader = crate::loader::Loader::new();
+    let mut env = env;
+
+    checker.apply_imports(&program.uses, path, &mut loader, &mut env)?;
+
+    for item in &program.items {
+        if let TopItem::Binding(binding) = item {
+            env = checker.check_binding(binding, env)?;
+            // Record the type for the binding name so hover works on `let x = ...`.
+            // For simple `let x = ...`, infer_pattern already recorded it, but
+            // the scheme may be generalized after check_binding so we update it.
+            if let Pattern::Ident(name, _, node_id) = &binding.pattern {
+                if let Some(scheme) = env.lookup(name) {
+                    let ty = checker.subst.apply(&scheme.ty);
+                    checker.node_types.insert(*node_id, ty);
+                }
+            }
+        }
+    }
+
+    let export_ty = checker.infer(&env, &program.exports)?;
+    let export_ty = checker.subst.apply(&export_ty);
+
+    // Apply the final substitution to every recorded type so all type variables
+    // are resolved to their concrete types.
+    let node_types: HashMap<NodeId, Ty> = checker.node_types
+        .into_iter()
+        .map(|(id, ty)| (id, checker.subst.apply(&ty)))
+        .collect();
+
+    Ok((node_types, export_ty))
 }

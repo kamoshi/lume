@@ -82,7 +82,7 @@ fn dump_file(path: &str) -> bool {
         Some(p) => p,
         None => return false,
     };
-    match types::infer::elaborate(&program, Some(Path::new(path))) {
+    match types::infer::elaborate_bindings(&program, Some(Path::new(path))) {
         Ok((bindings, exports)) => {
             let width = bindings.iter().map(|b| b.name.len()).max().unwrap_or(0);
             println!("{path}:");
@@ -178,11 +178,9 @@ mod tests {
     #[test]
     fn lex_number() {
         use crate::lexer::Token;
-        let toks = lex("42 3.14");
+        let toks = lex("42 4.20");
         assert!(matches!(toks[0].token, Token::Number(n) if n == 42.0));
-        assert!(
-            matches!(toks[1].token, Token::Number(n) if (n - std::f64::consts::PI).abs() < 1e-9)
-        );
+        assert!(matches!(toks[1].token, Token::Number(n) if (n - 4.20).abs() < 1e-9));
     }
 
     #[test]
@@ -393,7 +391,7 @@ mod tests {
 
     #[test]
     fn pattern_ident() {
-        assert!(matches!(parse_pattern_str("x"), Pattern::Ident(s) if s == "x"));
+        assert!(matches!(parse_pattern_str("x"), Pattern::Ident(s, _, _) if s == "x"));
     }
 
     #[test]

@@ -138,6 +138,7 @@ impl<'src> Lexer<'src> {
 
         let line = self.line;
         let col = self.col;
+        let start_pos = self.pos;
 
         let ch = match self.peek() {
             None => {
@@ -287,7 +288,7 @@ impl<'src> Lexer<'src> {
             }
         };
 
-        let len = self.pos - (col - 1);
+        let len = self.pos - start_pos;
         Ok(Spanned { token, span: self.span_at(line, col, len) })
     }
 

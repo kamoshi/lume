@@ -317,63 +317,104 @@ fn row_var_occurs(v: TyVar, row: &Row) -> bool {
 
 // ── Display ───────────────────────────────────────────────────────────────────
 
-impl fmt::Display for Ty {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Ty::Num => write!(f, "Num"),
-            Ty::Text => write!(f, "Text"),
-            Ty::Bool => write!(f, "Bool"),
-            Ty::List(t) => write!(f, "List {}", t.atomic()),
-            Ty::Func(a, b) => match a.as_ref() {
-                Ty::Func(..) => write!(f, "({}) -> {}", a, b),
-                _ => write!(f, "{} -> {}", a, b),
-            },
-            Ty::Record(row) => write!(f, "{}", row),
-            Ty::Con(name, args) if args.is_empty() => write!(f, "{}", name),
-            Ty::Con(name, args) => {
-                write!(f, "{}", name)?;
-                for a in args { write!(f, " {}", a.atomic())?; }
-                Ok(())
+// ── Pretty variable names ─────────────────────────────────────────────────────
+
+/// Map the i-th type/row variable to a name: a, b, …, z, a1, b1, …
+fn pretty_var_name(i: usize) -> String {
+    let letter = (b'a' + (i % 26) as u8) as char;
+    if i < 26 { letter.to_string() } else { format!("{}{}", letter, i / 26) }
+}
+
+/// Collect free type-vars and row-vars in first-appearance order.
+fn collect_pretty_vars(ty: &Ty, tvs: &mut Vec<TyVar>, rvs: &mut Vec<TyVar>) {
+    match ty {
+        Ty::Var(v) => { if !tvs.contains(v) { tvs.push(*v); } }
+        Ty::List(t) => collect_pretty_vars(t, tvs, rvs),
+        Ty::Func(a, b) => { collect_pretty_vars(a, tvs, rvs); collect_pretty_vars(b, tvs, rvs); }
+        Ty::Record(row) => {
+            for (_, t) in &row.fields { collect_pretty_vars(t, tvs, rvs); }
+            if let RowTail::Open(v) = row.tail { if !rvs.contains(&v) { rvs.push(v); } }
+        }
+        Ty::Con(_, args) => { for a in args { collect_pretty_vars(a, tvs, rvs); } }
+        _ => {}
+    }
+}
+
+/// Render a `Ty` using caller-supplied name tables for type-vars and row-vars.
+fn fmt_named(ty: &Ty, tvs: &[TyVar], rvs: &[TyVar], f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    match ty {
+        Ty::Num  => write!(f, "Num"),
+        Ty::Text => write!(f, "Text"),
+        Ty::Bool => write!(f, "Bool"),
+        Ty::List(t) => { write!(f, "List ")?; fmt_named_atomic(t, tvs, rvs, f) }
+        Ty::Func(a, b) => {
+            if matches!(a.as_ref(), Ty::Func(..)) {
+                write!(f, "(")?; fmt_named(a, tvs, rvs, f)?; write!(f, ")")?;
+            } else {
+                fmt_named(a, tvs, rvs, f)?;
             }
-            Ty::Var(v) => write!(f, "?{}", v),
+            write!(f, " -> ")?;
+            fmt_named(b, tvs, rvs, f)
+        }
+        Ty::Record(row) => {
+            write!(f, "{{ ")?;
+            for (i, (name, ty)) in row.fields.iter().enumerate() {
+                if i > 0 { write!(f, ", ")?; }
+                write!(f, "{}: ", name)?;
+                fmt_named(ty, tvs, rvs, f)?;
+            }
+            if let RowTail::Open(v) = row.tail {
+                if !row.fields.is_empty() { write!(f, ", ")?; }
+                let name = rvs.iter().position(|x| x == &v)
+                    .map(|i| pretty_var_name(tvs.len() + i))
+                    .unwrap_or_else(|| format!("?{}", v));
+                write!(f, "..{}", name)?;
+            }
+            write!(f, " }}")
+        }
+        Ty::Con(name, args) if args.is_empty() => write!(f, "{}", name),
+        Ty::Con(name, args) => {
+            write!(f, "{}", name)?;
+            for a in args { write!(f, " ")?; fmt_named_atomic(a, tvs, rvs, f)?; }
+            Ok(())
+        }
+        Ty::Var(v) => {
+            let name = tvs.iter().position(|x| x == v)
+                .map(pretty_var_name)
+                .unwrap_or_else(|| format!("?{}", v));
+            write!(f, "{}", name)
         }
     }
 }
 
-impl Ty {
-    fn atomic(&self) -> String {
-        match self {
-            Ty::Func(..) => format!("({})", self),
-            Ty::Con(_, a) if !a.is_empty() => format!("({})", self),
-            _ => format!("{}", self),
-        }
+fn fmt_named_atomic(ty: &Ty, tvs: &[TyVar], rvs: &[TyVar], f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    let needs_parens = matches!(ty, Ty::Func(..)) || matches!(ty, Ty::Con(_, args) if !args.is_empty());
+    if needs_parens { write!(f, "(")?; fmt_named(ty, tvs, rvs, f)?; write!(f, ")") }
+    else { fmt_named(ty, tvs, rvs, f) }
+}
+
+// ── Display impls ─────────────────────────────────────────────────────────────
+
+impl fmt::Display for Ty {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut tvs = Vec::new();
+        let mut rvs = Vec::new();
+        collect_pretty_vars(self, &mut tvs, &mut rvs);
+        fmt_named(self, &tvs, &rvs, f)
     }
 }
 
 impl fmt::Display for Row {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{{ ")?;
-        for (i, (name, ty)) in self.fields.iter().enumerate() {
-            if i > 0 { write!(f, ", ")?; }
-            write!(f, "{}: {}", name, ty)?;
-        }
-        if let RowTail::Open(v) = self.tail {
-            if !self.fields.is_empty() { write!(f, ", ")?; }
-            write!(f, "..?{}", v)?;
-        }
-        write!(f, " }}")
+        // Delegate to Ty::Display via a temporary record type.
+        write!(f, "{}", Ty::Record(self.clone()))
     }
 }
 
 impl fmt::Display for Scheme {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.vars.is_empty() && self.row_vars.is_empty() {
-            write!(f, "{}", self.ty)
-        } else {
-            write!(f, "∀")?;
-            for v in &self.vars { write!(f, " ?{}", v)?; }
-            for v in &self.row_vars { write!(f, " ρ{}", v)?; }
-            write!(f, ". {}", self.ty)
-        }
+        // Use the quantified vars (in their declared order) as the name source,
+        // so `∀ a b. List a -> b` is consistent.
+        fmt_named(&self.ty, &self.vars, &self.row_vars, f)
     }
 }

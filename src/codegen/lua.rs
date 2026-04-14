@@ -182,7 +182,7 @@ impl Emitter {
 
         match mod_var {
             Some(mv) => match &u.binding {
-                UseBinding::Ident(name) => {
+                UseBinding::Ident(name, _, _) => {
                     self.out
                         .push_str(&format!("local {} = {}\n", lua_ident(name), mv));
                 }
@@ -206,7 +206,7 @@ impl Emitter {
                     raw.clone()
                 };
                 match &u.binding {
-                    UseBinding::Ident(name) => {
+                    UseBinding::Ident(name, _, _) => {
                         self.out.push_str(&format!(
                             "local {} = require(\"{}\")\n",
                             lua_ident(name),
@@ -241,7 +241,7 @@ impl Emitter {
     /// Emit one or more `local` statements for `pat = expr`.
     fn emit_pat_binding(&mut self, pat: &Pattern, expr: &Expr) {
         match pat {
-            Pattern::Ident(name) => {
+            Pattern::Ident(name, _, _) => {
                 self.out.push_str(&format!("local {} = ", lua_ident(name)));
                 self.emit_expr(expr);
             }
@@ -481,7 +481,7 @@ impl Emitter {
 
     fn emit_lambda(&mut self, param: &Pattern, body: &Expr) {
         match param {
-            Pattern::Ident(name) => {
+            Pattern::Ident(name, _, _) => {
                 self.out
                     .push_str(&format!("function({}) return ", lua_ident(name)));
                 self.emit_expr(body);
@@ -636,7 +636,7 @@ impl Emitter {
     /// Returns a Lua boolean expression testing whether `var` matches `pat`.
     fn pattern_cond(var: &str, pat: &Pattern) -> String {
         match pat {
-            Pattern::Wildcard | Pattern::Ident(_) => "true".to_string(),
+            Pattern::Wildcard | Pattern::Ident(_, _, _) => "true".to_string(),
             Pattern::Literal(lit) => match lit {
                 Literal::Number(n) => {
                     let s = if n.fract() == 0.0 {
@@ -715,7 +715,7 @@ impl Emitter {
     fn collect_binds(&mut self, var: &str, pat: &Pattern, out: &mut Vec<(String, String)>) {
         match pat {
             Pattern::Wildcard | Pattern::Literal(_) => {}
-            Pattern::Ident(name) => out.push((lua_ident(name).into_owned(), var.to_string())),
+            Pattern::Ident(name, _, _) => out.push((lua_ident(name).into_owned(), var.to_string())),
             Pattern::Variant { payload, .. } => {
                 if let Some(p) = payload {
                     self.collect_binds(var, p, out);

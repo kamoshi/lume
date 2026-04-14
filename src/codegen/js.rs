@@ -128,7 +128,7 @@ impl Emitter {
 
         match mod_var {
             Some(mv) => match &u.binding {
-                UseBinding::Ident(name) => {
+                UseBinding::Ident(name, _, _) => {
                     self.out
                         .push_str(&format!("const {} = {};\n", js_ident(name), mv));
                 }
@@ -150,7 +150,7 @@ impl Emitter {
                     format!("{}.js", raw)
                 };
                 match &u.binding {
-                    UseBinding::Ident(name) => {
+                    UseBinding::Ident(name, _, _) => {
                         self.out
                             .push_str(&format!("import {} from \"{}\";\n", name, path));
                     }
@@ -178,7 +178,7 @@ impl Emitter {
     /// Emit a pattern as a JS destructuring LHS (for `const <lhs> = <rhs>`).
     fn emit_pat_lhs(&mut self, p: &Pattern) {
         match p {
-            Pattern::Ident(name) => self.out.push_str(&js_ident(name)),
+            Pattern::Ident(name, _, _) => self.out.push_str(&js_ident(name)),
             Pattern::Wildcard => self.out.push_str("_$"),
             Pattern::Record(rp) => {
                 self.out.push_str("{ ");
@@ -410,7 +410,7 @@ impl Emitter {
 
     fn is_simple_pattern(p: &Pattern) -> bool {
         match p {
-            Pattern::Ident(_) | Pattern::Wildcard => true,
+            Pattern::Ident(_, _, _) | Pattern::Wildcard => true,
             Pattern::Record(rp) => rp
                 .fields
                 .iter()
@@ -422,7 +422,7 @@ impl Emitter {
     /// Emit a pattern as an arrow-function parameter (destructuring syntax).
     fn emit_lambda_param(&mut self, p: &Pattern) {
         match p {
-            Pattern::Ident(name) => self.out.push_str(&js_ident(name)),
+            Pattern::Ident(name, _, _) => self.out.push_str(&js_ident(name)),
             Pattern::Wildcard => self.out.push('_'),
             Pattern::Record(rp) => {
                 self.out.push_str("({ ");
@@ -547,7 +547,7 @@ impl Emitter {
     /// Returns a JS boolean expression that tests whether `var` matches `pat`.
     fn pattern_cond(var: &str, pat: &Pattern) -> String {
         match pat {
-            Pattern::Wildcard | Pattern::Ident(_) => "true".to_string(),
+            Pattern::Wildcard | Pattern::Ident(_, _, _) => "true".to_string(),
             Pattern::Literal(lit) => match lit {
                 Literal::Number(n) => {
                     let s = if n.fract() == 0.0 {
@@ -624,7 +624,7 @@ impl Emitter {
     fn collect_binds(var: &str, pat: &Pattern, out: &mut Vec<(String, String)>) {
         match pat {
             Pattern::Wildcard | Pattern::Literal(_) => {}
-            Pattern::Ident(name) => out.push((js_ident(name).into_owned(), var.to_string())),
+            Pattern::Ident(name, _, _) => out.push((js_ident(name).into_owned(), var.to_string())),
             Pattern::Variant { payload, .. } => {
                 if let Some(p) = payload {
                     // Variant fields are merged into the tagged object, same var.

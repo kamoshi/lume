@@ -1,8 +1,12 @@
 use crate::error::Span;
 
+/// A unique identifier for every `Expr` node in the AST.
+/// Assigned by `assign_node_ids` immediately after parsing.
+pub type NodeId = u32;
+
 /// The complete AST for a Lume source file.
 ///
-/// ```
+/// ```text
 /// program = use* (typedef | binding)* record_expr
 /// ```
 #[derive(Debug, Clone)]
@@ -31,7 +35,7 @@ pub struct UseDecl {
 #[derive(Debug, Clone)]
 pub enum UseBinding {
     /// `use math = "./math"`
-    Ident(String),
+    Ident(String, Span, NodeId),
     /// `use { area, pi } = "./math"`  (destructure)
     Record(RecordPattern),
 }
@@ -62,9 +66,10 @@ pub struct Binding {
 
 // ── Expressions ───────────────────────────────────────────────────────────────
 
-/// An expression together with its source location.
+/// An expression together with its source location and a unique node ID.
 #[derive(Debug, Clone)]
 pub struct Expr {
+    pub id: NodeId,
     pub kind: ExprKind,
     pub span: Span,
 }
@@ -119,6 +124,10 @@ pub enum ExprKind {
 #[derive(Debug, Clone)]
 pub struct RecordField {
     pub name: String,
+    /// Span of the field name token (for hover on record keys).
+    pub name_span: Span,
+    /// NodeId assigned to this field name (for hover type lookup).
+    pub name_node_id: NodeId,
     /// `None` means field shorthand: `{ age }` == `{ age: age }`
     pub value: Option<Expr>,
 }
@@ -166,7 +175,7 @@ pub enum Pattern {
     /// Literal match: `42`, `"hello"`, `true`
     Literal(Literal),
     /// Bind to a name: `x`
-    Ident(String),
+    Ident(String, Span, NodeId),
     /// `Circle { radius }` or `North` (unit)
     Variant { name: String, payload: Option<Box<Pattern>> },
     /// `{ name, age, .. }`
@@ -185,6 +194,10 @@ pub struct RecordPattern {
 #[derive(Debug, Clone)]
 pub struct FieldPattern {
     pub name: String,
+    /// Span of the field name token (for hover on destructured fields).
+    pub span: Span,
+    /// NodeId for this field binding (assigned by `assign_node_ids`).
+    pub node_id: NodeId,
     /// `None` means shorthand: `{ age }` binds `age`
     pub pattern: Option<Pattern>,
 }
@@ -230,4 +243,115 @@ pub struct RecordType {
 pub struct FieldType {
     pub name: String,
     pub ty: Type,
+}
+
+// ── Node ID assignment ────────────────────────────────────────────────────────
+
+/// Walk every `Expr` in `program` in pre-order and assign a unique `NodeId`.
+/// Call this once immediately after parsing.
+pub fn assign_node_ids(program: &mut Program) {
+    let mut counter: NodeId = 0;
+    for u in &mut program.uses {
+        match &mut u.binding {
+            UseBinding::Ident(_, _, id) => {
+                *id = counter;
+                counter += 1;
+            }
+            UseBinding::Record(rp) => {
+                for fp in &mut rp.fields {
+                    fp.node_id = counter;
+                    counter += 1;
+                }
+            }
+        }
+    }
+    for item in &mut program.items {
+        if let TopItem::Binding(b) = item {
+            assign_ids_pattern(&mut b.pattern, &mut counter);
+            assign_ids_expr(&mut b.value, &mut counter);
+        }
+    }
+    assign_ids_expr(&mut program.exports, &mut counter);
+}
+
+fn assign_ids_pattern(pat: &mut Pattern, counter: &mut NodeId) {
+    match pat {
+        Pattern::Ident(_, _, id) => {
+            *id = *counter;
+            *counter += 1;
+        }
+        Pattern::Record(rp) => {
+            for fp in &mut rp.fields {
+                fp.node_id = *counter;
+                *counter += 1;
+                if let Some(p) = &mut fp.pattern {
+                    assign_ids_pattern(p, counter);
+                }
+            }
+            if let Some(Some(rest_name_pat)) = rp.rest.as_mut().map(|r| r.as_mut()) {
+                // rest is just a String, no pattern node to assign
+                let _ = rest_name_pat;
+            }
+        }
+        Pattern::Variant { payload: Some(p), .. } => assign_ids_pattern(p, counter),
+        Pattern::List(lp) => {
+            for p in &mut lp.elements {
+                assign_ids_pattern(p, counter);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn assign_ids_expr(expr: &mut Expr, counter: &mut NodeId) {
+    expr.id = *counter;
+    *counter += 1;
+    match &mut expr.kind {
+        ExprKind::List(exprs) => {
+            for e in exprs { assign_ids_expr(e, counter); }
+        }
+        ExprKind::Record { base, fields, .. } => {
+            if let Some(b) = base { assign_ids_expr(b, counter); }
+            for f in fields {
+                f.name_node_id = *counter;
+                *counter += 1;
+                if let Some(v) = &mut f.value { assign_ids_expr(v, counter); }
+            }
+        }
+        ExprKind::FieldAccess { record, .. } => {
+            assign_ids_expr(record, counter);
+        }
+        ExprKind::Variant { payload: Some(p), .. } => {
+            assign_ids_expr(p, counter);
+        }
+        ExprKind::Lambda { param, body } => {
+            assign_ids_pattern(param, counter);
+            assign_ids_expr(body, counter);
+        }
+        ExprKind::Apply { func, arg } => {
+            assign_ids_expr(func, counter);
+            assign_ids_expr(arg, counter);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            assign_ids_expr(left, counter);
+            assign_ids_expr(right, counter);
+        }
+        ExprKind::Unary { operand, .. } => {
+            assign_ids_expr(operand, counter);
+        }
+        ExprKind::If { cond, then_branch, else_branch } => {
+            assign_ids_expr(cond, counter);
+            assign_ids_expr(then_branch, counter);
+            assign_ids_expr(else_branch, counter);
+        }
+        ExprKind::Match(arms) => {
+            for arm in arms {
+                assign_ids_pattern(&mut arm.pattern, counter);
+                if let Some(g) = &mut arm.guard { assign_ids_expr(g, counter); }
+                assign_ids_expr(&mut arm.body, counter);
+            }
+        }
+        // Leaves: Number, Text, Bool, Ident, Variant { payload: None }
+        _ => {}
+    }
 }
