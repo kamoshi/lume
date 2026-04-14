@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
 use lume::{
     ast::{Expr, ExprKind, MatchArm, NodeId, Pattern, Program, TopItem},
@@ -6,9 +7,9 @@ use lume::{
     codegen,
     error::Span,
     lexer::Lexer,
-    loader::Loader,
+    loader::{stdlib_path, stdlib_source, Loader},
     parser,
-    types::{self, infer::elaborate},
+    types::{self, infer::elaborate, infer::elaborate_with_env, infer::builtin_env, Ty},
 };
 use wasm_bindgen::prelude::*;
 
@@ -171,16 +172,82 @@ fn diag_json(from: usize, to: usize, message: &str) -> String {
 
 // ── Single-file bundle helper ─────────────────────────────────────────────────
 
+const WASM_ENTRY_PATH: &str = "main.lume";
+
 fn single_bundle(src: &str) -> Result<Vec<BundleModule>, String> {
-    let program = Loader::parse(src)?;
-    Ok(vec![BundleModule {
-        canonical: PathBuf::from("main.lume"),
-        var: "_mod_main".to_string(),
+    let mut visited = HashSet::new();
+    let mut bundle = Vec::new();
+    collect_embedded_bundle(
+        PathBuf::from(WASM_ENTRY_PATH),
+        "_mod_main".to_string(),
+        Loader::parse(src)?,
+        &mut visited,
+        &mut bundle,
+    )?;
+    Ok(bundle)
+}
+
+fn collect_embedded_bundle(
+    canonical: PathBuf,
+    var: String,
+    program: Program,
+    visited: &mut HashSet<PathBuf>,
+    bundle: &mut Vec<BundleModule>,
+) -> Result<(), String> {
+    if !visited.insert(canonical.clone()) {
+        return Ok(());
+    }
+
+    for use_decl in &program.uses {
+        let dep_src = stdlib_source(&use_decl.path).ok_or_else(|| {
+            format!(
+                "WASM codegen only supports embedded stdlib imports (lume:*); unsupported import: {}",
+                use_decl.path
+            )
+        })?;
+        let dep_program = Loader::parse(dep_src)?;
+        collect_embedded_bundle(
+            stdlib_path(&use_decl.path),
+            stdlib_var(&use_decl.path),
+            dep_program,
+            visited,
+            bundle,
+        )?;
+    }
+
+    bundle.push(BundleModule {
+        canonical,
+        var,
         program,
-    }])
+    });
+    Ok(())
+}
+
+fn stdlib_var(path: &str) -> String {
+    let suffix: String = path
+        .trim_start_matches("lume:")
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("_mod_{suffix}")
 }
 
 // ── Public WASM API ───────────────────────────────────────────────────────────
+
+/// Returns a JSON array of the built-in stdlib module paths, e.g.
+/// `["lume:list","lume:math",…]`.  Used by editor tooling for import
+/// path completions.
+#[wasm_bindgen]
+pub fn stdlib_modules() -> String {
+    // Keep this in sync with `lume::loader::stdlib_source`.
+    r#"["lume:list","lume:math","lume:maybe","lume:result","lume:text"]"#.to_string()
+}
 
 /// Parse Lume source. Returns `"ok"` or throws an error string.
 #[wasm_bindgen]
@@ -194,7 +261,7 @@ pub fn parse(src: &str) -> Result<JsValue, JsValue> {
 #[wasm_bindgen]
 pub fn typecheck(src: &str) -> Result<JsValue, JsValue> {
     let program = Loader::parse(src).map_err(|e| JsValue::from_str(&e))?;
-    types::infer::check_program(&program, None)
+    types::infer::check_program(&program, Some(Path::new(WASM_ENTRY_PATH)))
         .map(|ty| JsValue::from_str(&ty.to_string()))
         .map_err(|e| JsValue::from_str(&e.to_string()))
 }
@@ -203,7 +270,10 @@ pub fn typecheck(src: &str) -> Result<JsValue, JsValue> {
 #[wasm_bindgen]
 pub fn to_js(src: &str) -> Result<JsValue, JsValue> {
     let bundle = single_bundle(src).map_err(|e| JsValue::from_str(&e))?;
-    types::infer::check_program(&bundle[0].program, None)
+    let entry = bundle
+        .last()
+        .ok_or_else(|| JsValue::from_str("internal error: empty bundle"))?;
+    types::infer::check_program(&entry.program, Some(Path::new(WASM_ENTRY_PATH)))
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
     Ok(JsValue::from_str(&codegen::js::emit(&bundle)))
 }
@@ -212,7 +282,10 @@ pub fn to_js(src: &str) -> Result<JsValue, JsValue> {
 #[wasm_bindgen]
 pub fn to_lua(src: &str) -> Result<JsValue, JsValue> {
     let bundle = single_bundle(src).map_err(|e| JsValue::from_str(&e))?;
-    types::infer::check_program(&bundle[0].program, None)
+    let entry = bundle
+        .last()
+        .ok_or_else(|| JsValue::from_str("internal error: empty bundle"))?;
+    types::infer::check_program(&entry.program, Some(Path::new(WASM_ENTRY_PATH)))
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
     Ok(JsValue::from_str(&codegen::lua::emit(&bundle)))
 }
@@ -243,13 +316,145 @@ pub fn lint(src: &str) -> String {
     };
 
     // Type-check
-    match types::infer::check_program(&program, None) {
+    match types::infer::check_program(&program, Some(Path::new(WASM_ENTRY_PATH))) {
         Err(e) => {
             let (from, to) = span_to_range(src, &e.span);
             let to = to.max(from + 1);
             format!("[{}]", diag_json(from, to, &e.error.to_string()))
         }
         Ok(_) => "[]".to_string(),
+    }
+}
+
+// ── Autocomplete ──────────────────────────────────────────────────────────────
+
+fn is_ident_char(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+fn ident_start_at(bytes: &[u8], end: usize) -> usize {
+    let mut i = end;
+    while i > 0 && is_ident_char(bytes[i - 1]) {
+        i -= 1;
+    }
+    i
+}
+
+/// Try to run `elaborate_with_env` on `src`, returning `(name, type)` pairs.
+fn try_elaborate_env(src: &str) -> Option<Vec<(String, String)>> {
+    let tokens = Lexer::new(src).tokenize().ok()?;
+    let program = parser::parse_program(&tokens).ok()?;
+    let (_, env, _) =
+        elaborate_with_env(&program, Some(Path::new(WASM_ENTRY_PATH))).ok()?;
+    Some(
+        env.iter()
+            .map(|(name, scheme)| (name.clone(), scheme.ty.to_string()))
+            .collect(),
+    )
+}
+
+fn build_completions_json(mut items: Vec<(String, String)>, prefix: &str) -> String {
+    items.retain(|(label, _)| label.starts_with(prefix) && label.as_str() != prefix);
+    items.sort_by(|a, b| a.0.cmp(&b.0));
+    items.dedup_by(|a, b| a.0 == b.0);
+    let entries: Vec<String> = items
+        .into_iter()
+        .map(|(label, detail)| {
+            format!(
+                r#"{{"label":"{}","detail":"{}"}}"#,
+                escape_json_str(&label),
+                escape_json_str(&detail)
+            )
+        })
+        .collect();
+    format!("[{}]", entries.join(","))
+}
+
+/// Returns a JSON array of completion items `[{label, detail}]` for the given
+/// byte `offset` in `src`.  Handles both identifier completions (names in scope)
+/// and field/record completions (when the cursor follows a `.`).
+#[wasm_bindgen]
+pub fn complete(src: &str, offset: usize) -> String {
+    let bytes = src.as_bytes();
+    let offset = offset.min(src.len());
+
+    let word_start = ident_start_at(bytes, offset);
+    let prefix = &src[word_start..offset];
+
+    // Field access: character immediately before the current word is '.'
+    if word_start > 0 && bytes[word_start - 1] == b'.' {
+        let dot_pos = word_start - 1;
+        return field_completions(src, dot_pos, offset, prefix);
+    }
+
+    ident_completions(src, word_start, offset, prefix)
+}
+
+fn ident_completions(src: &str, word_start: usize, offset: usize, prefix: &str) -> String {
+    // Try the source as-is.
+    if let Some(items) = try_elaborate_env(src) {
+        return build_completions_json(items, prefix);
+    }
+
+    // Replace the partial word with `0` so the source is more likely to
+    // type-check (fixes "unbound variable" errors at the cursor).
+    if !prefix.is_empty() {
+        let modified = format!("{}0{}", &src[..word_start], &src[offset..]);
+        if let Some(items) = try_elaborate_env(&modified) {
+            return build_completions_json(items, prefix);
+        }
+    }
+
+    // Fallback: builtins only.
+    let (env, _) = builtin_env();
+    let items: Vec<(String, String)> = env
+        .iter()
+        .map(|(n, s)| (n.clone(), s.ty.to_string()))
+        .collect();
+    build_completions_json(items, prefix)
+}
+
+fn field_completions(src: &str, dot_pos: usize, cursor: usize, prefix: &str) -> String {
+    // Identifier immediately before the dot.
+    let rec_end = dot_pos;
+    let rec_start = ident_start_at(src.as_bytes(), rec_end);
+    let record_name = &src[rec_start..rec_end];
+    if record_name.is_empty() {
+        return "[]".to_string();
+    }
+
+    // Build a modified source with the entire `.FIELD` removed so the
+    // record identifier can be resolved cleanly by the type checker.
+    // Skip any remaining ident chars after the cursor too.
+    let bytes = src.as_bytes();
+    let mut after = cursor;
+    while after < src.len() && is_ident_char(bytes[after]) {
+        after += 1;
+    }
+    let modified = format!("{}{}", &src[..dot_pos], &src[after..]);
+
+    let get_record_fields = |s: &str| -> Option<Vec<(String, String)>> {
+        let tokens = Lexer::new(s).tokenize().ok()?;
+        let program = parser::parse_program(&tokens).ok()?;
+        let (_, env, _) =
+            elaborate_with_env(&program, Some(Path::new(WASM_ENTRY_PATH))).ok()?;
+        let scheme = env.lookup(record_name)?;
+        if let Ty::Record(row) = &scheme.ty {
+            Some(
+                row.fields
+                    .iter()
+                    .map(|(name, ty)| (name.clone(), ty.to_string()))
+                    .collect(),
+            )
+        } else {
+            None
+        }
+    };
+
+    let fields = get_record_fields(&modified).or_else(|| get_record_fields(src));
+    match fields {
+        None => "[]".to_string(),
+        Some(fields) => build_completions_json(fields, prefix),
     }
 }
 
@@ -260,7 +465,7 @@ pub fn lint(src: &str) -> String {
 pub fn type_at(src: &str, offset: usize) -> Option<String> {
     let tokens = Lexer::new(src).tokenize().ok()?;
     let program = parser::parse_program(&tokens).ok()?;
-    let (node_types, _) = elaborate(&program, None).ok()?;
+    let (node_types, _) = elaborate(&program, Some(Path::new(WASM_ENTRY_PATH))).ok()?;
 
     let mut spans: Vec<(usize, usize, NodeId)> = Vec::new();
     collect_program(src, &program, &mut spans);
