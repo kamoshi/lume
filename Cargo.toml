@@ -2,3 +2,17 @@
 members = ["lume", "lume-lsp", "lume-wasm"]
 default-members = ["lume", "lume-lsp"]
 resolver = "2"
+
+# Standard release — used for native CLI and LSP binaries.
+[profile.release]
+lto = "thin"        # cross-crate dead-code elimination, faster than fat LTO
+codegen-units = 1   # required for LTO; allows better inlining
+
+# WASM-specific release — use with: wasm-pack build --profile wasm-release
+# Requires wasm-pack 0.14.0+ for --profile support.
+[profile.wasm-release]
+inherits = "release"
+opt-level = "s"     # optimise for size over speed (use "z" for maximum size reduction)
+lto = true          # fat LTO: whole-program optimisation across all crates
+panic = "abort"     # removes panic/unwinding machinery (~20–50 KB saving)
+strip = "debuginfo" # strip debug sections (wasm-opt handles most of this anyway)

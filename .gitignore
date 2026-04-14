@@ -3,6 +3,7 @@
 !.gitignore
 !Cargo.toml
 !Cargo.lock
+!build-wasm.sh
 !examples/
 !examples/**
 !spec.md
@@ -20,6 +21,7 @@
 
 !lume-wasm/
 !lume-wasm/Cargo.toml
+!lume-wasm/codemirror.ts
 !lume-wasm/src/
 !lume-wasm/src/**
 
