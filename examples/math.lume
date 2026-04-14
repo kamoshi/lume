@@ -13,7 +13,12 @@ let clamp : Num -> Num -> Num -> Num =
 
 let lerp : Num -> Num -> Num -> Num =
   a -> b -> t -> a + (b - a) * t
+  let scores = [85, 92, 67, 45, 78, 95, 55, 88]
 
+  let passing  = filter (s -> s >= 60) scores
+  let top      = filter (s -> s >= 85) scores
+  let total    = sum scores
+  let avg      = average scores
 {
   pi,
   abs,

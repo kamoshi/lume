@@ -259,7 +259,10 @@ pub fn type_at(src: &str, offset: usize) -> Option<String> {
     // Keep only spans that contain the cursor offset.
     spans.retain(|(from, to, _)| *from <= offset && offset < *to);
     // Sort ascending by range size — smallest (innermost) first.
-    spans.sort_by_key(|(from, to, _)| to - from);
+    // For equal-length spans (e.g. Apply nodes sharing the func token's span),
+    // sort by NodeId descending: assign_node_ids is pre-order, so inner leaves
+    // always have a higher id than the parent Apply that wraps them.
+    spans.sort_by(|(fa, ta, ia), (fb, tb, ib)| (ta - fa).cmp(&(tb - fb)).then(ib.cmp(ia)));
 
     for (_, _, id) in &spans {
         if let Some(ty) = node_types.get(id) {
