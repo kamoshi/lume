@@ -1,0 +1,40 @@
+-- std/string.lume
+-- Text utilities built on preamble primitives.
+
+-- lines : Text -> List Text
+-- Splits on newlines, dropping a trailing empty string left by a final \n.
+let dropTrailingEmpty =
+  | [] -> []
+  | [x] -> if x == "" then [] else [x]
+  | [x, ..rest] -> [x] ++ dropTrailingEmpty rest
+
+let lines = s -> dropTrailingEmpty (split "\n" s)
+
+-- words : Text -> List Text
+-- Splits on spaces and filters out empty segments (handles multiple spaces).
+let words = s -> filter (w -> w != "") (split " " s)
+
+-- chars : Text -> List Text
+let chars = split ""
+
+-- repeat : Num -> Text -> Text
+-- Repeats a string n times (returns "" for n <= 0).
+let repeat = n -> s -> fold "" (acc -> _ -> acc ++ s) (range 1 n)
+
+-- padLeft : Num -> Text -> Text -> Text
+-- Pads s on the left with ch until at least n chars wide.
+let padLeft = n -> ch -> s ->
+  repeat (max 0 (n - length (split "" s))) ch ++ s
+
+-- padRight : Num -> Text -> Text -> Text
+let padRight = n -> ch -> s ->
+  s ++ repeat (max 0 (n - length (split "" s))) ch
+
+{
+  lines,
+  words,
+  chars,
+  repeat,
+  padLeft,
+  padRight,
+}

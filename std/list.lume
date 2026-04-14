@@ -1,0 +1,153 @@
+-- std/list.lume
+-- List operations expressible in Lume itself.
+--
+-- map, filter, reverse, take, sort, sortBy are NOT here: they build new lists
+-- and need O(n) mutable tables, so they live in the codegen preamble.
+--
+-- Everything here uses structural recursion via pattern matching.
+
+-- fold : b -> (b -> a -> b) -> List a -> b
+let fold = acc -> f ->
+  | [] -> acc
+  | [x, ..rest] -> fold (f acc x) f rest
+
+-- length : List a -> Num
+let length = fold 0 (acc -> _ -> acc + 1)
+
+-- sum : List Num -> Num
+let sum = fold 0 (acc -> x -> acc + x)
+
+-- product : List Num -> Num
+let product = fold 1 (acc -> x -> acc * x)
+
+-- any : (a -> Bool) -> List a -> Bool
+let any = f -> fold false (acc -> x -> acc or f x)
+
+-- all : (a -> Bool) -> List a -> Bool
+let all = f -> fold true (acc -> x -> acc and f x)
+
+-- count : (a -> Bool) -> List a -> Num
+let count = f -> fold 0 (acc -> x -> if f x then acc + 1 else acc)
+
+-- average : List Num -> Num  (returns 0 for empty list)
+let average = xs ->
+  if length xs == 0
+  then 0
+  else sum xs / length xs
+
+-- minimum : List Num -> Num  (returns 0 for empty list)
+let minimum =
+  | [] -> 0
+  | [x, ..rest] -> fold x (acc -> y -> if y < acc then y else acc) rest
+
+-- maximum : List Num -> Num  (returns 0 for empty list)
+let maximum =
+  | [] -> 0
+  | [x, ..rest] -> fold x (acc -> y -> if y > acc then y else acc) rest
+
+-- head : List a -> Maybe a
+let head =
+  | [] -> None
+  | [x, ..] -> Some { value: x }
+
+-- last : List a -> Maybe a
+let last =
+  | [] -> None
+  | [x] -> Some { value: x }
+  | [_, ..rest] -> last rest
+
+-- tail : List a -> List a
+let tail =
+  | [] -> []
+  | [_, ..rest] -> rest
+
+-- drop : Num -> List a -> List a
+let drop = n ->
+  | xs if n <= 0 -> xs
+  | [] -> []
+  | [_, ..rest] -> drop (n - 1) rest
+
+-- takeWhile : (a -> Bool) -> List a -> List a
+let takeWhile = f ->
+  | [] -> []
+  | [x, ..rest] -> if f x then [x] ++ takeWhile f rest else []
+
+-- dropWhile : (a -> Bool) -> List a -> List a
+let dropWhile = f ->
+  | [] -> []
+  | [x, ..rest] -> if f x then dropWhile f rest else [x] ++ rest
+
+-- find : (a -> Bool) -> List a -> Maybe a
+let find = f ->
+  | [] -> None
+  | [x, ..rest] -> if f x then Some { value: x } else find f rest
+
+-- flatten : List (List a) -> List a
+let flatten =
+  | [] -> []
+  | [xs, ..rest] -> xs ++ flatten rest
+
+-- concatMap : (a -> List b) -> List a -> List b
+let concatMap = f ->
+  | [] -> []
+  | [x, ..rest] -> f x ++ concatMap f rest
+
+-- zipWith : (a -> b -> c) -> List a -> List b -> List c
+let zipWith = f ->
+  | [] -> _ -> []
+  | [x, ..xs] ->
+    | [] -> []
+    | [y, ..ys] -> [f x y] ++ zipWith f xs ys
+
+-- zip : List a -> List b -> List {a: a, b: b}
+let zip = zipWith (a -> b -> {a, b})
+
+-- enumerate : List a -> List {i: Num, x: a}
+-- Pairs each element with its 0-based index.
+let enumerate = xs -> zipWith (i -> x -> {i, x}) (range 0 (length xs - 1)) xs
+
+-- uniq : List a -> List a  (O(n^2), preserves first occurrence)
+let uniq =
+  | [] -> []
+  | [x, ..rest] -> [x] ++ uniq (filter (y -> y != x) rest)
+
+-- intersperse : a -> List a -> List a
+let intersperse = sep ->
+  | [] -> []
+  | [x] -> [x]
+  | [x, ..rest] -> [x] ++ [sep] ++ intersperse sep rest
+
+-- chunks : Num -> List a -> List (List a)
+-- Splits a list into consecutive chunks of size n.
+let chunks = n -> xs ->
+  if length xs == 0
+  then []
+  else [take n xs] ++ chunks n (drop n xs)
+
+{
+  fold,
+  length,
+  sum,
+  product,
+  any,
+  all,
+  count,
+  average,
+  minimum,
+  maximum,
+  head,
+  last,
+  tail,
+  drop,
+  takeWhile,
+  dropWhile,
+  find,
+  flatten,
+  concatMap,
+  zipWith,
+  zip,
+  enumerate,
+  uniq,
+  intersperse,
+  chunks,
+}

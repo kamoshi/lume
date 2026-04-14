@@ -11,6 +11,30 @@ use crate::types::{
 use crate::types::error::{TypeError, TypeErrorAt};
 use crate::ast::Program;
 
+// ── Embedded standard library ─────────────────────────────────────────────────
+
+/// Returns the source for a `lume:*` stdlib module, or `None` if the name is
+/// not recognised.
+///
+/// The source files are embedded at compile time so no filesystem access is
+/// needed at runtime (important for WASM and for reproducible builds).
+pub fn stdlib_source(name: &str) -> Option<&'static str> {
+    match name {
+        "lume:list"   => Some(include_str!("../../std/list.lume")),
+        "lume:text"   => Some(include_str!("../../std/text.lume")),
+        "lume:math"   => Some(include_str!("../../std/math.lume")),
+        "lume:maybe"  => Some(include_str!("../../std/maybe.lume")),
+        "lume:result" => Some(include_str!("../../std/result.lume")),
+        _ => None,
+    }
+}
+
+/// A synthetic, stable `PathBuf` used as the cache key for an embedded stdlib
+/// module.  It never exists on disk — it just needs to be unique per module.
+pub fn stdlib_path(name: &str) -> PathBuf {
+    PathBuf::from(format!("<{}>", name))
+}
+
 /// Resolves a raw import path (e.g. `"./math"` or `"./math.lume"`) relative
 /// to `base` (the file doing the importing).
 pub fn resolve_path(raw: &str, base: &Path) -> Result<PathBuf, String> {
@@ -58,7 +82,27 @@ impl Loader {
     /// Load, parse, and type-check the module at `raw_path` (resolved relative
     /// to `base`).  Returns the generalised export scheme.  Results are cached
     /// so each module is compiled at most once.
+    ///
+    /// Paths of the form `"lume:*"` are resolved against the embedded standard
+    /// library instead of the filesystem.
     pub fn load(&mut self, raw_path: &str, base: &Path) -> Result<Scheme, TypeErrorAt> {
+        // ── Embedded stdlib ───────────────────────────────────────────────────
+        if let Some(src) = stdlib_source(raw_path) {
+            let key = stdlib_path(raw_path);
+            if let Some(scheme) = self.cache.get(&key).cloned() {
+                return Ok(scheme);
+            }
+            let program = Self::parse(src).map_err(|msg| {
+                TypeErrorAt::new(TypeError::ImportError(msg), Span::default())
+            })?;
+            // Stdlib modules have no on-disk path so pass the synthetic key as
+            // the base; relative imports inside stdlib are not supported.
+            let scheme = self.check_and_generalise(&program, &key)?;
+            self.cache.insert(key, scheme.clone());
+            return Ok(scheme);
+        }
+
+        // ── Filesystem module ─────────────────────────────────────────────────
         let canonical = resolve_path(raw_path, base).map_err(|msg| {
             TypeErrorAt::new(TypeError::ImportError(msg), Span::default())
         })?;

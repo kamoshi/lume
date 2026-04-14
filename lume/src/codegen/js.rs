@@ -1,7 +1,76 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use crate::ast::*;
 use crate::bundle::BundleModule;
+
+/// All JS builtins emitted on demand.
+/// Each entry: (lume_name, js_name, js_implementation).
+/// `show` must appear before anything that uses it (e.g. `unwrap`).
+static JS_STDLIB: &[(&str, &str, &str)] = &[
+    // ── Reflection ─────────────────────────────────────────────────────────
+    ("show", "show", concat!(
+        "function show(x) {\n",
+        "  if (x === null || x === undefined) return \"{}\";\n",
+        "  if (typeof x === \"string\") return x;\n",
+        "  if (typeof x === \"number\") return String(x);\n",
+        "  if (typeof x === \"boolean\") return x ? \"true\" : \"false\";\n",
+        "  if (Array.isArray(x)) return \"[\" + x.map(show).join(\", \") + \"]\";\n",
+        "  if (typeof x === \"object\") {\n",
+        "    if (\"$tag\" in x) {\n",
+        "      const rest = Object.entries(x).filter(([k]) => k !== \"$tag\");\n",
+        "      if (rest.length === 0) return x.$tag;\n",
+        "      return x.$tag + \" { \" + rest.map(([k, v]) => k + \": \" + show(v)).join(\", \") + \" }\";\n",
+        "    }\n",
+        "    const entries = Object.entries(x);\n",
+        "    if (entries.length === 0) return \"{}\";\n",
+        "    return \"{ \" + entries.map(([k, v]) => k + \": \" + show(v)).join(\", \") + \" }\";\n",
+        "  }\n",
+        "  return String(x);\n",
+        "}\n\n",
+    )),
+
+    // ── I/O ─────────────────────────────────────────────────────────────────
+    ("print", "print", "const print = (x) => (console.log(x), {});\n\n"),
+
+    ("mod", "mod", "const mod = (a) => (b) => ((a % b) + b) % b;\n\n"),
+    ("pow", "pow", "const pow = (a) => (b) => Math.pow(a, b);\n\n"),
+    ("toNum", "toNum", "const toNum = (s) => { const n = Number(s); return isNaN(n) ? { $tag: \"None\" } : { $tag: \"Some\", value: n }; };\n\n"),
+    ("range", "range", "const range = (from) => (to) => { const r = []; for (let i = Math.floor(from); i <= Math.floor(to); i++) r.push(i); return r; };\n\n"),
+
+    // Node.js fs-based IO — these will throw at runtime in browser/WASM envs.
+    ("readLine", "readLine", concat!(
+        "const readLine = (_) => {\n",
+        "  const fs = await import(\"fs\"); // sync fallback via readFileSync on /dev/stdin\n",
+        "  try { return require(\"readline-sync\").question(\"\"); } catch(_) { return \"\"; }\n",
+        "};\n\n",
+    )),
+    ("readFile", "readFile", concat!(
+        "const readFile = (path) => {\n",
+        "  try {\n",
+        "    const fs = require(\"fs\");\n",
+        "    return { $tag: \"Ok\", value: fs.readFileSync(path, \"utf8\") };\n",
+        "  } catch(e) { return { $tag: \"Err\", reason: e.message }; }\n",
+        "};\n\n",
+    )),
+    ("writeFile", "writeFile", concat!(
+        "const writeFile = (path) => (content) => {\n",
+        "  try {\n",
+        "    const fs = require(\"fs\");\n",
+        "    fs.writeFileSync(path, content, \"utf8\");\n",
+        "    return { $tag: \"Ok\", value: {} };\n",
+        "  } catch(e) { return { $tag: \"Err\", reason: e.message }; }\n",
+        "};\n\n",
+    )),
+    ("appendFile", "appendFile", concat!(
+        "const appendFile = (path) => (content) => {\n",
+        "  try {\n",
+        "    const fs = require(\"fs\");\n",
+        "    fs.appendFileSync(path, content, \"utf8\");\n",
+        "    return { $tag: \"Ok\", value: {} };\n",
+        "  } catch(e) { return { $tag: \"Err\", reason: e.message }; }\n",
+        "};\n\n",
+    )),
+];
 
 /// Escape JS reserved words to avoid syntax errors in generated code.
 fn js_ident(name: &str) -> std::borrow::Cow<'_, str> {
@@ -30,8 +99,7 @@ pub fn emit(bundle: &[BundleModule]) -> String {
     let mut e = Emitter {
         out: String::new(),
         needs_result_bind: false,
-        needs_print: false,
-        needs_show: false,
+        needed_stdlib: HashSet::new(),
         module_vars,
     };
 
@@ -46,30 +114,11 @@ pub fn emit(bundle: &[BundleModule]) -> String {
             "function $resultBind(r, f) {\n  return r.$tag === \"Ok\" ? f(r.value) : r;\n}\n\n",
         );
     }
-    if e.needs_show {
-        preamble.push_str(concat!(
-            "function show(x) {\n",
-            "  if (x === null || x === undefined) return \"{}\";\n",
-            "  if (typeof x === \"string\") return x;\n",
-            "  if (typeof x === \"number\") return String(x);\n",
-            "  if (typeof x === \"boolean\") return x ? \"true\" : \"false\";\n",
-            "  if (Array.isArray(x)) return \"[\" + x.map(show).join(\", \") + \"]\";\n",
-            "  if (typeof x === \"object\") {\n",
-            "    if (\"$tag\" in x) {\n",
-            "      const rest = Object.entries(x).filter(([k]) => k !== \"$tag\");\n",
-            "      if (rest.length === 0) return x.$tag;\n",
-            "      return x.$tag + \" { \" + rest.map(([k, v]) => k + \": \" + show(v)).join(\", \") + \" }\";\n",
-            "    }\n",
-            "    const entries = Object.entries(x);\n",
-            "    if (entries.length === 0) return \"{}\";\n",
-            "    return \"{ \" + entries.map(([k, v]) => k + \": \" + show(v)).join(\", \") + \" }\";\n",
-            "  }\n",
-            "  return String(x);\n",
-            "}\n\n",
-        ));
-    }
-    if e.needs_print {
-        preamble.push_str("const print = (x) => (console.log(x), {});\n\n");
+    // Emit stdlib entries in declaration order so dependencies are satisfied.
+    for (lume_name, _, impl_str) in JS_STDLIB {
+        if e.needed_stdlib.contains(*lume_name) {
+            preamble.push_str(impl_str);
+        }
     }
     if !preamble.is_empty() {
         e.out.insert_str(0, &preamble);
@@ -80,8 +129,7 @@ pub fn emit(bundle: &[BundleModule]) -> String {
 struct Emitter {
     out: String,
     needs_result_bind: bool,
-    needs_print: bool,
-    needs_show: bool,
+    needed_stdlib: HashSet<String>,
     module_vars: HashMap<PathBuf, String>,
 }
 
@@ -122,9 +170,14 @@ impl Emitter {
 
     fn emit_use(&mut self, u: &UseDecl, base: &Path) {
         // Try to resolve to a bundled module var first.
-        let mod_var = crate::loader::resolve_path(&u.path, base)
-            .ok()
-            .and_then(|p| self.module_vars.get(&p).cloned());
+        // Stdlib paths use the synthetic key produced by `stdlib_path`.
+        let mod_var = if crate::loader::stdlib_source(&u.path).is_some() {
+            self.module_vars.get(&crate::loader::stdlib_path(&u.path)).cloned()
+        } else {
+            crate::loader::resolve_path(&u.path, base)
+                .ok()
+                .and_then(|p| self.module_vars.get(&p).cloned())
+        };
 
         match mod_var {
             Some(mv) => match &u.binding {
@@ -240,8 +293,9 @@ impl Emitter {
                 self.out.push(']');
             }
             ExprKind::Ident(name) => {
-                if name == "print" { self.needs_print = true; }
-                if name == "show" { self.needs_show = true; }
+                if JS_STDLIB.iter().any(|(n, _, _)| *n == name.as_str()) {
+                    self.needed_stdlib.insert(name.clone());
+                }
                 self.out.push_str(&js_ident(name));
             }
             ExprKind::Record { base, fields, .. } => {

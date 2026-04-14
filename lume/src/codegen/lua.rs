@@ -1,7 +1,277 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use crate::ast::*;
 use crate::bundle::BundleModule;
+
+/// All user-visible stdlib functions.
+///
+/// Order is significant: functions that appear earlier are emitted first, so
+/// dependencies (e.g. `_show` needed by `unwrap`) are satisfied.
+///
+/// Each entry is `(lume_name, lua_name, lua_implementation)`.
+static STDLIB: &[(&str, &str, &str)] = &[
+    // ── Reflection (must come first; used by `unwrap`) ─────────────────────
+    ("show", "_show", concat!(
+        "local function _show(x)\n",
+        "  local t = type(x)\n",
+        "  if t == \"string\" then return x end\n",
+        "  if t == \"number\" then\n",
+        "    if x == math.floor(x) then return tostring(math.floor(x)) else return tostring(x) end\n",
+        "  end\n",
+        "  if t == \"boolean\" then return x and \"true\" or \"false\" end\n",
+        "  if t == \"table\" then\n",
+        "    if x._tag ~= nil then\n",
+        "      local parts = {}\n",
+        "      for k, v in pairs(x) do\n",
+        "        if k ~= \"_tag\" then parts[#parts+1] = k .. \": \" .. _show(v) end\n",
+        "      end\n",
+        "      if #parts == 0 then return x._tag end\n",
+        "      return x._tag .. \" { \" .. table.concat(parts, \", \") .. \" }\"\n",
+        "    end\n",
+        "    local is_list = #x > 0 or next(x) == nil\n",
+        "    if is_list and #x > 0 then\n",
+        "      local parts = {}\n",
+        "      for _, v in ipairs(x) do parts[#parts+1] = _show(v) end\n",
+        "      return \"[\" .. table.concat(parts, \", \") .. \"]\"\n",
+        "    end\n",
+        "    local parts = {}\n",
+        "    for k, v in pairs(x) do parts[#parts+1] = k .. \": \" .. _show(v) end\n",
+        "    if #parts == 0 then return \"{}\" end\n",
+        "    return \"{ \" .. table.concat(parts, \", \") .. \" }\"\n",
+        "  end\n",
+        "  return tostring(x)\n",
+        "end\n\n",
+    )),
+
+    // ── I/O ────────────────────────────────────────────────────────────────
+    // `print` is renamed to `_print` so it returns `{}` instead of nil and
+    // does not shadow the raw Lua `print` used inside `_show` above.
+    ("print", "_print", "local function _print(s) print(s) return {} end\n\n"),
+
+    // readLine : {} -> Text  — reads one line from stdin (strips trailing newline)
+    ("readLine", "readLine", "local readLine = function(_) return io.read(\"l\") or \"\" end\n\n"),
+
+    // readFile : Text -> Result Text Text
+    ("readFile", "readFile", concat!(
+        "local readFile = function(path)\n",
+        "  local f, err = io.open(path, \"r\")\n",
+        "  if not f then return {_tag=\"Err\", reason=err} end\n",
+        "  local content = f:read(\"*a\")\n",
+        "  f:close()\n",
+        "  return {_tag=\"Ok\", value=content}\n",
+        "end\n\n",
+    )),
+
+    // writeFile : Text -> Text -> Result {} Text  — truncates then writes
+    ("writeFile", "writeFile", concat!(
+        "local writeFile = function(path) return function(content)\n",
+        "  local f, err = io.open(path, \"w\")\n",
+        "  if not f then return {_tag=\"Err\", reason=err} end\n",
+        "  f:write(content)\n",
+        "  f:close()\n",
+        "  return {_tag=\"Ok\", value={}}\n",
+        "end end\n\n",
+    )),
+
+    // appendFile : Text -> Text -> Result {} Text  — appends without truncating
+    ("appendFile", "appendFile", concat!(
+        "local appendFile = function(path) return function(content)\n",
+        "  local f, err = io.open(path, \"a\")\n",
+        "  if not f then return {_tag=\"Err\", reason=err} end\n",
+        "  f:write(content)\n",
+        "  f:close()\n",
+        "  return {_tag=\"Ok\", value={}}\n",
+        "end end\n\n",
+    )),
+
+    // ── Bool ───────────────────────────────────────────────────────────────
+    // `not` is a Lua keyword so the function form must be renamed.
+    ("not", "_not", "local _not = function(b) return not b end\n\n"),
+
+    // ── Math ───────────────────────────────────────────────────────────────
+    ("abs",   "abs",   "local abs   = function(n) return math.abs(n) end\n\n"),
+    ("round", "round", "local round = function(n) return math.floor(n + 0.5) end\n\n"),
+    ("floor", "floor", "local floor = function(n) return math.floor(n) end\n\n"),
+    ("ceil",  "ceil",  "local ceil  = function(n) return math.ceil(n) end\n\n"),
+    ("max",   "max",   "local max = function(a) return function(b) return math.max(a, b) end end\n\n"),
+    ("min",   "min",   "local min = function(a) return function(b) return math.min(a, b) end end\n\n"),
+    ("mod",   "mod",   "local mod = function(a) return function(b) return a % b end end\n\n"),
+    ("pow",   "pow",   "local pow = function(a) return function(b) return a ^ b end end\n\n"),
+    // toNum : Text -> Maybe Num
+    ("toNum", "toNum", concat!(
+        "local toNum = function(s)\n",
+        "  local n = tonumber(s)\n",
+        "  if n then return {_tag=\"Some\", value=n} else return {_tag=\"None\"} end\n",
+        "end\n\n",
+    )),
+    // range : Num -> Num -> List Num  (inclusive on both ends)
+    ("range", "range", concat!(
+        "local range = function(from) return function(to)\n",
+        "  local r = {}\n",
+        "  for i = math.floor(from), math.floor(to) do r[#r+1] = i end\n",
+        "  return r\n",
+        "end end\n\n",
+    )),
+
+    // ── List ───────────────────────────────────────────────────────────────
+    // All implemented with O(n) Lua loops so they are safe on large lists
+    // regardless of LuaJIT's call-stack depth.
+    ("map", "map", concat!(
+        "local map = function(f) return function(xs)\n",
+        "  local r = {}\n",
+        "  for i = 1, #xs do r[i] = f(xs[i]) end\n",
+        "  return r\n",
+        "end end\n\n",
+    )),
+    ("filter", "filter", concat!(
+        "local filter = function(f) return function(xs)\n",
+        "  local r = {}\n",
+        "  for _, v in ipairs(xs) do\n",
+        "    if f(v) then r[#r+1] = v end\n",
+        "  end\n",
+        "  return r\n",
+        "end end\n\n",
+    )),
+    // fold : b -> (b -> a -> b) -> List a -> b
+    // The curried signature matches Lume's calling convention exactly.
+    ("fold", "fold", concat!(
+        "local fold = function(acc) return function(f) return function(xs)\n",
+        "  local a = acc\n",
+        "  for _, v in ipairs(xs) do a = f(a)(v) end\n",
+        "  return a\n",
+        "end end end\n\n",
+    )),
+    ("length",  "length",  "local length  = function(xs) return #xs end\n\n"),
+    ("reverse", "reverse", concat!(
+        "local reverse = function(xs)\n",
+        "  local r = {}\n",
+        "  for i = #xs, 1, -1 do r[#r+1] = xs[i] end\n",
+        "  return r\n",
+        "end\n\n",
+    )),
+    ("take", "take", concat!(
+        "local take = function(n) return function(xs)\n",
+        "  local r = {}\n",
+        "  for i = 1, math.min(math.floor(n), #xs) do r[i] = xs[i] end\n",
+        "  return r\n",
+        "end end\n\n",
+    )),
+    ("drop", "drop", concat!(
+        "local drop = function(n) return function(xs)\n",
+        "  local r = {}\n",
+        "  local start = math.floor(n) + 1\n",
+        "  for i = start, #xs do r[#r+1] = xs[i] end\n",
+        "  return r\n",
+        "end end\n\n",
+    )),
+    ("any", "any", concat!(
+        "local any = function(f) return function(xs)\n",
+        "  for _, v in ipairs(xs) do\n",
+        "    if f(v) then return true end\n",
+        "  end\n",
+        "  return false\n",
+        "end end\n\n",
+    )),
+    ("all", "all", concat!(
+        "local all = function(f) return function(xs)\n",
+        "  for _, v in ipairs(xs) do\n",
+        "    if not f(v) then return false end\n",
+        "  end\n",
+        "  return true\n",
+        "end end\n\n",
+    )),
+    ("sum", "sum", concat!(
+        "local sum = function(xs)\n",
+        "  local s = 0\n",
+        "  for _, v in ipairs(xs) do s = s + v end\n",
+        "  return s\n",
+        "end\n\n",
+    )),
+    ("average", "average", concat!(
+        "local average = function(xs)\n",
+        "  if #xs == 0 then return 0 end\n",
+        "  local s = 0\n",
+        "  for _, v in ipairs(xs) do s = s + v end\n",
+        "  return s / #xs\n",
+        "end\n\n",
+    )),
+    ("sort", "sort", concat!(
+        "local sort = function(xs)\n",
+        "  local r = {table.unpack(xs)}\n",
+        "  table.sort(r)\n",
+        "  return r\n",
+        "end\n\n",
+    )),
+    ("sortBy", "sortBy", concat!(
+        "local sortBy = function(f) return function(xs)\n",
+        "  local r = {table.unpack(xs)}\n",
+        "  table.sort(r, function(a, b) return f(a) < f(b) end)\n",
+        "  return r\n",
+        "end end\n\n",
+    )),
+
+    // ── Text ───────────────────────────────────────────────────────────────
+    ("trim",       "trim",       "local trim = function(s) return (s:match(\"^%s*(.-)%s*$\")) end\n\n"),
+    ("toUpper",    "toUpper",    "local toUpper = function(s) return s:upper() end\n\n"),
+    ("toLower",    "toLower",    "local toLower = function(s) return s:lower() end\n\n"),
+    ("split", "split", concat!(
+        "local split = function(sep) return function(s)\n",
+        "  local r = {}\n",
+        "  if sep == \"\" then\n",
+        "    for c in s:gmatch(\".\") do r[#r+1] = c end\n",
+        "    return r\n",
+        "  end\n",
+        "  local i = 1\n",
+        "  while true do\n",
+        "    local j = s:find(sep, i, true)\n",
+        "    if not j then r[#r+1] = s:sub(i); break end\n",
+        "    r[#r+1] = s:sub(i, j - 1)\n",
+        "    i = j + #sep\n",
+        "  end\n",
+        "  return r\n",
+        "end end\n\n",
+    )),
+    ("join",       "join",       "local join = function(sep) return function(xs) return table.concat(xs, sep) end end\n\n"),
+    ("contains",   "contains",   "local contains   = function(needle) return function(hay) return hay:find(needle, 1, true) ~= nil end end\n\n"),
+    ("startsWith", "startsWith", "local startsWith = function(pre) return function(s) return s:sub(1, #pre) == pre end end\n\n"),
+    ("endsWith",   "endsWith",   "local endsWith   = function(suf) return function(s) return suf == \"\" or s:sub(-#suf) == suf end end\n\n"),
+
+    // ── Result / Maybe helpers ──────────────────────────────────────────────
+    ("withDefault", "withDefault", concat!(
+        "local withDefault = function(d) return function(m)\n",
+        "  if m._tag == \"Some\" then return m.value else return d end\n",
+        "end end\n\n",
+    )),
+    ("mapErr", "mapErr", concat!(
+        "local mapErr = function(f) return function(r)\n",
+        "  if r._tag == \"Ok\" then return r\n",
+        "  else return {_tag=\"Err\", reason=f(r.reason)} end\n",
+        "end end\n\n",
+    )),
+    // unwrap crashes on Err; uses _show so show must be emitted first.
+    ("unwrap", "unwrap", concat!(
+        "local unwrap = function(r)\n",
+        "  if r._tag == \"Ok\" then return r.value\n",
+        "  else error(\"unwrap: Err { reason: \" .. _show(r.reason) .. \" }\") end\n",
+        "end\n\n",
+    )),
+];
+
+/// Emit a Lua table key safely: bare identifier for normal names,
+/// `["keyword"]` for Lua reserved words.
+fn lua_field_key(name: &str) -> String {
+    #[rustfmt::skip]
+    const RESERVED: &[&str] = &[
+        "and", "break", "do", "else", "elseif", "end", "false", "for",
+        "function", "goto", "if", "in", "local", "nil", "not", "or",
+        "repeat", "return", "then", "true", "until", "while",
+    ];
+    if RESERVED.contains(&name) {
+        format!("[\"{}\"]", name)
+    } else {
+        name.to_string()
+    }
+}
 
 /// Escape Lua reserved words.
 fn lua_ident(name: &str) -> std::borrow::Cow<'_, str> {
@@ -31,8 +301,8 @@ pub fn emit(bundle: &[BundleModule]) -> String {
         needs_slice: false,
         needs_omit: false,
         needs_result_bind: false,
-        needs_print: false,
-        needs_show: false,
+        needs_concat: false,
+        needed_stdlib: HashSet::new(),
         module_vars,
     };
 
@@ -41,16 +311,19 @@ pub fn emit(bundle: &[BundleModule]) -> String {
         e.emit_module(&m.program, &m.canonical, &m.var, i == last);
     }
 
-    let mut helpers = String::new();
+    // Build the preamble. Internal code-gen helpers come first, then stdlib
+    // functions in STDLIB order (which preserves dependency relationships).
+    let mut preamble = String::new();
+
     if e.needs_result_bind {
-        helpers.push_str(
+        preamble.push_str(
             "local function _resultBind(r, f)\n\
              \x20 if r._tag == \"Ok\" then return f(r.value) else return r end\n\
              end\n\n",
         );
     }
     if e.needs_extend {
-        helpers.push_str(
+        preamble.push_str(
             "local function _extend(t, u)\n\
              \x20 local r = {}\n\
              \x20 for k, v in pairs(t) do r[k] = v end\n\
@@ -60,7 +333,7 @@ pub fn emit(bundle: &[BundleModule]) -> String {
         );
     }
     if e.needs_slice {
-        helpers.push_str(
+        preamble.push_str(
             "local function _slice(t, i)\n\
              \x20 local r = {}\n\
              \x20 for j = i, #t do r[#r + 1] = t[j] end\n\
@@ -68,8 +341,19 @@ pub fn emit(bundle: &[BundleModule]) -> String {
              end\n\n",
         );
     }
+    if e.needs_concat {
+        preamble.push_str(
+            "local function _concat(a, b)\n\
+             \x20 if type(a) == \"string\" then return a .. b end\n\
+             \x20 local r = {}\n\
+             \x20 for _, v in ipairs(a) do r[#r+1] = v end\n\
+             \x20 for _, v in ipairs(b) do r[#r+1] = v end\n\
+             \x20 return r\n\
+             end\n\n",
+        );
+    }
     if e.needs_omit {
-        helpers.push_str(
+        preamble.push_str(
             "local function _omit(t, keys)\n\
              \x20 local r = {}\n\
              \x20 local s = {}\n\
@@ -81,44 +365,20 @@ pub fn emit(bundle: &[BundleModule]) -> String {
              end\n\n",
         );
     }
-    if e.needs_show {
-        helpers.push_str(concat!(
-            "local function _show(x)\n",
-            "  local t = type(x)\n",
-            "  if t == \"string\" then return x end\n",
-            "  if t == \"number\" then\n",
-            "    if x == math.floor(x) then return tostring(math.floor(x)) else return tostring(x) end\n",
-            "  end\n",
-            "  if t == \"boolean\" then return x and \"true\" or \"false\" end\n",
-            "  if t == \"table\" then\n",
-            "    if x._tag ~= nil then\n",
-            "      local parts = {}\n",
-            "      for k, v in pairs(x) do\n",
-            "        if k ~= \"_tag\" then parts[#parts+1] = k .. \": \" .. _show(v) end\n",
-            "      end\n",
-            "      if #parts == 0 then return x._tag end\n",
-            "      return x._tag .. \" { \" .. table.concat(parts, \", \") .. \" }\"\n",
-            "    end\n",
-            "    local is_list = #x > 0 or next(x) == nil\n",
-            "    if is_list and #x > 0 then\n",
-            "      local parts = {}\n",
-            "      for _, v in ipairs(x) do parts[#parts+1] = _show(v) end\n",
-            "      return \"[\" .. table.concat(parts, \", \") .. \"]\"\n",
-            "    end\n",
-            "    local parts = {}\n",
-            "    for k, v in pairs(x) do parts[#parts+1] = k .. \": \" .. _show(v) end\n",
-            "    if #parts == 0 then return \"{}\" end\n",
-            "    return \"{ \" .. table.concat(parts, \", \") .. \" }\"\n",
-            "  end\n",
-            "  return tostring(x)\n",
-            "end\n\n",
-        ));
+
+    // `unwrap` calls `_show`, so ensure show is emitted whenever unwrap is used.
+    if e.needed_stdlib.contains("unwrap") {
+        e.needed_stdlib.insert("show".to_string());
     }
-    if e.needs_print {
-        helpers.push_str("local function _print(s) print(s) return {} end\n\n");
+
+    for (lume_name, _lua_name, impl_str) in STDLIB {
+        if e.needed_stdlib.contains(*lume_name) {
+            preamble.push_str(impl_str);
+        }
     }
-    if !helpers.is_empty() {
-        e.out.insert_str(0, &helpers);
+
+    if !preamble.is_empty() {
+        e.out.insert_str(0, &preamble);
     }
     e.out
 }
@@ -126,12 +386,14 @@ pub fn emit(bundle: &[BundleModule]) -> String {
 struct Emitter {
     out: String,
     tmp: usize,
+    // Internal code-generation helpers (triggered by language constructs).
     needs_extend: bool,
     needs_slice: bool,
     needs_omit: bool,
     needs_result_bind: bool,
-    needs_print: bool,
-    needs_show: bool,
+    needs_concat: bool,
+    // Stdlib functions referenced by name in the program.
+    needed_stdlib: HashSet<String>,
     /// Canonical path → local variable that holds the module's exports.
     module_vars: HashMap<PathBuf, String>,
 }
@@ -176,9 +438,14 @@ impl Emitter {
 
     fn emit_use(&mut self, u: &UseDecl, base: &Path) {
         // Try to resolve to a canonical path and look up the bundle var.
-        let mod_var = crate::loader::resolve_path(&u.path, base)
-            .ok()
-            .and_then(|p| self.module_vars.get(&p).cloned());
+        // Stdlib paths use the synthetic key produced by `stdlib_path`.
+        let mod_var = if crate::loader::stdlib_source(&u.path).is_some() {
+            self.module_vars.get(&crate::loader::stdlib_path(&u.path)).cloned()
+        } else {
+            crate::loader::resolve_path(&u.path, base)
+                .ok()
+                .and_then(|p| self.module_vars.get(&p).cloned())
+        };
 
         match mod_var {
             Some(mv) => match &u.binding {
@@ -242,7 +509,9 @@ impl Emitter {
     fn emit_pat_binding(&mut self, pat: &Pattern, expr: &Expr) {
         match pat {
             Pattern::Ident(name, _, _) => {
-                self.out.push_str(&format!("local {} = ", lua_ident(name)));
+                let n = lua_ident(name).into_owned();
+                self.out.push_str(&format!("local {}\n", n));
+                self.out.push_str(&format!("{} = ", n));
                 self.emit_expr(expr);
             }
             Pattern::Wildcard => {
@@ -326,12 +595,11 @@ impl Emitter {
                 self.out.push('}');
             }
             ExprKind::Ident(name) => {
-                if name == "print" {
-                    self.needs_print = true;
-                    self.out.push_str("_print");
-                } else if name == "show" {
-                    self.needs_show = true;
-                    self.out.push_str("_show");
+                // Check if this is a stdlib function. If so, record it (so the
+                // preamble implementation is emitted) and use the Lua-side name.
+                if let Some((_, lua_name, _)) = STDLIB.iter().find(|(n, _, _)| *n == name.as_str()) {
+                    self.needed_stdlib.insert(name.clone());
+                    self.out.push_str(lua_name);
                 } else {
                     self.out.push_str(&lua_ident(name));
                 }
@@ -347,7 +615,7 @@ impl Emitter {
                         if i > 0 {
                             self.out.push_str(", ");
                         }
-                        self.out.push_str(&format!("{} = ", f.name));
+                        self.out.push_str(&format!("{} = ", lua_field_key(&f.name)));
                         if let Some(val) = &f.value {
                             self.emit_expr(val);
                         } else {
@@ -361,7 +629,7 @@ impl Emitter {
                         if i > 0 {
                             self.out.push_str(", ");
                         }
-                        self.out.push_str(&format!("{} = ", f.name));
+                        self.out.push_str(&format!("{} = ", lua_field_key(&f.name)));
                         if let Some(val) = &f.value {
                             self.emit_expr(val);
                         } else {
@@ -373,8 +641,19 @@ impl Emitter {
             }
             ExprKind::FieldAccess { record, field } => {
                 self.emit_access_target(record);
-                self.out.push('.');
-                self.out.push_str(field);
+                // Use bracket syntax for Lua reserved words.
+                #[rustfmt::skip]
+                const RESERVED: &[&str] = &[
+                    "and", "break", "do", "else", "elseif", "end", "false", "for",
+                    "function", "goto", "if", "in", "local", "nil", "not", "or",
+                    "repeat", "return", "then", "true", "until", "while",
+                ];
+                if RESERVED.contains(&field.as_str()) {
+                    self.out.push_str(&format!("[\"{}\"]", field));
+                } else {
+                    self.out.push('.');
+                    self.out.push_str(field);
+                }
             }
             ExprKind::Variant { name, payload } => match payload {
                 None => {
@@ -479,18 +758,45 @@ impl Emitter {
         }
     }
 
+    /// Emit an expression that is in return position.
+    ///
+    /// When the expression is an `if`, emit the Lua statement form directly
+    /// (`if … then return … else return … end`) instead of wrapping it in an
+    /// immediately-invoked closure.  This keeps tail calls visible to LuaJIT so
+    /// that recursive functions over large lists do not blow the call stack.
+    ///
+    /// For every other expression kind, this is identical to `return <emit_expr>`.
+    fn emit_tail_expr(&mut self, expr: &Expr, indent: &str) {
+        match &expr.kind {
+            ExprKind::If { cond, then_branch, else_branch } => {
+                self.out.push_str("if ");
+                self.emit_expr(cond);
+                self.out.push_str(" then\n");
+                self.out.push_str(&format!("{}  ", indent));
+                self.emit_tail_expr(then_branch, &format!("{}  ", indent));
+                self.out.push_str(&format!("\n{}else\n", indent));
+                self.out.push_str(&format!("{}  ", indent));
+                self.emit_tail_expr(else_branch, &format!("{}  ", indent));
+                self.out.push_str(&format!("\n{}end", indent));
+            }
+            _ => {
+                self.out.push_str("return ");
+                self.emit_expr(expr);
+            }
+        }
+    }
+
     fn emit_lambda(&mut self, param: &Pattern, body: &Expr) {
         match param {
             Pattern::Ident(name, _, _) => {
-                self.out
-                    .push_str(&format!("function({}) return ", lua_ident(name)));
-                self.emit_expr(body);
-                self.out.push_str(" end");
+                self.out.push_str(&format!("function({})\n  ", lua_ident(name)));
+                self.emit_tail_expr(body, "  ");
+                self.out.push_str("\nend");
             }
             Pattern::Wildcard => {
-                self.out.push_str("function(_) return ");
-                self.emit_expr(body);
-                self.out.push_str(" end");
+                self.out.push_str("function(_)\n  ");
+                self.emit_tail_expr(body, "  ");
+                self.out.push_str("\nend");
             }
             Pattern::Record(rp) => {
                 self.out.push_str("function(_arg)\n");
@@ -521,8 +827,8 @@ impl Emitter {
                         excluded.join(", ")
                     ));
                 }
-                self.out.push_str("  return ");
-                self.emit_expr(body);
+                self.out.push_str("  ");
+                self.emit_tail_expr(body, "  ");
                 self.out.push_str("\nend");
             }
             _ => {
@@ -534,13 +840,12 @@ impl Emitter {
                     self.out.push_str(&format!("  local {} = {}\n", lhs, rhs));
                 }
                 if cond == "true" {
-                    self.out.push_str("  return ");
-                    self.emit_expr(body);
+                    self.out.push_str("  ");
+                    self.emit_tail_expr(body, "  ");
                     self.out.push_str("\nend");
                 } else {
-                    self.out
-                        .push_str(&format!("  if {} then\n    return ", cond));
-                    self.emit_expr(body);
+                    self.out.push_str(&format!("  if {} then\n    ", cond));
+                    self.emit_tail_expr(body, "    ");
                     self.out.push_str("\n  end\n  error(\"no match\")\nend");
                 }
             }
@@ -564,9 +869,10 @@ impl Emitter {
                 self.out.push(')');
             }
             BinOp::Concat => {
-                self.out.push('(');
+                self.needs_concat = true;
+                self.out.push_str("_concat(");
                 self.emit_expr(left);
-                self.out.push_str(" .. ");
+                self.out.push_str(", ");
                 self.emit_expr(right);
                 self.out.push(')');
             }
@@ -608,8 +914,8 @@ impl Emitter {
                 self.out.push_str(&format!("    local {} = {}\n", lhs, rhs));
             }
             if always_matches && !has_guard {
-                self.out.push_str("    return ");
-                self.emit_expr(&arm.body);
+                self.out.push_str("    ");
+                self.emit_tail_expr(&arm.body, "    ");
                 self.out.push('\n');
             } else {
                 self.out.push_str("    if ");
@@ -622,8 +928,8 @@ impl Emitter {
                     }
                     self.emit_expr(guard);
                 }
-                self.out.push_str(" then\n      return ");
-                self.emit_expr(&arm.body);
+                self.out.push_str(" then\n      ");
+                self.emit_tail_expr(&arm.body, "      ");
                 self.out.push_str("\n    end\n");
             }
             self.out.push_str("  end\n");

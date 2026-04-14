@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::ast::Program;
-use crate::loader::{resolve_path, Loader};
+use crate::loader::{resolve_path, stdlib_path, stdlib_source, Loader};
 
 pub struct BundleModule {
     /// Canonical (absolute) path of this module.
@@ -60,18 +60,44 @@ fn collect_inner(
         return Ok(());
     }
 
-    let src = std::fs::read_to_string(canonical)
-        .map_err(|e| format!("{}: {}", canonical.display(), e))?;
-    let program = Loader::parse(&src)?;
+    // Read source — either from the embedded stdlib or the filesystem.
+    let src_owned: String;
+    let src: &str = if let Some(s) = stdlib_source_for_key(canonical) {
+        s
+    } else {
+        src_owned = std::fs::read_to_string(canonical)
+            .map_err(|e| format!("{}: {}", canonical.display(), e))?;
+        &src_owned
+    };
+
+    let program = Loader::parse(src)?;
 
     // Recurse into dependencies first (post-order).
+    // For stdlib modules the synthetic key is used as the base; they can't
+    // have relative imports so resolve_path is never reached for them.
     let base = canonical.parent().unwrap_or(Path::new("."));
     for use_decl in &program.uses {
-        let dep = resolve_path(&use_decl.path, base)?;
+        let dep = if let Some(embedded) = stdlib_source(&use_decl.path) {
+            let _ = embedded;
+            stdlib_path(&use_decl.path)
+        } else {
+            resolve_path(&use_decl.path, base)?
+        };
         collect_inner(&dep, visited, order, stems)?;
     }
 
     let var = make_var(canonical, stems);
     order.push(BundleModule { canonical: canonical.to_owned(), program, var });
     Ok(())
+}
+
+/// Look up embedded source by the synthetic key produced by `stdlib_path`.
+fn stdlib_source_for_key(key: &Path) -> Option<&'static str> {
+    let s = key.to_str()?;
+    // Synthetic keys look like `<lume:list>`.
+    if s.starts_with('<') && s.ends_with('>') {
+        stdlib_source(&s[1..s.len() - 1])
+    } else {
+        None
+    }
 }

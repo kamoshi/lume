@@ -25,6 +25,9 @@
 !lume-wasm/src/
 !lume-wasm/src/**
 
+!std/
+!std/**.lume
+
 !tools/
 !tools/zed-lume/
 !tools/zed-lume/Cargo.toml

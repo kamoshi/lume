@@ -1,0 +1,35 @@
+-- std/math.lume
+-- Number theory and math utilities.
+
+-- gcd : Num -> Num -> Num  (Euclidean algorithm)
+let gcd = a -> b ->
+  if b == 0 then a else gcd b (mod a b)
+
+-- lcm : Num -> Num -> Num
+let lcm = a -> b ->
+  if a == 0 or b == 0
+  then 0
+  else (a / gcd a b) * b
+
+-- clamp : Num -> Num -> Num -> Num
+-- clamp lo hi x — keeps x within [lo, hi]
+let clamp = lo -> hi -> x -> max lo (min hi x)
+
+-- sign : Num -> Num  (-1, 0, or 1)
+let sign = x ->
+  if x > 0 then 1
+  else if x < 0 then -1
+  else 0
+
+-- isPrime : Num -> Bool
+let isPrime = n ->
+  if n < 2 then false
+  else all (d -> mod n d != 0) (range 2 (floor (pow n 0.5)))
+
+{
+  gcd,
+  lcm,
+  clamp,
+  sign,
+  isPrime,
+}

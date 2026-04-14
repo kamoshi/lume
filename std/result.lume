@@ -1,0 +1,30 @@
+-- std/result.lume
+-- Helpers for the built-in Result type.
+
+-- mapOk : (a -> b) -> Result a e -> Result b e
+let mapOk = f ->
+  | Ok { value } -> Ok { value: f value }
+  | Err { reason } -> Err { reason }
+
+-- mapErr : (e -> f) -> Result a e -> Result a f
+let mapErr = f ->
+  | Ok { value } -> Ok { value }
+  | Err { reason } -> Err { reason: f reason }
+
+-- withDefault : a -> Result a e -> a
+let withDefault = d ->
+  | Ok { value } -> value
+  | Err _ -> d
+
+-- andThen : (a -> Result b e) -> Result a e -> Result b e
+-- Equivalent to the ?> pipe operator but as a first-class function.
+let andThen = f ->
+  | Ok { value } -> f value
+  | Err { reason } -> Err { reason }
+
+{
+  mapOk,
+  mapErr,
+  withDefault,
+  andThen,
+}

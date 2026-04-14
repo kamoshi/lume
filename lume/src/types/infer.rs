@@ -124,7 +124,21 @@ pub fn builtin_env() -> (TypeEnv, VariantEnv) {
     // Num -> Num -> Num
     let num2 = Ty::Func(Box::new(Ty::Num), Box::new(Ty::Func(Box::new(Ty::Num), Box::new(Ty::Num))));
     env.insert("max".into(), Scheme::mono(num2.clone()));
-    env.insert("min".into(), Scheme::mono(num2));
+    env.insert("min".into(), Scheme::mono(num2.clone()));
+    env.insert("mod".into(), Scheme::mono(num2.clone()));
+    env.insert("pow".into(), Scheme::mono(num2));
+
+    // toNum : Text -> Maybe Num
+    env.insert("toNum".into(), Scheme::mono(Ty::Func(
+        Box::new(Ty::Text),
+        Box::new(Ty::Con("Maybe".into(), vec![Ty::Num])),
+    )));
+
+    // range : Num -> Num -> List Num
+    env.insert("range".into(), Scheme::mono(Ty::Func(
+        Box::new(Ty::Num),
+        Box::new(Ty::Func(Box::new(Ty::Num), Box::new(Ty::List(Box::new(Ty::Num))))),
+    )));
 
     // List functions — use vars 0, 1
     let list_a = Ty::List(Box::new(Ty::Var(0)));
@@ -182,6 +196,33 @@ pub fn builtin_env() -> (TypeEnv, VariantEnv) {
     env.insert("print".into(), Scheme::mono(Ty::Func(
         Box::new(Ty::Text),
         Box::new(Ty::Record(Row { fields: vec![], tail: RowTail::Closed })),
+    )));
+
+    // readLine : {} -> Text
+    let unit = Ty::Record(Row { fields: vec![], tail: RowTail::Closed });
+    env.insert("readLine".into(), Scheme::mono(Ty::Func(Box::new(unit), Box::new(Ty::Text))));
+
+    // readFile : Text -> Result Text Text
+    let result_text = Ty::Con("Result".into(), vec![Ty::Text, Ty::Text]);
+    env.insert("readFile".into(), Scheme::mono(Ty::Func(
+        Box::new(Ty::Text),
+        Box::new(result_text.clone()),
+    )));
+
+    // writeFile : Text -> Text -> Result {} Text
+    let result_unit = Ty::Con("Result".into(), vec![
+        Ty::Record(Row { fields: vec![], tail: RowTail::Closed }),
+        Ty::Text,
+    ]);
+    env.insert("writeFile".into(), Scheme::mono(Ty::Func(
+        Box::new(Ty::Text),
+        Box::new(Ty::Func(Box::new(Ty::Text), Box::new(result_unit.clone()))),
+    )));
+
+    // appendFile : Text -> Text -> Result {} Text
+    env.insert("appendFile".into(), Scheme::mono(Ty::Func(
+        Box::new(Ty::Text),
+        Box::new(Ty::Func(Box::new(Ty::Text), Box::new(result_unit))),
     )));
 
     // Text functions
