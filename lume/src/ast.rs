@@ -7,13 +7,14 @@ pub type NodeId = u32;
 /// The complete AST for a Lume source file.
 ///
 /// ```text
-/// program = use* (typedef | binding)* record_expr
+/// program = use* (typedef | binding)* ("pub" expr)?
 /// ```
 #[derive(Debug, Clone)]
 pub struct Program {
     pub uses: Vec<UseDecl>,
     pub items: Vec<TopItem>,
-    /// The final record expression that is the module's public interface.
+    /// The module's public interface. When `pub` is omitted, this is a
+    /// synthetic empty record expression (`{}`).
     pub exports: Expr,
 }
 
@@ -97,25 +98,48 @@ pub enum ExprKind {
     },
 
     /// `alice.name`
-    FieldAccess { record: Box<Expr>, field: String },
+    FieldAccess {
+        record: Box<Expr>,
+        field: String,
+    },
 
     /// `Circle { radius: 5 }` or `North` (unit variant)
-    Variant { name: String, payload: Option<Box<Expr>> },
+    Variant {
+        name: String,
+        payload: Option<Box<Expr>>,
+    },
 
     /// `n -> n * 2`
-    Lambda { param: Pattern, body: Box<Expr> },
+    Lambda {
+        param: Pattern,
+        body: Box<Expr>,
+    },
 
     /// `f x y`  represented as nested binary Apply nodes
-    Apply { func: Box<Expr>, arg: Box<Expr> },
+    Apply {
+        func: Box<Expr>,
+        arg: Box<Expr>,
+    },
 
     /// Binary operator expression
-    Binary { op: BinOp, left: Box<Expr>, right: Box<Expr> },
+    Binary {
+        op: BinOp,
+        left: Box<Expr>,
+        right: Box<Expr>,
+    },
 
     /// `not x`  or  unary `-x`
-    Unary { op: UnOp, operand: Box<Expr> },
+    Unary {
+        op: UnOp,
+        operand: Box<Expr>,
+    },
 
     /// `if cond then a else b`
-    If { cond: Box<Expr>, then_branch: Box<Expr>, else_branch: Box<Expr> },
+    If {
+        cond: Box<Expr>,
+        then_branch: Box<Expr>,
+        else_branch: Box<Expr>,
+    },
 
     /// `| pattern guard? -> expr` arms
     Match(Vec<MatchArm>),
@@ -148,13 +172,22 @@ pub enum BinOp {
     ResultPipe, // ?>
 
     // Arithmetic
-    Add, Sub, Mul, Div,
+    Add,
+    Sub,
+    Mul,
+    Div,
 
     // Comparison
-    Eq, NotEq, Lt, Gt, LtEq, GtEq,
+    Eq,
+    NotEq,
+    Lt,
+    Gt,
+    LtEq,
+    GtEq,
 
     // Boolean
-    And, Or,
+    And,
+    Or,
 
     // Concatenation
     Concat, // ++
@@ -177,7 +210,10 @@ pub enum Pattern {
     /// Bind to a name: `x`
     Ident(String, Span, NodeId),
     /// `Circle { radius }` or `North` (unit)
-    Variant { name: String, payload: Option<Box<Pattern>> },
+    Variant {
+        name: String,
+        payload: Option<Box<Pattern>>,
+    },
     /// `{ name, age, .. }`
     Record(RecordPattern),
     /// `[x, ..rest]`
@@ -293,7 +329,9 @@ fn assign_ids_pattern(pat: &mut Pattern, counter: &mut NodeId) {
                 let _ = rest_name_pat;
             }
         }
-        Pattern::Variant { payload: Some(p), .. } => assign_ids_pattern(p, counter),
+        Pattern::Variant {
+            payload: Some(p), ..
+        } => assign_ids_pattern(p, counter),
         Pattern::List(lp) => {
             for p in &mut lp.elements {
                 assign_ids_pattern(p, counter);
@@ -308,20 +346,28 @@ fn assign_ids_expr(expr: &mut Expr, counter: &mut NodeId) {
     *counter += 1;
     match &mut expr.kind {
         ExprKind::List(exprs) => {
-            for e in exprs { assign_ids_expr(e, counter); }
+            for e in exprs {
+                assign_ids_expr(e, counter);
+            }
         }
         ExprKind::Record { base, fields, .. } => {
-            if let Some(b) = base { assign_ids_expr(b, counter); }
+            if let Some(b) = base {
+                assign_ids_expr(b, counter);
+            }
             for f in fields {
                 f.name_node_id = *counter;
                 *counter += 1;
-                if let Some(v) = &mut f.value { assign_ids_expr(v, counter); }
+                if let Some(v) = &mut f.value {
+                    assign_ids_expr(v, counter);
+                }
             }
         }
         ExprKind::FieldAccess { record, .. } => {
             assign_ids_expr(record, counter);
         }
-        ExprKind::Variant { payload: Some(p), .. } => {
+        ExprKind::Variant {
+            payload: Some(p), ..
+        } => {
             assign_ids_expr(p, counter);
         }
         ExprKind::Lambda { param, body } => {
@@ -339,7 +385,11 @@ fn assign_ids_expr(expr: &mut Expr, counter: &mut NodeId) {
         ExprKind::Unary { operand, .. } => {
             assign_ids_expr(operand, counter);
         }
-        ExprKind::If { cond, then_branch, else_branch } => {
+        ExprKind::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
             assign_ids_expr(cond, counter);
             assign_ids_expr(then_branch, counter);
             assign_ids_expr(else_branch, counter);
@@ -347,7 +397,9 @@ fn assign_ids_expr(expr: &mut Expr, counter: &mut NodeId) {
         ExprKind::Match(arms) => {
             for arm in arms {
                 assign_ids_pattern(&mut arm.pattern, counter);
-                if let Some(g) = &mut arm.guard { assign_ids_expr(g, counter); }
+                if let Some(g) = &mut arm.guard {
+                    assign_ids_expr(g, counter);
+                }
                 assign_ids_expr(&mut arm.body, counter);
             }
         }

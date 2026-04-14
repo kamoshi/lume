@@ -22,4 +22,4 @@ let aliceScore = getScore aliceWithScore
 
 let {} = aliceScore |> math.pow2 |> show |> print
 
-{ getName, aliceName, botName, getScore, aliceWithScore, aliceScore }
+pub { getName, aliceName, botName, getScore, aliceWithScore, aliceScore }

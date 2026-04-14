@@ -1,15 +1,15 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use crate::ast::Program;
 use crate::error::Span;
 use crate::lexer::Lexer;
 use crate::parser;
+use crate::types::error::{TypeError, TypeErrorAt};
 use crate::types::{
     infer::{build_variant_env, builtin_env, Checker},
     Scheme,
 };
-use crate::types::error::{TypeError, TypeErrorAt};
-use crate::ast::Program;
 
 // ── Embedded standard library ─────────────────────────────────────────────────
 
@@ -20,10 +20,10 @@ use crate::ast::Program;
 /// needed at runtime (important for WASM and for reproducible builds).
 pub fn stdlib_source(name: &str) -> Option<&'static str> {
     match name {
-        "lume:list"   => Some(include_str!("../../std/list.lume")),
-        "lume:text"   => Some(include_str!("../../std/text.lume")),
-        "lume:math"   => Some(include_str!("../../std/math.lume")),
-        "lume:maybe"  => Some(include_str!("../../std/maybe.lume")),
+        "lume:list" => Some(include_str!("../../std/list.lume")),
+        "lume:text" => Some(include_str!("../../std/text.lume")),
+        "lume:math" => Some(include_str!("../../std/math.lume")),
+        "lume:maybe" => Some(include_str!("../../std/maybe.lume")),
         "lume:result" => Some(include_str!("../../std/result.lume")),
         _ => None,
     }
@@ -70,7 +70,9 @@ impl Default for Loader {
 
 impl Loader {
     pub fn new() -> Self {
-        Loader { cache: HashMap::new() }
+        Loader {
+            cache: HashMap::new(),
+        }
     }
 
     /// Parse `src` (already read from disk) and return the AST.
@@ -92,9 +94,8 @@ impl Loader {
             if let Some(scheme) = self.cache.get(&key).cloned() {
                 return Ok(scheme);
             }
-            let program = Self::parse(src).map_err(|msg| {
-                TypeErrorAt::new(TypeError::ImportError(msg), Span::default())
-            })?;
+            let program = Self::parse(src)
+                .map_err(|msg| TypeErrorAt::new(TypeError::ImportError(msg), Span::default()))?;
             // Stdlib modules have no on-disk path so pass the synthetic key as
             // the base; relative imports inside stdlib are not supported.
             let scheme = self.check_and_generalise(&program, &key)?;
@@ -103,9 +104,8 @@ impl Loader {
         }
 
         // ── Filesystem module ─────────────────────────────────────────────────
-        let canonical = resolve_path(raw_path, base).map_err(|msg| {
-            TypeErrorAt::new(TypeError::ImportError(msg), Span::default())
-        })?;
+        let canonical = resolve_path(raw_path, base)
+            .map_err(|msg| TypeErrorAt::new(TypeError::ImportError(msg), Span::default()))?;
 
         if let Some(scheme) = self.cache.get(&canonical).cloned() {
             return Ok(scheme);
@@ -113,18 +113,13 @@ impl Loader {
 
         let src = std::fs::read_to_string(&canonical).map_err(|e| {
             TypeErrorAt::new(
-                TypeError::ImportError(format!(
-                    "cannot read '{}': {}",
-                    canonical.display(),
-                    e
-                )),
+                TypeError::ImportError(format!("cannot read '{}': {}", canonical.display(), e)),
                 Span::default(),
             )
         })?;
 
-        let program = Self::parse(&src).map_err(|msg| {
-            TypeErrorAt::new(TypeError::ImportError(msg), Span::default())
-        })?;
+        let program = Self::parse(&src)
+            .map_err(|msg| TypeErrorAt::new(TypeError::ImportError(msg), Span::default()))?;
 
         let scheme = self.check_and_generalise(&program, &canonical)?;
         self.cache.insert(canonical, scheme.clone());

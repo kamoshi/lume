@@ -17,7 +17,7 @@ let orElse = alt ->
   | None -> alt
   | Some { value } -> Some { value }
 
-{
+pub {
   withDefault,
   mapMaybe,
   orElse,

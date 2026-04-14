@@ -12,3 +12,4 @@ lume = { path = "../lume" }
 tower-lsp = "0.20"
 tokio = { version = "1", features = ["full"] }
 dashmap = "5"
+tracing-subscriber = "0.3"

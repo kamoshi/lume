@@ -1,7 +1,7 @@
-use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
 use crate::ast::*;
 use crate::bundle::BundleModule;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 /// All JS builtins emitted on demand.
 /// Each entry: (lume_name, js_name, js_implementation).
@@ -172,7 +172,9 @@ impl Emitter {
         // Try to resolve to a bundled module var first.
         // Stdlib paths use the synthetic key produced by `stdlib_path`.
         let mod_var = if crate::loader::stdlib_source(&u.path).is_some() {
-            self.module_vars.get(&crate::loader::stdlib_path(&u.path)).cloned()
+            self.module_vars
+                .get(&crate::loader::stdlib_path(&u.path))
+                .cloned()
         } else {
             crate::loader::resolve_path(&u.path, base)
                 .ok()
@@ -186,12 +188,13 @@ impl Emitter {
                         .push_str(&format!("const {} = {};\n", js_ident(name), mv));
                 }
                 UseBinding::Record(rp) => {
-                    let names: Vec<_> = rp.fields.iter().map(|f| js_ident(&f.name).to_string()).collect();
-                    self.out.push_str(&format!(
-                        "const {{ {} }} = {};\n",
-                        names.join(", "),
-                        mv
-                    ));
+                    let names: Vec<_> = rp
+                        .fields
+                        .iter()
+                        .map(|f| js_ident(&f.name).to_string())
+                        .collect();
+                    self.out
+                        .push_str(&format!("const {{ {} }} = {};\n", names.join(", "), mv));
                 }
             },
             None => {

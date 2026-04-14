@@ -31,7 +31,7 @@ let avg     = average scores
 let best    = maximum scores
 let sorted  = sort scores
 
-{
+pub {
   double,
   square,
   sumTo,

@@ -28,7 +28,7 @@ let scale : Num -> Shape -> Shape =
          | Rect { width, height }   -> Rect { width: width * f, height: height * f }
          | Triangle { base, height } -> Triangle { base: base * f, height: height * f }
 
-{
+pub {
   pi,
   area,
   perimeter,

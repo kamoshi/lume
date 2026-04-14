@@ -19,7 +19,7 @@ let lerp : Num -> Num -> Num -> Num =
   let top      = filter (s -> s >= 85) scores
   let total    = sum scores
   let avg      = average scores
-{
+pub {
   pi,
   abs,
   pow2,

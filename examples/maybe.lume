@@ -39,7 +39,7 @@ let getOrElse : a -> Maybe a -> a = default ->
   | None           -> default
   | Some { value } -> value
 
-{
+pub {
   safeHead,
   safeLast,
   safeSecond,

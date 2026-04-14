@@ -1,7 +1,7 @@
-use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
 use crate::ast::*;
 use crate::bundle::BundleModule;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 /// All user-visible stdlib functions.
 ///
@@ -440,7 +440,9 @@ impl Emitter {
         // Try to resolve to a canonical path and look up the bundle var.
         // Stdlib paths use the synthetic key produced by `stdlib_path`.
         let mod_var = if crate::loader::stdlib_source(&u.path).is_some() {
-            self.module_vars.get(&crate::loader::stdlib_path(&u.path)).cloned()
+            self.module_vars
+                .get(&crate::loader::stdlib_path(&u.path))
+                .cloned()
         } else {
             crate::loader::resolve_path(&u.path, base)
                 .ok()
@@ -482,11 +484,8 @@ impl Emitter {
                     }
                     UseBinding::Record(rp) => {
                         let tmp = self.fresh();
-                        self.out.push_str(&format!(
-                            "local {} = require(\"{}\")\n",
-                            tmp,
-                            path
-                        ));
+                        self.out
+                            .push_str(&format!("local {} = require(\"{}\")\n", tmp, path));
                         for f in &rp.fields {
                             self.out.push_str(&format!(
                                 "local {} = {}.{}\n",
@@ -597,7 +596,8 @@ impl Emitter {
             ExprKind::Ident(name) => {
                 // Check if this is a stdlib function. If so, record it (so the
                 // preamble implementation is emitted) and use the Lua-side name.
-                if let Some((_, lua_name, _)) = STDLIB.iter().find(|(n, _, _)| *n == name.as_str()) {
+                if let Some((_, lua_name, _)) = STDLIB.iter().find(|(n, _, _)| *n == name.as_str())
+                {
                     self.needed_stdlib.insert(name.clone());
                     self.out.push_str(lua_name);
                 } else {
@@ -768,7 +768,11 @@ impl Emitter {
     /// For every other expression kind, this is identical to `return <emit_expr>`.
     fn emit_tail_expr(&mut self, expr: &Expr, indent: &str) {
         match &expr.kind {
-            ExprKind::If { cond, then_branch, else_branch } => {
+            ExprKind::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
                 self.out.push_str("if ");
                 self.emit_expr(cond);
                 self.out.push_str(" then\n");
@@ -789,7 +793,8 @@ impl Emitter {
     fn emit_lambda(&mut self, param: &Pattern, body: &Expr) {
         match param {
             Pattern::Ident(name, _, _) => {
-                self.out.push_str(&format!("function({})\n  ", lua_ident(name)));
+                self.out
+                    .push_str(&format!("function({})\n  ", lua_ident(name)));
                 self.emit_tail_expr(body, "  ");
                 self.out.push_str("\nend");
             }

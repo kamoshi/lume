@@ -2,6 +2,7 @@
 "let" @keyword
 "type" @keyword
 "use" @keyword
+"pub" @keyword
 "if" @keyword.control
 "then" @keyword.control
 "else" @keyword.control

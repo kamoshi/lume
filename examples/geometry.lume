@@ -14,7 +14,7 @@ let hypotSq : Num -> Num -> Num = a -> b -> pow2 a + pow2 b
 let boundedArea : Num -> Num -> Num -> Num =
   lo -> hi -> r -> circleArea (clamp lo hi r)
 
-{
+pub {
   circleArea,
   circlePerimeter,
   hypotSq,

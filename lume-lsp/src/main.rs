@@ -6,7 +6,10 @@ use lume::{
     error::{LumeError, Span},
     lexer::Lexer,
     parser,
-    types::{infer::elaborate, Ty},
+    types::{
+        infer::{elaborate_with_env, TypeEnv},
+        Ty,
+    },
 };
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
@@ -21,6 +24,8 @@ struct DocInfo {
     /// All (Span, NodeId) pairs sorted by span length (shortest first) for
     /// efficient "find innermost expression at cursor" queries.
     span_index: Vec<(Span, NodeId)>,
+    /// All names in scope at the end of the file (builtins + imports + lets).
+    top_env: TypeEnv,
 }
 
 // ── LSP backend ───────────────────────────────────────────────────────────────
@@ -35,8 +40,14 @@ fn span_to_range(span: &Span) -> Range {
     let line = span.line.saturating_sub(1) as u32;
     let col = span.col.saturating_sub(1) as u32;
     Range {
-        start: Position { line, character: col },
-        end: Position { line, character: col + span.len as u32 },
+        start: Position {
+            line,
+            character: col,
+        },
+        end: Position {
+            line,
+            character: col + span.len as u32,
+        },
     }
 }
 
@@ -65,10 +76,17 @@ fn analyse(uri: &Url, src: &str) -> (Option<DocInfo>, Vec<Diagnostic>) {
         Err(e) => return (None, vec![error_to_diagnostic(LumeError::Parse(e))]),
     };
     let path = uri.to_file_path().ok();
-    match elaborate(&program, path.as_deref()) {
-        Ok((node_types, _)) => {
+    match elaborate_with_env(&program, path.as_deref()) {
+        Ok((node_types, top_env, _)) => {
             let span_index = collect_spans(&program);
-            (Some(DocInfo { node_types, span_index }), vec![])
+            (
+                Some(DocInfo {
+                    node_types,
+                    span_index,
+                    top_env,
+                }),
+                vec![],
+            )
         }
         Err(e) => (None, vec![error_to_diagnostic(LumeError::Type(e))]),
     }
@@ -122,9 +140,13 @@ fn collect_pattern_spans(pat: &ast::Pattern, out: &mut Vec<(Span, NodeId)>) {
                 }
             }
         }
-        ast::Pattern::Variant { payload: Some(p), .. } => collect_pattern_spans(p, out),
+        ast::Pattern::Variant {
+            payload: Some(p), ..
+        } => collect_pattern_spans(p, out),
         ast::Pattern::List(lp) => {
-            for p in &lp.elements { collect_pattern_spans(p, out); }
+            for p in &lp.elements {
+                collect_pattern_spans(p, out);
+            }
         }
         _ => {}
     }
@@ -134,19 +156,27 @@ fn collect_expr_spans(expr: &Expr, out: &mut Vec<(Span, NodeId)>) {
     out.push((expr.span.clone(), expr.id));
     match &expr.kind {
         ExprKind::List(exprs) => {
-            for e in exprs { collect_expr_spans(e, out); }
+            for e in exprs {
+                collect_expr_spans(e, out);
+            }
         }
         ExprKind::Record { base, fields, .. } => {
-            if let Some(b) = base { collect_expr_spans(b, out); }
+            if let Some(b) = base {
+                collect_expr_spans(b, out);
+            }
             for f in fields {
                 out.push((f.name_span.clone(), f.name_node_id));
-                if let Some(v) = &f.value { collect_expr_spans(v, out); }
+                if let Some(v) = &f.value {
+                    collect_expr_spans(v, out);
+                }
             }
         }
         ExprKind::FieldAccess { record, .. } => {
             collect_expr_spans(record, out);
         }
-        ExprKind::Variant { payload: Some(p), .. } => {
+        ExprKind::Variant {
+            payload: Some(p), ..
+        } => {
             collect_expr_spans(p, out);
         }
         ExprKind::Lambda { param, body } => {
@@ -164,7 +194,11 @@ fn collect_expr_spans(expr: &Expr, out: &mut Vec<(Span, NodeId)>) {
         ExprKind::Unary { operand, .. } => {
             collect_expr_spans(operand, out);
         }
-        ExprKind::If { cond, then_branch, else_branch } => {
+        ExprKind::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
             collect_expr_spans(cond, out);
             collect_expr_spans(then_branch, out);
             collect_expr_spans(else_branch, out);
@@ -172,7 +206,9 @@ fn collect_expr_spans(expr: &Expr, out: &mut Vec<(Span, NodeId)>) {
         ExprKind::Match(arms) => {
             for arm in arms {
                 collect_pattern_spans(&arm.pattern, out);
-                if let Some(g) = &arm.guard { collect_expr_spans(g, out); }
+                if let Some(g) = &arm.guard {
+                    collect_expr_spans(g, out);
+                }
                 collect_expr_spans(&arm.body, out);
             }
         }
@@ -189,15 +225,12 @@ fn collect_expr_spans(expr: &Expr, out: &mut Vec<(Span, NodeId)>) {
 /// Spans are 1-indexed (line and col); LSP positions are 0-indexed.
 fn type_at(pos: Position, doc: &DocInfo) -> Option<Ty> {
     let line = pos.line as usize + 1; // convert to 1-indexed
-    let col  = pos.character as usize + 1;
+    let col = pos.character as usize + 1;
 
     // span_index is sorted shortest-first; the first match is the most specific.
-    doc.span_index.iter()
-        .find(|(span, _)| {
-            span.line == line
-                && span.col <= col
-                && col < span.col + span.len
-        })
+    doc.span_index
+        .iter()
+        .find(|(span, _)| span.line == line && span.col <= col && col < span.col + span.len)
         .and_then(|(_, id)| doc.node_types.get(id).cloned())
 }
 
@@ -217,7 +250,156 @@ fn word_at(text: &str, line: u32, character: u32) -> Option<&str> {
         .find(|c: char| !is_ident(c))
         .map(|i| i + col)
         .unwrap_or(line_text.len());
-    if start >= end { None } else { Some(&line_text[start..end]) }
+    if start >= end {
+        None
+    } else {
+        Some(&line_text[start..end])
+    }
+}
+
+// ── Completion helpers ────────────────────────────────────────────────────────
+
+/// The completion context derived from the text before the cursor.
+enum CompletionCtx {
+    /// Cursor is in a position like `record.` or `record.partial` — suggest fields.
+    FieldAccess {
+        record: String,
+        prefix: String,
+        replace_range: Range,
+    },
+    /// Cursor is on a plain identifier — suggest all in-scope names.
+    Ident {
+        prefix: String,
+        replace_range: Range,
+    },
+}
+
+/// Analyse the text before `pos` to determine what kind of completion is wanted.
+///
+/// Handles both the immediate-dot case (`math.`) and the continuing case
+/// (`math.po`) so field completions keep working as the user types.
+fn completion_ctx(text: &str, pos: Position) -> CompletionCtx {
+    let col = pos.character as usize;
+    let line = match text.lines().nth(pos.line as usize) {
+        Some(l) => l,
+        None => {
+            return CompletionCtx::Ident {
+                prefix: String::new(),
+                replace_range: Range {
+                    start: pos,
+                    end: pos,
+                },
+            };
+        }
+    };
+    let before = &line[..col.min(line.len())];
+    let is_ident = |c: char| c.is_alphanumeric() || c == '_';
+
+    // Find the partial word at the cursor (e.g. "po" in "math.po|").
+    let partial_start = before
+        .rfind(|c: char| !is_ident(c))
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    let prefix = before[partial_start..].to_string();
+    let replace_range = Range {
+        start: Position {
+            line: pos.line,
+            character: partial_start as u32,
+        },
+        end: pos,
+    };
+
+    // If the char immediately before the partial word is '.', it's field access.
+    if partial_start > 0 && before.as_bytes()[partial_start - 1] == b'.' {
+        let before_dot = &before[..partial_start - 1];
+        let rec_start = before_dot
+            .rfind(|c: char| !is_ident(c))
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        let record = &before_dot[rec_start..];
+        if !record.is_empty() {
+            return CompletionCtx::FieldAccess {
+                record: record.to_string(),
+                prefix,
+                replace_range,
+            };
+        }
+    }
+
+    CompletionCtx::Ident {
+        prefix,
+        replace_range,
+    }
+}
+
+/// Return field completion items for a record variable name.
+fn field_completions(
+    record: &str,
+    prefix: &str,
+    replace_range: Range,
+    doc: &DocInfo,
+) -> Vec<CompletionItem> {
+    let ty = match doc.top_env.lookup(record) {
+        Some(scheme) => &scheme.ty,
+        None => return vec![],
+    };
+    if let Ty::Record(row) = ty {
+        let lower = prefix.to_lowercase();
+        row.fields
+            .iter()
+            .filter(|(name, _)| lower.is_empty() || name.to_lowercase().contains(&lower))
+            .map(|(name, field_ty)| CompletionItem {
+                label: name.clone(),
+                filter_text: Some(name.clone()),
+                insert_text: Some(name.clone()),
+                text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                    range: replace_range.clone(),
+                    new_text: name.clone(),
+                })),
+                detail: Some(field_ty.to_string()),
+                kind: Some(CompletionItemKind::FIELD),
+                ..Default::default()
+            })
+            .collect()
+    } else {
+        vec![]
+    }
+}
+
+/// All in-scope identifier completions (builtins + imports + let bindings).
+///
+/// `prefix` is the partially-typed word; we include items that are a
+/// case-insensitive substring match so editors get useful results even
+/// when the user hasn't typed from the start of the identifier.
+fn ident_completions(doc: &DocInfo, prefix: &str, replace_range: Range) -> Vec<CompletionItem> {
+    let lower = prefix.to_lowercase();
+    doc.top_env
+        .iter()
+        .filter_map(|(name, scheme)| {
+            // Include all items when prefix is empty; otherwise require substring match.
+            if !lower.is_empty() && !name.to_lowercase().contains(&lower) {
+                return None;
+            }
+            let detail = scheme.ty.to_string();
+            let kind = if matches!(scheme.ty, Ty::Func(..)) {
+                CompletionItemKind::FUNCTION
+            } else {
+                CompletionItemKind::VARIABLE
+            };
+            Some(CompletionItem {
+                label: name.clone(),
+                filter_text: Some(name.clone()),
+                insert_text: Some(name.clone()),
+                text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                    range: replace_range.clone(),
+                    new_text: name.clone(),
+                })),
+                detail: Some(detail),
+                kind: Some(kind),
+                ..Default::default()
+            })
+        })
+        .collect()
 }
 
 // ── Language server impl ──────────────────────────────────────────────────────
@@ -228,6 +410,11 @@ impl LanguageServer for Backend {
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
+                completion_provider: Some(CompletionOptions {
+                    trigger_characters: Some(vec![".".to_string()]),
+                    resolve_provider: Some(false),
+                    ..Default::default()
+                }),
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
                     TextDocumentSyncKind::FULL,
                 )),
@@ -268,9 +455,60 @@ impl LanguageServer for Backend {
         self.client.publish_diagnostics(uri, vec![], None).await;
     }
 
+    async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
+        let uri = &params.text_document_position.text_document.uri;
+        let pos = params.text_document_position.position;
+
+        let text = match self.documents.get(uri) {
+            Some(t) => t.clone(),
+            None => return Ok(None),
+        };
+        let doc = match self.doc_info.get(uri) {
+            Some(d) => d,
+            None => return Ok(None),
+        };
+
+        let ctx = completion_ctx(&text, pos);
+        let ctx_label = match &ctx {
+            CompletionCtx::FieldAccess { record, prefix, .. } => {
+                format!("FieldAccess(record={record}, prefix={prefix:?})")
+            }
+            CompletionCtx::Ident { prefix, .. } => format!("Ident(prefix={prefix:?})"),
+        };
+
+        let items = match ctx {
+            CompletionCtx::FieldAccess {
+                record,
+                prefix,
+                replace_range,
+            } => field_completions(&record, &prefix, replace_range, &doc),
+            CompletionCtx::Ident {
+                prefix,
+                replace_range,
+            } => ident_completions(&doc, &prefix, replace_range),
+        };
+
+        self.client
+            .log_message(
+                MessageType::LOG,
+                format!(
+                    "completion pos={},{} ctx={ctx_label} items={}",
+                    pos.line,
+                    pos.character,
+                    items.len()
+                ),
+            )
+            .await;
+
+        Ok(Some(CompletionResponse::List(CompletionList {
+            is_incomplete: true,
+            items,
+        })))
+    }
+
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
         let uri = &params.text_document_position_params.text_document.uri;
-        let pos  = params.text_document_position_params.position;
+        let pos = params.text_document_position_params.position;
 
         let text = match self.documents.get(uri) {
             Some(entry) => entry.clone(),
@@ -311,8 +549,6 @@ impl Backend {
         let (doc_info, diagnostics) = analyse(uri, text);
         if let Some(info) = doc_info {
             self.doc_info.insert(uri.clone(), info);
-        } else {
-            self.doc_info.remove(uri);
         }
         self.client
             .publish_diagnostics(uri.clone(), diagnostics, None)
@@ -322,12 +558,18 @@ impl Backend {
 
 #[tokio::main]
 async fn main() {
-    let stdin  = tokio::io::stdin();
+    // Log to stderr — Zed captures this and shows it in the LSP log panel.
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_ansi(false)
+        .init();
+
+    let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
     let (service, socket) = LspService::new(|client| Backend {
         client,
         documents: DashMap::new(),
-        doc_info:  DashMap::new(),
+        doc_info: DashMap::new(),
     });
     Server::new(stdin, stdout, socket).serve(service).await;
 }

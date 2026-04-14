@@ -42,7 +42,10 @@ fn consume(tokens: &[Spanned], expected: &Token) -> Result<usize, ParseError> {
 /// Like `consume` but also returns the matched identifier string.
 fn consume_ident(tokens: &[Spanned]) -> Result<(usize, String), ParseError> {
     match tokens.first() {
-        Some(Spanned { token: Token::Ident(s), .. }) => Ok((1, s.clone())),
+        Some(Spanned {
+            token: Token::Ident(s),
+            ..
+        }) => Ok((1, s.clone())),
         Some(t) => Err(ParseError::unexpected(
             format!("{:?}", t.token),
             "identifier",
@@ -55,7 +58,10 @@ fn consume_ident(tokens: &[Spanned]) -> Result<(usize, String), ParseError> {
 /// Like `consume` but also returns the matched type identifier string.
 fn consume_type_ident(tokens: &[Spanned]) -> Result<(usize, String), ParseError> {
     match tokens.first() {
-        Some(Spanned { token: Token::TypeIdent(s), .. }) => Ok((1, s.clone())),
+        Some(Spanned {
+            token: Token::TypeIdent(s),
+            ..
+        }) => Ok((1, s.clone())),
         Some(t) => Err(ParseError::unexpected(
             format!("{:?}", t.token),
             "type identifier",
@@ -74,7 +80,7 @@ fn first_token(tokens: &[Spanned]) -> Option<&Token> {
 /// Parse a complete Lume program.
 ///
 /// ```text
-/// program = use* (typedef | binding)* record_expr
+/// program = use* (typedef | binding)* ("pub" expr)?
 /// ```
 pub fn parse_program(tokens: &[Spanned]) -> Result<Program, ParseError> {
     let mut ptr = 0;
@@ -105,9 +111,23 @@ pub fn parse_program(tokens: &[Spanned]) -> Result<Program, ParseError> {
         }
     }
 
-    // trailing export record (or any expression)
-    let (n, exports) = parse_expr(&tokens[ptr..])?;
-    ptr += n;
+    // optional trailing `pub <expr>`
+    let exports = if matches!(first_token(&tokens[ptr..]), Some(Token::Pub)) {
+        ptr += 1;
+        let (n, exports) = parse_expr(&tokens[ptr..])?;
+        ptr += n;
+        exports
+    } else {
+        Expr {
+            id: 0,
+            kind: ExprKind::Record {
+                base: None,
+                fields: vec![],
+                spread: false,
+            },
+            span: span(&tokens[ptr..]),
+        }
+    };
 
     // expect EOF
     if !matches!(first_token(&tokens[ptr..]), Some(Token::Eof) | None) {
@@ -118,7 +138,11 @@ pub fn parse_program(tokens: &[Spanned]) -> Result<Program, ParseError> {
         ));
     }
 
-    let mut program = Program { uses, items, exports };
+    let mut program = Program {
+        uses,
+        items,
+        exports,
+    };
     ast::assign_node_ids(&mut program);
     Ok(program)
 }
@@ -195,7 +219,14 @@ fn parse_typedef(tokens: &[Spanned]) -> Result<(usize, TypeDef), ParseError> {
         });
     }
 
-    Ok((ptr, TypeDef { name, params, variants }))
+    Ok((
+        ptr,
+        TypeDef {
+            name,
+            params,
+            variants,
+        },
+    ))
 }
 
 fn parse_variant(tokens: &[Spanned]) -> Result<(usize, Variant), ParseError> {
@@ -282,11 +313,17 @@ fn try_parse_lambda(tokens: &[Spanned]) -> Result<(usize, Expr), ParseError> {
     let (n, body) = parse_expr(&tokens[ptr..])?;
     ptr += n;
 
-    Ok((ptr, Expr {
-        id: 0,
-        kind: ExprKind::Lambda { param, body: Box::new(body) },
-        span: lambda_span,
-    }))
+    Ok((
+        ptr,
+        Expr {
+            id: 0,
+            kind: ExprKind::Lambda {
+                param,
+                body: Box::new(body),
+            },
+            span: lambda_span,
+        },
+    ))
 }
 
 // ── Pratt parser ──────────────────────────────────────────────────────────────
@@ -295,13 +332,13 @@ fn try_parse_lambda(tokens: &[Spanned]) -> Result<(usize, Expr), ParseError> {
 /// Returns `(left_bp, right_bp)` — right_bp > left_bp means right-associative.
 fn infix_bp(tok: &Token) -> Option<(u8, u8)> {
     match tok {
-        Token::Pipe => Some((10, 11)),        // |>  left-assoc
-        Token::ResultPipe => Some((12, 13)),  // ?>  left-assoc
-        Token::Or => Some((20, 21)),          // or  left-assoc
-        Token::And => Some((30, 31)),         // and left-assoc
+        Token::Pipe => Some((10, 11)),       // |>  left-assoc
+        Token::ResultPipe => Some((12, 13)), // ?>  left-assoc
+        Token::Or => Some((20, 21)),         // or  left-assoc
+        Token::And => Some((30, 31)),        // and left-assoc
         Token::EqEq | Token::BangEq => Some((40, 41)),
         Token::Lt | Token::Gt | Token::LtEq | Token::GtEq => Some((40, 41)),
-        Token::Concat => Some((50, 50)),      // ++ right-assoc (equal bps)
+        Token::Concat => Some((50, 50)), // ++ right-assoc (equal bps)
         Token::Plus | Token::Minus => Some((60, 61)),
         Token::Star | Token::Slash => Some((70, 71)),
         _ => None,
@@ -343,11 +380,17 @@ fn parse_pratt(tokens: &[Spanned], min_bp: u8) -> Result<(usize, Expr), ParseErr
         ptr += 1;
         let (n, operand) = parse_pratt(&tokens[ptr..], 80)?;
         ptr += n;
-        return Ok((ptr, Expr {
-            id: 0,
-            kind: ExprKind::Unary { op: UnOp::Not, operand: Box::new(operand) },
-            span: unary_span,
-        }));
+        return Ok((
+            ptr,
+            Expr {
+                id: 0,
+                kind: ExprKind::Unary {
+                    op: UnOp::Not,
+                    operand: Box::new(operand),
+                },
+                span: unary_span,
+            },
+        ));
     }
 
     // Unary `-`
@@ -356,11 +399,17 @@ fn parse_pratt(tokens: &[Spanned], min_bp: u8) -> Result<(usize, Expr), ParseErr
         ptr += 1;
         let (n, operand) = parse_pratt(&tokens[ptr..], 80)?;
         ptr += n;
-        return Ok((ptr, Expr {
-            id: 0,
-            kind: ExprKind::Unary { op: UnOp::Neg, operand: Box::new(operand) },
-            span: unary_span,
-        }));
+        return Ok((
+            ptr,
+            Expr {
+                id: 0,
+                kind: ExprKind::Unary {
+                    op: UnOp::Neg,
+                    operand: Box::new(operand),
+                },
+                span: unary_span,
+            },
+        ));
     }
 
     // Primary atom + optional function application
@@ -388,7 +437,11 @@ fn parse_pratt(tokens: &[Spanned], min_bp: u8) -> Result<(usize, Expr), ParseErr
 
         lhs = Expr {
             id: 0,
-            kind: ExprKind::Binary { op, left: Box::new(lhs), right: Box::new(rhs) },
+            kind: ExprKind::Binary {
+                op,
+                left: Box::new(lhs),
+                right: Box::new(rhs),
+            },
             span: bin_span,
         };
     }
@@ -414,7 +467,10 @@ fn parse_apply(tokens: &[Spanned]) -> Result<(usize, Expr), ParseError> {
             break;
         }
         // Don't consume atoms that look like new top-level bindings
-        if matches!(first_token(&tokens[ptr..]), Some(Token::Let | Token::Type | Token::Use)) {
+        if matches!(
+            first_token(&tokens[ptr..]),
+            Some(Token::Let | Token::Type | Token::Use)
+        ) {
             break;
         }
         // Layout rule: stop if the argument is on a different line than the
@@ -430,7 +486,10 @@ fn parse_apply(tokens: &[Spanned]) -> Result<(usize, Expr), ParseError> {
                 ptr += n;
                 expr = Expr {
                     id: 0,
-                    kind: ExprKind::Apply { func: Box::new(expr), arg: Box::new(arg) },
+                    kind: ExprKind::Apply {
+                        func: Box::new(expr),
+                        arg: Box::new(arg),
+                    },
                     span: apply_span,
                 };
             }
@@ -446,19 +505,15 @@ fn can_start_atom(tokens: &[Spanned]) -> bool {
         first_token(tokens),
         Some(
             Token::Number(_)
-            | Token::Text(_)
-            | Token::True
-            | Token::False
-            | Token::Ident(_)
-            | Token::TypeIdent(_)
-            // LBrace intentionally excluded: bare record literals as function arguments
-            // are ambiguous with the module export record without layout sensitivity.
-            // `Circle { radius: 5 }` still works via the TypeIdent branch in parse_atom.
-            // Pass records explicitly with parens when needed: `f ({ x: 1 })`.
-            | Token::LBracket
-            | Token::LParen
-            | Token::If
-            // Token::Bar intentionally excluded — match arms as arguments need parens.
+                | Token::Text(_)
+                | Token::True
+                | Token::False
+                | Token::Ident(_)
+                | Token::TypeIdent(_)
+                | Token::LBrace
+                | Token::LBracket
+                | Token::LParen
+                | Token::If // Token::Bar intentionally excluded — match arms as arguments need parens.
         )
     )
 }
@@ -472,10 +527,38 @@ fn can_start_atom(tokens: &[Spanned]) -> bool {
 fn parse_atom(tokens: &[Spanned]) -> Result<(usize, Expr), ParseError> {
     match first_token(tokens) {
         // ── Literals ──────────────────────────────────────────────────────────
-        Some(Token::Number(n)) => Ok((1, Expr { id: 0, kind: ExprKind::Number(*n), span: span(tokens) })),
-        Some(Token::Text(s))   => Ok((1, Expr { id: 0, kind: ExprKind::Text(s.clone()), span: span(tokens) })),
-        Some(Token::True)      => Ok((1, Expr { id: 0, kind: ExprKind::Bool(true), span: span(tokens) })),
-        Some(Token::False)     => Ok((1, Expr { id: 0, kind: ExprKind::Bool(false), span: span(tokens) })),
+        Some(Token::Number(n)) => Ok((
+            1,
+            Expr {
+                id: 0,
+                kind: ExprKind::Number(*n),
+                span: span(tokens),
+            },
+        )),
+        Some(Token::Text(s)) => Ok((
+            1,
+            Expr {
+                id: 0,
+                kind: ExprKind::Text(s.clone()),
+                span: span(tokens),
+            },
+        )),
+        Some(Token::True) => Ok((
+            1,
+            Expr {
+                id: 0,
+                kind: ExprKind::Bool(true),
+                span: span(tokens),
+            },
+        )),
+        Some(Token::False) => Ok((
+            1,
+            Expr {
+                id: 0,
+                kind: ExprKind::Bool(false),
+                span: span(tokens),
+            },
+        )),
 
         // ── Identifier ────────────────────────────────────────────────────────
         Some(Token::Ident(name)) => {
@@ -483,15 +566,26 @@ fn parse_atom(tokens: &[Spanned]) -> Result<(usize, Expr), ParseError> {
             let ident_span = span(tokens);
             let mut ptr = 1;
             // Field access chain: `alice.name.foo`
-            let mut expr = Expr { id: 0, kind: ExprKind::Ident(name), span: ident_span };
+            let mut expr = Expr {
+                id: 0,
+                kind: ExprKind::Ident(name),
+                span: ident_span,
+            };
             while matches!(first_token(&tokens[ptr..]), Some(Token::Dot)) {
                 ptr += 1; // consume `.`
-                // Use the span of the field token for the FieldAccess node so
-                // "field not found" errors point at the field name.
+                          // Use the span of the field token for the FieldAccess node so
+                          // "field not found" errors point at the field name.
                 let field_span = tokens.get(ptr).map(|t| t.span.clone()).unwrap_or_default();
                 let (n, field) = consume_ident(&tokens[ptr..])?;
                 ptr += n;
-                expr = Expr { id: 0, kind: ExprKind::FieldAccess { record: Box::new(expr), field }, span: field_span };
+                expr = Expr {
+                    id: 0,
+                    kind: ExprKind::FieldAccess {
+                        record: Box::new(expr),
+                        field,
+                    },
+                    span: field_span,
+                };
             }
             Ok((ptr, expr))
         }
@@ -509,7 +603,14 @@ fn parse_atom(tokens: &[Spanned]) -> Result<(usize, Expr), ParseError> {
             } else {
                 None
             };
-            Ok((ptr, Expr { id: 0, kind: ExprKind::Variant { name, payload }, span: type_span }))
+            Ok((
+                ptr,
+                Expr {
+                    id: 0,
+                    kind: ExprKind::Variant { name, payload },
+                    span: type_span,
+                },
+            ))
         }
 
         // ── Record / record-update ─────────────────────────────────────────────
@@ -572,7 +673,11 @@ fn parse_record_expr(tokens: &[Spanned]) -> Result<(usize, Expr), ParseError> {
         let (n, name) = consume_ident(&tokens[ptr..])?;
         ptr += n;
         ptr += 1; // consume `|`
-        Some(Box::new(Expr { id: 0, kind: ExprKind::Ident(name), span: ident_span }))
+        Some(Box::new(Expr {
+            id: 0,
+            kind: ExprKind::Ident(name),
+            span: ident_span,
+        }))
     } else {
         None
     };
@@ -604,7 +709,18 @@ fn parse_record_expr(tokens: &[Spanned]) -> Result<(usize, Expr), ParseError> {
     }
 
     ptr += consume(&tokens[ptr..], &Token::RBrace)?;
-    Ok((ptr, Expr { id: 0, kind: ExprKind::Record { base, fields, spread }, span: rec_span }))
+    Ok((
+        ptr,
+        Expr {
+            id: 0,
+            kind: ExprKind::Record {
+                base,
+                fields,
+                spread,
+            },
+            span: rec_span,
+        },
+    ))
 }
 
 fn parse_record_field(tokens: &[Spanned]) -> Result<(usize, RecordField), ParseError> {
@@ -615,13 +731,29 @@ fn parse_record_field(tokens: &[Spanned]) -> Result<(usize, RecordField), ParseE
 
     // Field shorthand: `{ age }` — no colon
     if !matches!(first_token(&tokens[ptr..]), Some(Token::Colon)) {
-        return Ok((ptr, RecordField { name, name_span, name_node_id: 0, value: None }));
+        return Ok((
+            ptr,
+            RecordField {
+                name,
+                name_span,
+                name_node_id: 0,
+                value: None,
+            },
+        ));
     }
     ptr += 1; // consume `:`
 
     let (n, value) = parse_expr(&tokens[ptr..])?;
     ptr += n;
-    Ok((ptr, RecordField { name, name_span, name_node_id: 0, value: Some(value) }))
+    Ok((
+        ptr,
+        RecordField {
+            name,
+            name_span,
+            name_node_id: 0,
+            value: Some(value),
+        },
+    ))
 }
 
 // ── List expressions ──────────────────────────────────────────────────────────
@@ -645,7 +777,14 @@ fn parse_list_expr(tokens: &[Spanned]) -> Result<(usize, Expr), ParseError> {
     }
 
     ptr += consume(&tokens[ptr..], &Token::RBracket)?;
-    Ok((ptr, Expr { id: 0, kind: ExprKind::List(items), span: list_span }))
+    Ok((
+        ptr,
+        Expr {
+            id: 0,
+            kind: ExprKind::List(items),
+            span: list_span,
+        },
+    ))
 }
 
 // ── If expressions ────────────────────────────────────────────────────────────
@@ -669,15 +808,18 @@ fn parse_if(tokens: &[Spanned]) -> Result<(usize, Expr), ParseError> {
     let (n, else_branch) = parse_expr(&tokens[ptr..])?;
     ptr += n;
 
-    Ok((ptr, Expr {
-        id: 0,
-        kind: ExprKind::If {
-            cond: Box::new(cond),
-            then_branch: Box::new(then_branch),
-            else_branch: Box::new(else_branch),
+    Ok((
+        ptr,
+        Expr {
+            id: 0,
+            kind: ExprKind::If {
+                cond: Box::new(cond),
+                then_branch: Box::new(then_branch),
+                else_branch: Box::new(else_branch),
+            },
+            span: if_span,
         },
-        span: if_span,
-    }))
+    ))
 }
 
 // ── Match expressions ─────────────────────────────────────────────────────────
@@ -709,7 +851,11 @@ fn parse_match(tokens: &[Spanned]) -> Result<(usize, Expr), ParseError> {
         let (n, body) = parse_expr(&tokens[ptr..])?;
         ptr += n;
 
-        arms.push(MatchArm { pattern, guard, body });
+        arms.push(MatchArm {
+            pattern,
+            guard,
+            body,
+        });
     }
 
     if arms.is_empty() {
@@ -719,7 +865,14 @@ fn parse_match(tokens: &[Spanned]) -> Result<(usize, Expr), ParseError> {
         });
     }
 
-    Ok((ptr, Expr { id: 0, kind: ExprKind::Match(arms), span: match_span }))
+    Ok((
+        ptr,
+        Expr {
+            id: 0,
+            kind: ExprKind::Match(arms),
+            span: match_span,
+        },
+    ))
 }
 
 // ── Patterns ──────────────────────────────────────────────────────────────────
@@ -796,7 +949,7 @@ fn parse_record_pattern(tokens: &[Spanned]) -> Result<(usize, RecordPattern), Pa
             Some(Token::RBrace) | None => break,
             Some(Token::DotDot) => {
                 ptr += 1; // consume `..`
-                // optional name: `..rest`
+                          // optional name: `..rest`
                 let name = if let Some(Token::Ident(s)) = first_token(&tokens[ptr..]) {
                     let s = s.clone();
                     ptr += 1;
@@ -844,7 +997,15 @@ fn parse_field_pattern(tokens: &[Spanned]) -> Result<(usize, FieldPattern), Pars
         None
     };
 
-    Ok((ptr, FieldPattern { name, span: field_span, node_id: 0, pattern }))
+    Ok((
+        ptr,
+        FieldPattern {
+            name,
+            span: field_span,
+            node_id: 0,
+            pattern,
+        },
+    ))
 }
 
 /// `[x, y, ..rest]`
@@ -907,7 +1068,10 @@ pub fn parse_type(tokens: &[Spanned]) -> Result<(usize, Type), ParseError> {
         ptr += 1;
         let (n, ret) = parse_type(&tokens[ptr..])?;
         ptr += n;
-        ty = Type::Func { param: Box::new(ty), ret: Box::new(ret) };
+        ty = Type::Func {
+            param: Box::new(ty),
+            ret: Box::new(ret),
+        };
     }
 
     Ok((ptr, ty))
@@ -925,7 +1089,13 @@ fn parse_type_arg(tokens: &[Spanned]) -> Result<(usize, Type), ParseError> {
     match first_token(tokens) {
         Some(Token::TypeIdent(name)) => {
             // Bare type name, no arguments collected here.
-            Ok((1, Type::Named { name: name.clone(), args: vec![] }))
+            Ok((
+                1,
+                Type::Named {
+                    name: name.clone(),
+                    args: vec![],
+                },
+            ))
         }
         Some(Token::Ident(s)) => Ok((1, Type::Var(s.clone()))),
         Some(Token::LBrace) => {
@@ -959,10 +1129,9 @@ fn parse_type_atom(tokens: &[Spanned]) -> Result<(usize, Type), ParseError> {
             // `Result Num Text` = Con("Result", [Num, Text]) rather than
             // Con("Result", [Con("Num", [Text])]).
             let mut args = Vec::new();
-            while let Some(
-                Token::Ident(_) | Token::TypeIdent(_)
-                | Token::LBrace | Token::LParen,
-            ) = first_token(&tokens[ptr..]) {
+            while let Some(Token::Ident(_) | Token::TypeIdent(_) | Token::LBrace | Token::LParen) =
+                first_token(&tokens[ptr..])
+            {
                 let (n, arg) = parse_type_arg(&tokens[ptr..])?;
                 ptr += n;
                 args.push(arg);

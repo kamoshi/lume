@@ -65,7 +65,10 @@ pub struct ParseError {
 
 impl ParseError {
     pub fn unexpected_eof(span: Span) -> Self {
-        ParseError { kind: ParseErrorKind::UnexpectedEof, span }
+        ParseError {
+            kind: ParseErrorKind::UnexpectedEof,
+            span,
+        }
     }
 
     pub fn unexpected(found: impl fmt::Display, expected: impl fmt::Display, span: Span) -> Self {
@@ -89,10 +92,18 @@ impl fmt::Display for ParseError {
                 write!(f, "[{}] expected {}, found {}", self.span, expected, found)
             }
             ParseErrorKind::EmptyMatch => {
-                write!(f, "[{}] match expression must have at least one arm", self.span)
+                write!(
+                    f,
+                    "[{}] match expression must have at least one arm",
+                    self.span
+                )
             }
             ParseErrorKind::EmptyTypeVariants => {
-                write!(f, "[{}] type definition must have at least one variant", self.span)
+                write!(
+                    f,
+                    "[{}] type definition must have at least one variant",
+                    self.span
+                )
             }
         }
     }
@@ -118,13 +129,19 @@ impl fmt::Display for LumeError {
 }
 
 impl From<LexError> for LumeError {
-    fn from(e: LexError) -> Self { LumeError::Lex(e) }
+    fn from(e: LexError) -> Self {
+        LumeError::Lex(e)
+    }
 }
 
 impl From<ParseError> for LumeError {
-    fn from(e: ParseError) -> Self { LumeError::Parse(e) }
+    fn from(e: ParseError) -> Self {
+        LumeError::Parse(e)
+    }
 }
 
 impl From<crate::types::TypeErrorAt> for LumeError {
-    fn from(e: crate::types::TypeErrorAt) -> Self { LumeError::Type(e) }
+    fn from(e: crate::types::TypeErrorAt) -> Self {
+        LumeError::Type(e)
+    }
 }

@@ -30,7 +30,7 @@ let padLeft = n -> ch -> s ->
 let padRight = n -> ch -> s ->
   s ++ repeat (max 0 (n - length (split "" s))) ch
 
-{
+pub {
   lines,
   words,
   chars,

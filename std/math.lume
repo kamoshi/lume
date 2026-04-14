@@ -26,7 +26,7 @@ let isPrime = n ->
   if n < 2 then false
   else all (d -> mod n d != 0) (range 2 (floor (pow n 0.5)))
 
-{
+pub {
   gcd,
   lcm,
   clamp,

@@ -16,6 +16,7 @@ pub enum Token {
 
     // Keywords
     Let,
+    Pub,
     Type,
     Use,
     If,
@@ -78,7 +79,12 @@ pub struct Lexer<'src> {
 
 impl<'src> Lexer<'src> {
     pub fn new(src: &'src str) -> Self {
-        Lexer { src: src.as_bytes(), pos: 0, line: 1, col: 1 }
+        Lexer {
+            src: src.as_bytes(),
+            pos: 0,
+            line: 1,
+            col: 1,
+        }
     }
 
     /// Lex the entire source into a token list (including a final Eof).
@@ -116,7 +122,11 @@ impl<'src> Lexer<'src> {
     }
 
     fn span_at(&self, start_line: usize, start_col: usize, len: usize) -> Span {
-        Span { line: start_line, col: start_col, len }
+        Span {
+            line: start_line,
+            col: start_col,
+            len,
+        }
     }
 
     fn next_token(&mut self) -> Result<Spanned, LexError> {
@@ -152,15 +162,42 @@ impl<'src> Lexer<'src> {
 
         let token = match ch {
             // Single-char unambiguous
-            b'(' => { self.advance(); Token::LParen }
-            b')' => { self.advance(); Token::RParen }
-            b'{' => { self.advance(); Token::LBrace }
-            b'}' => { self.advance(); Token::RBrace }
-            b'[' => { self.advance(); Token::LBracket }
-            b']' => { self.advance(); Token::RBracket }
-            b',' => { self.advance(); Token::Comma }
-            b'*' => { self.advance(); Token::Star }
-            b'/' => { self.advance(); Token::Slash }
+            b'(' => {
+                self.advance();
+                Token::LParen
+            }
+            b')' => {
+                self.advance();
+                Token::RParen
+            }
+            b'{' => {
+                self.advance();
+                Token::LBrace
+            }
+            b'}' => {
+                self.advance();
+                Token::RBrace
+            }
+            b'[' => {
+                self.advance();
+                Token::LBracket
+            }
+            b']' => {
+                self.advance();
+                Token::RBracket
+            }
+            b',' => {
+                self.advance();
+                Token::Comma
+            }
+            b'*' => {
+                self.advance();
+                Token::Star
+            }
+            b'/' => {
+                self.advance();
+                Token::Slash
+            }
 
             // + or ++
             b'+' => {
@@ -232,7 +269,10 @@ impl<'src> Lexer<'src> {
             }
 
             // :
-            b':' => { self.advance(); Token::Colon }
+            b':' => {
+                self.advance();
+                Token::Colon
+            }
 
             // | or |>
             b'|' => {
@@ -289,7 +329,10 @@ impl<'src> Lexer<'src> {
         };
 
         let len = self.pos - start_pos;
-        Ok(Spanned { token, span: self.span_at(line, col, len) })
+        Ok(Spanned {
+            token,
+            span: self.span_at(line, col, len),
+        })
     }
 
     fn lex_string(&mut self, _line: usize, _col: usize) -> Result<Token, LexError> {
@@ -300,19 +343,21 @@ impl<'src> Lexer<'src> {
                 None => {
                     return Err(LexError {
                         kind: LexErrorKind::UnterminatedString,
-                        span: Span { line: self.line, col: self.col, len: 1 },
+                        span: Span {
+                            line: self.line,
+                            col: self.col,
+                            len: 1,
+                        },
                     });
                 }
                 Some(b'"') => break,
-                Some(b'\\') => {
-                    match self.advance() {
-                        Some(b'n') => buf.push('\n'),
-                        Some(b't') => buf.push('\t'),
-                        Some(b'"') => buf.push('"'),
-                        Some(b'\\') => buf.push('\\'),
-                        _ => buf.push('\\'),
-                    }
-                }
+                Some(b'\\') => match self.advance() {
+                    Some(b'n') => buf.push('\n'),
+                    Some(b't') => buf.push('\t'),
+                    Some(b'"') => buf.push('"'),
+                    Some(b'\\') => buf.push('\\'),
+                    _ => buf.push('\\'),
+                },
                 Some(c) => buf.push(c as char),
             }
         }
@@ -334,12 +379,16 @@ impl<'src> Lexer<'src> {
 
     fn lex_ident_or_keyword(&mut self) -> Token {
         let start = self.pos;
-        while matches!(self.peek(), Some(b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_')) {
+        while matches!(
+            self.peek(),
+            Some(b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_')
+        ) {
             self.advance();
         }
         let word = std::str::from_utf8(&self.src[start..self.pos]).unwrap();
         match word {
             "let" => Token::Let,
+            "pub" => Token::Pub,
             "type" => Token::Type,
             "use" => Token::Use,
             "if" => Token::If,

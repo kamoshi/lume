@@ -37,7 +37,13 @@ fn make_var(canonical: &Path, stems: &mut HashMap<String, usize>) -> String {
         .and_then(|s| s.to_str())
         .unwrap_or("mod")
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let idx = stems.entry(stem.clone()).or_insert(0);
     let var = if *idx == 0 {
@@ -87,7 +93,11 @@ fn collect_inner(
     }
 
     let var = make_var(canonical, stems);
-    order.push(BundleModule { canonical: canonical.to_owned(), program, var });
+    order.push(BundleModule {
+        canonical: canonical.to_owned(),
+        program,
+        var,
+    });
     Ok(())
 }
 

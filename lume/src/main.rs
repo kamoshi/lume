@@ -1,12 +1,12 @@
 use std::path::Path;
 
+use lume::ast;
 use lume::bundle;
 use lume::codegen;
 use lume::error::LumeError;
 use lume::lexer::Lexer;
 use lume::parser;
 use lume::types;
-use lume::ast;
 
 fn parse(src: &str) -> Result<ast::Program, LumeError> {
     let tokens = Lexer::new(src).tokenize()?;
@@ -51,11 +51,17 @@ fn run_file(path: &str) -> bool {
 fn js_file(path: &str) -> bool {
     let b = match bundle::collect(Path::new(path)) {
         Ok(b) => b,
-        Err(e) => { eprintln!("{path}: {e}"); return false; }
+        Err(e) => {
+            eprintln!("{path}: {e}");
+            return false;
+        }
     };
     match types::infer::check_program(&b.last().unwrap().program, Some(Path::new(path))) {
         Ok(_) => {}
-        Err(e) => { eprintln!("{path}: type error: {e}"); return false; }
+        Err(e) => {
+            eprintln!("{path}: type error: {e}");
+            return false;
+        }
     }
     print!("{}", codegen::js::emit(&b));
     true
@@ -64,11 +70,17 @@ fn js_file(path: &str) -> bool {
 fn lua_file(path: &str) -> bool {
     let b = match bundle::collect(Path::new(path)) {
         Ok(b) => b,
-        Err(e) => { eprintln!("{path}: {e}"); return false; }
+        Err(e) => {
+            eprintln!("{path}: {e}");
+            return false;
+        }
     };
     match types::infer::check_program(&b.last().unwrap().program, Some(Path::new(path))) {
         Ok(_) => {}
-        Err(e) => { eprintln!("{path}: type error: {e}"); return false; }
+        Err(e) => {
+            eprintln!("{path}: type error: {e}");
+            return false;
+        }
     }
     print!("{}", codegen::lua::emit(&b));
     true
@@ -106,9 +118,9 @@ fn main() {
             std::process::exit(1);
         }
         [first, rest @ ..] if first == "check" => ("check", rest),
-        [first, rest @ ..] if first == "dump"  => ("dump",  rest),
-        [first, rest @ ..] if first == "js"    => ("js",    rest),
-        [first, rest @ ..] if first == "lua"   => ("lua",   rest),
+        [first, rest @ ..] if first == "dump" => ("dump", rest),
+        [first, rest @ ..] if first == "js" => ("js", rest),
+        [first, rest @ ..] if first == "lua" => ("lua", rest),
         paths => ("check", paths),
     };
 
@@ -145,13 +157,14 @@ mod tests {
 
     #[test]
     fn lex_keywords() {
-        let toks: Vec<_> = lex("let type use if then else true false")
+        let toks: Vec<_> = lex("let pub type use if then else true false")
             .into_iter()
             .map(|s| s.token)
             .collect();
         assert!(matches!(toks[0], Token::Let));
-        assert!(matches!(toks[1], Token::Type));
-        assert!(matches!(toks[2], Token::Use));
+        assert!(matches!(toks[1], Token::Pub));
+        assert!(matches!(toks[2], Token::Type));
+        assert!(matches!(toks[3], Token::Use));
     }
 
     #[test]
@@ -260,7 +273,10 @@ mod tests {
         let expr = parse_expr("x |> double");
         assert!(matches!(
             expr.kind,
-            ExprKind::Binary { op: BinOp::Pipe, .. }
+            ExprKind::Binary {
+                op: BinOp::Pipe,
+                ..
+            }
         ));
     }
 
@@ -269,7 +285,10 @@ mod tests {
         let expr = parse_expr(r#""hello" ++ " world""#);
         assert!(matches!(
             expr.kind,
-            ExprKind::Binary { op: BinOp::Concat, .. }
+            ExprKind::Binary {
+                op: BinOp::Concat,
+                ..
+            }
         ));
     }
 
@@ -289,6 +308,17 @@ mod tests {
     fn parse_function_application() {
         let expr = parse_expr("double 5");
         assert!(matches!(expr.kind, ExprKind::Apply { .. }));
+    }
+
+    #[test]
+    fn parse_function_application_with_record_arg() {
+        let expr = parse_expr(r#"double { value: 5 }"#);
+        match expr.kind {
+            ExprKind::Apply { arg, .. } => {
+                assert!(matches!(arg.kind, ExprKind::Record { .. }));
+            }
+            _ => panic!("expected Apply"),
+        }
     }
 
     #[test]
@@ -437,22 +467,30 @@ mod tests {
 
     #[test]
     fn parse_minimal_program() {
-        let src = "{}";
+        let src = "";
         let program = parse(src).expect("should parse");
         assert_eq!(program.uses.len(), 0);
         assert_eq!(program.items.len(), 0);
+        assert!(matches!(
+            program.exports.kind,
+            ExprKind::Record {
+                ref fields,
+                base: None,
+                ..
+            } if fields.is_empty()
+        ));
     }
 
     #[test]
     fn parse_use_declaration() {
-        let src = r#"use math = "./math" {}"#;
+        let src = r#"use math = "./math""#;
         let program = parse(src).expect("should parse");
         assert_eq!(program.uses.len(), 1);
     }
 
     #[test]
     fn parse_type_definition() {
-        let src = "type Direction = | North | South | East | West\nlet x = 42\n{ x }";
+        let src = "type Direction = | North | South | East | West\nlet x = 42\npub { x }";
         let program = parse(src).expect("should parse");
         assert_eq!(program.items.len(), 2);
         if let TopItem::TypeDef(td) = &program.items[0] {
@@ -463,12 +501,22 @@ mod tests {
 
     #[test]
     fn parse_generic_type() {
-        let src = "type Tree a = | Leaf | Node { value: a, left: Tree a, right: Tree a } {}";
+        let src = "type Tree a = | Leaf | Node { value: a, left: Tree a, right: Tree a }";
         let program = parse(src).expect("should parse");
         if let TopItem::TypeDef(td) = &program.items[0] {
             assert_eq!(td.params, vec!["a"]);
             assert_eq!(td.variants.len(), 2);
         }
+    }
+
+    #[test]
+    fn parse_pub_exports() {
+        let src = "let x = 42\npub { x }";
+        let program = parse(src).expect("should parse");
+        assert!(matches!(
+            program.exports.kind,
+            ExprKind::Record { ref fields, .. } if fields.len() == 1
+        ));
     }
 
     #[test]

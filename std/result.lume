@@ -22,7 +22,7 @@ let andThen = f ->
   | Ok { value } -> f value
   | Err { reason } -> Err { reason }
 
-{
+pub {
   mapOk,
   mapErr,
   withDefault,

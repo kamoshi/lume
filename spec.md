@@ -23,7 +23,7 @@ Lume draws from Lua (small core, files as values), Elm and PureScript (row polym
 -- single-line comment (no multi-line comments)
 ```
 
-**Keywords:** `let` `type` `use` `if` `then` `else` `true` `false`
+**Keywords:** `let` `pub` `type` `use` `if` `then` `else` `true` `false` `and` `or` `not`
 
 **Identifiers:** `[a-z][a-zA-Z0-9_]*` for values and fields  
 **Type names / variant names:** `[A-Z][a-zA-Z0-9]*`  
@@ -55,8 +55,7 @@ let double = n -> n * 2
 let add = a -> b -> a + b
 
 -- with optional type annotation
-let greet : Text -> Text
-let greet = name -> "Hello, " ++ name
+let greet : Text -> Text = name -> "Hello, " ++ name
 ```
 
 All bindings are immutable. There is no assignment or mutation.
@@ -78,6 +77,7 @@ Function application is left-associative and requires no parentheses for simple 
 
 ```lume
 add (double 3) 4  -- 10
+saveUser { name: "Alice" }
 ```
 
 ### 4.2 Pipelines
@@ -99,8 +99,8 @@ scores
 
 ```lume
 n -> n * 2
-(a, b) -> a + b      -- tuple-destructuring lambda
-{ name, .. } -> name -- record-destructuring lambda
+a -> b -> a + b
+{ name, .. } -> name
 ```
 
 ### 4.4 If expressions
@@ -110,8 +110,8 @@ if x > 0 then "positive" else "non-positive"
 
 -- multi-line
 if b == 0
-  then Err "cannot divide by zero"
-  else Ok (a / b)
+  then Err { reason: "cannot divide by zero" }
+  else Ok { value: a / b }
 ```
 
 ---
@@ -155,18 +155,7 @@ alice.age    -- 30
 let older = { alice | age: 31 }
 ```
 
-### 6.4 Merge
-
-```lume
-let extra = { verified: true, score: 99 }
-let full  = alice ++ extra
--- { name: "Alice", age: 30, role: "admin", verified: true, score: 99 }
-
--- right side wins on key conflicts
-{ x: 1 } ++ { x: 2 }   -- { x: 2 }
-```
-
-### 6.5 Row polymorphism
+### 6.4 Row polymorphism
 
 Functions can accept any record that has *at least* the required fields. The `..` in a type annotation means "and any other fields":
 
@@ -185,11 +174,8 @@ let strict : { name: Text, age: Num } -> Text
 A function that adds a field:
 
 ```lume
-let withTimestamp : { .. } -> { createdAt: Time, .. }
-let withTimestamp = rec -> { rec | createdAt: now() }
-
-{ name: "Alice" } |> withTimestamp
--- { name: "Alice", createdAt: 2024-01-01T12:00:00 }
+let withScore : { name: Text, .. } -> { name: Text, score: Num, .. }
+let withScore = rec -> { rec | score: 100 }
 ```
 
 ---
@@ -287,7 +273,7 @@ let describe =
   | Triangle { base, height }  -> "triangle"
 ```
 
-Matching is **exhaustive** — the compiler rejects non-exhaustive matches at compile time.
+Pattern matching supports guards and destructuring. Exhaustiveness checking is not currently guaranteed by this implementation.
 
 ### 8.2 The `..` rest pattern
 
@@ -302,7 +288,7 @@ let classify =
   | _                     -> "unknown"
 ```
 
-Without `..`, the pattern matches exactly those fields and no others. The compiler warns if you wrote `{ name }` but the record has more fields — suggesting `{ name, .. }`.
+Without `..`, the pattern matches exactly those fields and no others.
 
 ### 8.3 Guards
 
@@ -320,17 +306,17 @@ let classify =
 
 ```lume
 let first =
-  | []       -> Err "empty list"
-  | [x, ..]  -> Ok x
+  | []       -> Err { reason: "empty list" }
+  | [x, ..]  -> Ok { value: x }
 
-let firstTwo =
-  | [a, b, ..] -> Ok (a, b)
-  | _          -> Err "need at least two"
+let second =
+  | [_, x, ..] -> Ok { value: x }
+  | _          -> Err { reason: "need at least two" }
 
 -- bind the tail
 let headTail =
-  | [x, ..rest] -> Ok (x, rest)
-  | []           -> Err "empty"
+  | [x, ..rest] -> Ok { head: x, tail: rest }
+  | []           -> Err { reason: "empty" }
 ```
 
 ### 8.5 Destructuring in let bindings
@@ -339,8 +325,8 @@ The same patterns work in `let`:
 
 ```lume
 let { name, age, .. } = alice
-let { name: userName, .. } = alice       -- rename on destructure
-let { address: { city, .. }, .. } = alice -- nested
+let { name: userName, .. } = alice
+let { address: { city, .. }, .. } = alice
 
 let [first, ..rest] = myList
 ```
@@ -369,16 +355,16 @@ let [first, ..rest] = myList
 `?>` chains operations that return `Result`, short-circuiting on the first `Err`:
 
 ```lume
-let safeDivide = (a, b) ->
+let safeDivide = a -> b ->
   if b == 0
-    then Err "division by zero"
-    else Ok (a / b)
+    then Err { reason: "division by zero" }
+    else Ok { value: a / b }
 
 10 |> safeDivide 2
-   ?> (n -> Ok (n + 1))   -- Ok 6
+   ?> (n -> Ok { value: n + 1 })   -- Ok { value: 6 }
 
 10 |> safeDivide 0
-   ?> (n -> Ok (n + 1))   -- Err "division by zero"
+   ?> (n -> Ok { value: n + 1 })   -- Err { reason: "division by zero" }
 ```
 
 ---
@@ -396,7 +382,7 @@ Type annotations use `:`:
 ```lume
 let area : Shape -> Num
 let greet : { name: Text, .. } -> Text
-let withTimestamp : { .. } -> { createdAt: Time, .. }
+let withScore : { name: Text, .. } -> { name: Text, score: Num, .. }
 let depth : Tree a -> Num
 ```
 
@@ -404,25 +390,25 @@ let depth : Tree a -> Num
 
 ## 11. Modules
 
-### 11.1 A module is a file that evaluates to a record
+### 11.1 A module is a file with an optional `pub` export
 
 ```lume
 -- math.lume
 
--- private: local bindings above the export record
 let pi = 3.14159
+let area = r -> pi * r * r
+let circumference = r -> 2 * pi * r
 
--- the final record expression is the module's public interface
-{
-  area:          r -> pi * r * r,
-  circumference: r -> 2 * pi * r,
+pub {
+  area,
+  circumference,
   pi,
 }
 ```
 
-Everything before the final record is private. Whatever fields are in the record are exported. There is no `pub` keyword, no export list, no special syntax.
+Everything before `pub` is private. If a file omits `pub`, it implicitly exports the empty record `{}`.
 
-Types are exported the same way:
+Type declarations are module-local in the current implementation:
 
 ```lume
 -- shapes.lume
@@ -434,7 +420,7 @@ let area =
   | Circle { radius }        -> 3.14 * radius * radius
   | Rect   { width, height } -> width * height
 
-{ Shape, area }
+pub { area }
 ```
 
 ### 11.2 Importing with `use`
@@ -452,12 +438,9 @@ area 5                -- 78.53
 use { area: circleArea } = "./math"
 use { area: rectArea }   = "./geometry"
 
--- import everything into scope (use sparingly)
-use { .. } = "./math"
-
 -- packages
-use http = "lume:http"
-use json = "lume:json"
+use math = "lume:math"
+use text = "lume:text"
 
 -- relative paths
 use utils = "./utils"
@@ -479,16 +462,15 @@ Error: circular import detected
 
 Resolve by extracting the shared definitions into a third module that neither imports.
 
-### 11.4 Assembling a package
+### 11.4 Re-exporting
 
-A folder can expose a single surface by having an entry file that merges sub-modules:
+A module can re-export selected bindings by importing them and publishing a new record:
 
 ```lume
--- index.lume
-use shapes = "./shapes"
-use math   = "./math"
+use { area } = "./shapes"
+use { pi } = "./math"
 
-{ ..shapes, ..math }
+pub { area, pi }
 ```
 
 ---
@@ -521,7 +503,7 @@ The following are available globally — no import needed:
 | `reverse`     | `List a -> List a`                | Reverse a list           |
 | `take`        | `Num -> List a -> List a`         | First n elements         |
 | `drop`        | `Num -> List a -> List a`         | Skip first n elements    |
-| `zip`         | `List a -> List b -> List (a, b)` | Pair up two lists        |
+| `zip`         | `List a -> List b -> List { fst: a, snd: b }` | Pair up two lists |
 | `any`         | `(a -> Bool) -> List a -> Bool`   | True if any match        |
 | `all`         | `(a -> Bool) -> List a -> Bool`   | True if all match        |
 | `average`     | `List Num -> Num`                 | Arithmetic mean          |
@@ -545,12 +527,15 @@ The following are available globally — no import needed:
 
 ### Result and Maybe
 
-| Function    | Type                                     | Description               |
-|-------------|------------------------------------------|---------------------------|
-| `map`       | `(a -> b) -> Result a e -> Result b e`  | Transform Ok value        |
-| `mapErr`    | `(e -> f) -> Result a e -> Result a f`  | Transform Err value       |
-| `unwrap`    | `Result a e -> a`                        | Extract Ok or crash       |
-| `withDefault` | `a -> Maybe a -> a`                   | Extract Some or default   |
+| Function      | Type                                              | Description               |
+|---------------|---------------------------------------------------|---------------------------|
+| `unwrap`      | `Result a e -> a`                                 | Extract Ok or crash       |
+| `withDefault` | `a -> Maybe a -> a`                               | Extract Some or default   |
+| `mapErr`      | `(e -> f) -> Result a e -> Result a f`            | Transform Err value       |
+| `mapOk`       | `(a -> b) -> Result a e -> Result b e`            | Transform Ok value        |
+| `mapMaybe`    | `(a -> b) -> Maybe a -> Maybe b`                  | Transform Some value      |
+| `orElse`      | `Maybe a -> Maybe a -> Maybe a`                   | First Some wins           |
+| `andThen`     | `(a -> Result b e) -> Result a e -> Result b e`   | Result chaining helper    |
 
 ---
 
@@ -561,7 +546,7 @@ Errors are values. There are no exceptions.
 ```lume
 -- functions that can fail return Result
 let safeDivide : Num -> Num -> Result Num Text
-let safeDivide = (a, b) ->
+let safeDivide = a -> b ->
   if b == 0
     then Err { reason: "division by zero" }
     else Ok  { value: a / b }
@@ -574,11 +559,11 @@ let result = safeDivide 10 2
 -- or chain with ?>
 safeDivide 10 2
   ?> ({ value } -> safeDivide value 2)
-  ?> ({ value } -> Ok (value + 1))
+  ?> (value -> Ok { value: value + 1 })
 -- Ok { value: 3.5 }
 ```
 
-The compiler tracks which functions return `Result` and which do not. You cannot silently ignore an `Err`.
+`Result` values are ordinary values. `?>` is the built-in operator for chaining computations that may fail.
 
 ---
 
@@ -614,11 +599,7 @@ let process = students ->
                 { name, grade: gradeLabel (toGrade score) })
     |> sortBy ({ grade, .. } -> grade)
 
-{
-  process,
-  toGrade,
-  gradeLabel,
-}
+pub { process, toGrade, gradeLabel }
 ```
 
 ```lume
@@ -665,7 +646,7 @@ students
 ## 16. Grammar summary
 
 ```
-program     = use* (typedef | binding)* record_expr
+program     = use* (typedef | binding)* ("pub" expr)?
 
 use         = "use" (ident "=" | record_pattern "=") string
 typedef     = "type" TypeName typevars "=" ("|" variant)+
@@ -673,14 +654,14 @@ variant     = VariantName record_type?
 
 binding     = "let" pattern (":" type)? "=" expr
 
-expr        = lambda
-            | pipe_expr
+expr        = lambda | pipe_expr
 
 lambda      = pattern "->" expr
 pipe_expr   = result_pipe ("|>" result_pipe)*
 result_pipe = apply ("?>" apply)*
 apply       = atom atom*
-atom        = literal | ident | VariantName | record_expr
+            | apply record_expr
+atom        = literal | ident | VariantName
             | list_expr | "(" expr ")" | if_expr | match_expr
 
 if_expr     = "if" expr "then" expr "else" expr

@@ -92,7 +92,11 @@ fn collect_expr(src: &str, expr: &Expr, out: &mut Vec<(usize, usize, NodeId)>) {
             collect_expr(src, right, out);
         }
         ExprKind::Unary { operand, .. } => collect_expr(src, operand, out),
-        ExprKind::If { cond, then_branch, else_branch } => {
+        ExprKind::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
             collect_expr(src, cond, out);
             collect_expr(src, then_branch, out);
             collect_expr(src, else_branch, out);
@@ -157,7 +161,12 @@ fn escape_json_str(s: &str) -> String {
 }
 
 fn diag_json(from: usize, to: usize, message: &str) -> String {
-    format!(r#"{{"from":{},"to":{},"message":"{}"}}"#, from, to, escape_json_str(message))
+    format!(
+        r#"{{"from":{},"to":{},"message":"{}"}}"#,
+        from,
+        to,
+        escape_json_str(message)
+    )
 }
 
 // ── Single-file bundle helper ─────────────────────────────────────────────────

@@ -26,7 +26,7 @@ let process = students ->
     |> filter ({ score, .. } -> score >= 0)
     |> map ({ name, score, .. } -> { name, grade: gradeLabel (toGrade score) })
 
-{
+pub {
   toGrade,
   gradeLabel,
   passing,

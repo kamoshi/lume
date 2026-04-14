@@ -48,7 +48,11 @@ pub struct Scheme {
 
 impl Scheme {
     pub fn mono(ty: Ty) -> Self {
-        Scheme { vars: vec![], row_vars: vec![], ty }
+        Scheme {
+            vars: vec![],
+            row_vars: vec![],
+            ty,
+        }
     }
 }
 
@@ -64,7 +68,9 @@ pub struct Subst {
 }
 
 impl Subst {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     pub fn fresh_var(&mut self) -> TyVar {
         let v = self.counter;
@@ -72,10 +78,16 @@ impl Subst {
         v
     }
 
-    pub fn fresh_ty(&mut self) -> Ty { Ty::Var(self.fresh_var()) }
+    pub fn fresh_ty(&mut self) -> Ty {
+        Ty::Var(self.fresh_var())
+    }
 
-    pub fn bind_ty(&mut self, v: TyVar, ty: Ty) { self.tys.insert(v, ty); }
-    pub fn bind_row(&mut self, v: TyVar, row: Row) { self.rows.insert(v, row); }
+    pub fn bind_ty(&mut self, v: TyVar, ty: Ty) {
+        self.tys.insert(v, ty);
+    }
+    pub fn bind_row(&mut self, v: TyVar, row: Row) {
+        self.rows.insert(v, row);
+    }
 
     /// Apply substitution to a type (normalise, following chains).
     pub fn apply(&self, ty: &Ty) -> Ty {
@@ -95,7 +107,9 @@ impl Subst {
     /// Apply substitution to a row, following row-variable chains and
     /// merging fields from each step in the chain.
     pub fn apply_row(&self, row: &Row) -> Row {
-        let mut fields: Vec<(String, Ty)> = row.fields.iter()
+        let mut fields: Vec<(String, Ty)> = row
+            .fields
+            .iter()
             .map(|(k, v)| (k.clone(), self.apply(v)))
             .collect();
         let mut tail = row.tail.clone();
@@ -122,15 +136,23 @@ impl Subst {
 
     /// Apply substitution to a scheme, skipping quantified variables.
     pub fn apply_scheme(&self, scheme: &Scheme) -> Scheme {
-        let tys: HashMap<TyVar, Ty> = self.tys.iter()
+        let tys: HashMap<TyVar, Ty> = self
+            .tys
+            .iter()
             .filter(|(k, _)| !scheme.vars.contains(k))
             .map(|(k, v)| (*k, v.clone()))
             .collect();
-        let rows: HashMap<TyVar, Row> = self.rows.iter()
+        let rows: HashMap<TyVar, Row> = self
+            .rows
+            .iter()
             .filter(|(k, _)| !scheme.row_vars.contains(k))
             .map(|(k, v)| (*k, v.clone()))
             .collect();
-        let restricted = Subst { counter: self.counter, tys, rows };
+        let restricted = Subst {
+            counter: self.counter,
+            tys,
+            rows,
+        };
         Scheme {
             vars: scheme.vars.clone(),
             row_vars: scheme.row_vars.clone(),
@@ -155,9 +177,14 @@ pub fn free_row_vars(ty: &Ty) -> HashSet<TyVar> {
 
 fn collect_ftv(ty: &Ty, set: &mut HashSet<TyVar>) {
     match ty {
-        Ty::Var(v) => { set.insert(*v); }
+        Ty::Var(v) => {
+            set.insert(*v);
+        }
         Ty::List(t) => collect_ftv(t, set),
-        Ty::Func(a, b) => { collect_ftv(a, set); collect_ftv(b, set); }
+        Ty::Func(a, b) => {
+            collect_ftv(a, set);
+            collect_ftv(b, set);
+        }
         Ty::Record(r) => r.fields.iter().for_each(|(_, t)| collect_ftv(t, set)),
         Ty::Con(_, args) => args.iter().for_each(|a| collect_ftv(a, set)),
         _ => {}
@@ -167,10 +194,15 @@ fn collect_ftv(ty: &Ty, set: &mut HashSet<TyVar>) {
 fn collect_frv(ty: &Ty, set: &mut HashSet<TyVar>) {
     match ty {
         Ty::List(t) => collect_frv(t, set),
-        Ty::Func(a, b) => { collect_frv(a, set); collect_frv(b, set); }
+        Ty::Func(a, b) => {
+            collect_frv(a, set);
+            collect_frv(b, set);
+        }
         Ty::Record(r) => {
             r.fields.iter().for_each(|(_, t)| collect_frv(t, set));
-            if let RowTail::Open(v) = r.tail { set.insert(v); }
+            if let RowTail::Open(v) = r.tail {
+                set.insert(v);
+            }
         }
         Ty::Con(_, args) => args.iter().for_each(|a| collect_frv(a, set)),
         _ => {}
@@ -187,13 +219,19 @@ pub fn unify(s: &mut Subst, t1: Ty, t2: Ty) -> Result<(), TypeError> {
         (Ty::Num, Ty::Num) | (Ty::Text, Ty::Text) | (Ty::Bool, Ty::Bool) => Ok(()),
 
         (Ty::Var(v), t) => {
-            if t == Ty::Var(v) { return Ok(()); }
-            if ty_occurs(v, &t) { return Err(TypeError::OccursCheck(v)); }
+            if t == Ty::Var(v) {
+                return Ok(());
+            }
+            if ty_occurs(v, &t) {
+                return Err(TypeError::OccursCheck(v));
+            }
             s.bind_ty(v, t);
             Ok(())
         }
         (t, Ty::Var(v)) => {
-            if ty_occurs(v, &t) { return Err(TypeError::OccursCheck(v)); }
+            if ty_occurs(v, &t) {
+                return Err(TypeError::OccursCheck(v));
+            }
             s.bind_ty(v, t);
             Ok(())
         }
@@ -264,8 +302,13 @@ fn unify_rows(s: &mut Subst, r1: Row, r2: Row) -> Result<(), TypeError> {
                 return Err(TypeError::RowMismatch(f.clone()));
             }
             // r1's row variable absorbs the extra fields from r2.
-            let new_row = Row { fields: extras2, tail: RowTail::Closed };
-            if row_var_occurs(v1, &new_row) { return Err(TypeError::OccursCheck(v1)); }
+            let new_row = Row {
+                fields: extras2,
+                tail: RowTail::Closed,
+            };
+            if row_var_occurs(v1, &new_row) {
+                return Err(TypeError::OccursCheck(v1));
+            }
             s.bind_row(v1, new_row);
         }
 
@@ -274,8 +317,13 @@ fn unify_rows(s: &mut Subst, r1: Row, r2: Row) -> Result<(), TypeError> {
             if let Some((f, _)) = extras2.first() {
                 return Err(TypeError::RowMismatch(f.clone()));
             }
-            let new_row = Row { fields: extras1, tail: RowTail::Closed };
-            if row_var_occurs(v2, &new_row) { return Err(TypeError::OccursCheck(v2)); }
+            let new_row = Row {
+                fields: extras1,
+                tail: RowTail::Closed,
+            };
+            if row_var_occurs(v2, &new_row) {
+                return Err(TypeError::OccursCheck(v2));
+            }
             s.bind_row(v2, new_row);
         }
 
@@ -283,12 +331,20 @@ fn unify_rows(s: &mut Subst, r1: Row, r2: Row) -> Result<(), TypeError> {
             if v1 == v2 {
                 // Same row var — no extras allowed.
                 let bad = extras1.first().or(extras2.first()).map(|(f, _)| f.clone());
-                if let Some(f) = bad { return Err(TypeError::RowMismatch(f)); }
+                if let Some(f) = bad {
+                    return Err(TypeError::RowMismatch(f));
+                }
             } else {
                 // Different row vars: create a fresh shared tail.
                 let fresh = s.fresh_var();
-                let r1_ext = Row { fields: extras2, tail: RowTail::Open(fresh) };
-                let r2_ext = Row { fields: extras1, tail: RowTail::Open(fresh) };
+                let r1_ext = Row {
+                    fields: extras2,
+                    tail: RowTail::Open(fresh),
+                };
+                let r2_ext = Row {
+                    fields: extras1,
+                    tail: RowTail::Open(fresh),
+                };
                 if row_var_occurs(v1, &r1_ext) || row_var_occurs(v2, &r2_ext) {
                     return Err(TypeError::OccursCheck(v1));
                 }
@@ -305,7 +361,9 @@ fn ty_occurs(v: TyVar, ty: &Ty) -> bool {
         Ty::Var(u) => *u == v,
         Ty::List(t) => ty_occurs(v, t),
         Ty::Func(a, b) => ty_occurs(v, a) || ty_occurs(v, b),
-        Ty::Record(r) => r.fields.iter().any(|(_, t)| ty_occurs(v, t)) || r.tail == RowTail::Open(v),
+        Ty::Record(r) => {
+            r.fields.iter().any(|(_, t)| ty_occurs(v, t)) || r.tail == RowTail::Open(v)
+        }
         Ty::Con(_, args) => args.iter().any(|a| ty_occurs(v, a)),
         _ => false,
     }
@@ -322,20 +380,41 @@ fn row_var_occurs(v: TyVar, row: &Row) -> bool {
 /// Map the i-th type/row variable to a name: a, b, …, z, a1, b1, …
 fn pretty_var_name(i: usize) -> String {
     let letter = (b'a' + (i % 26) as u8) as char;
-    if i < 26 { letter.to_string() } else { format!("{}{}", letter, i / 26) }
+    if i < 26 {
+        letter.to_string()
+    } else {
+        format!("{}{}", letter, i / 26)
+    }
 }
 
 /// Collect free type-vars and row-vars in first-appearance order.
 fn collect_pretty_vars(ty: &Ty, tvs: &mut Vec<TyVar>, rvs: &mut Vec<TyVar>) {
     match ty {
-        Ty::Var(v) => { if !tvs.contains(v) { tvs.push(*v); } }
-        Ty::List(t) => collect_pretty_vars(t, tvs, rvs),
-        Ty::Func(a, b) => { collect_pretty_vars(a, tvs, rvs); collect_pretty_vars(b, tvs, rvs); }
-        Ty::Record(row) => {
-            for (_, t) in &row.fields { collect_pretty_vars(t, tvs, rvs); }
-            if let RowTail::Open(v) = row.tail { if !rvs.contains(&v) { rvs.push(v); } }
+        Ty::Var(v) => {
+            if !tvs.contains(v) {
+                tvs.push(*v);
+            }
         }
-        Ty::Con(_, args) => { for a in args { collect_pretty_vars(a, tvs, rvs); } }
+        Ty::List(t) => collect_pretty_vars(t, tvs, rvs),
+        Ty::Func(a, b) => {
+            collect_pretty_vars(a, tvs, rvs);
+            collect_pretty_vars(b, tvs, rvs);
+        }
+        Ty::Record(row) => {
+            for (_, t) in &row.fields {
+                collect_pretty_vars(t, tvs, rvs);
+            }
+            if let RowTail::Open(v) = row.tail {
+                if !rvs.contains(&v) {
+                    rvs.push(v);
+                }
+            }
+        }
+        Ty::Con(_, args) => {
+            for a in args {
+                collect_pretty_vars(a, tvs, rvs);
+            }
+        }
         _ => {}
     }
 }
@@ -343,13 +422,18 @@ fn collect_pretty_vars(ty: &Ty, tvs: &mut Vec<TyVar>, rvs: &mut Vec<TyVar>) {
 /// Render a `Ty` using caller-supplied name tables for type-vars and row-vars.
 fn fmt_named(ty: &Ty, tvs: &[TyVar], rvs: &[TyVar], f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match ty {
-        Ty::Num  => write!(f, "Num"),
+        Ty::Num => write!(f, "Num"),
         Ty::Text => write!(f, "Text"),
         Ty::Bool => write!(f, "Bool"),
-        Ty::List(t) => { write!(f, "List ")?; fmt_named_atomic(t, tvs, rvs, f) }
+        Ty::List(t) => {
+            write!(f, "List ")?;
+            fmt_named_atomic(t, tvs, rvs, f)
+        }
         Ty::Func(a, b) => {
             if matches!(a.as_ref(), Ty::Func(..)) {
-                write!(f, "(")?; fmt_named(a, tvs, rvs, f)?; write!(f, ")")?;
+                write!(f, "(")?;
+                fmt_named(a, tvs, rvs, f)?;
+                write!(f, ")")?;
             } else {
                 fmt_named(a, tvs, rvs, f)?;
             }
@@ -359,13 +443,19 @@ fn fmt_named(ty: &Ty, tvs: &[TyVar], rvs: &[TyVar], f: &mut fmt::Formatter<'_>) 
         Ty::Record(row) => {
             write!(f, "{{ ")?;
             for (i, (name, ty)) in row.fields.iter().enumerate() {
-                if i > 0 { write!(f, ", ")?; }
+                if i > 0 {
+                    write!(f, ", ")?;
+                }
                 write!(f, "{}: ", name)?;
                 fmt_named(ty, tvs, rvs, f)?;
             }
             if let RowTail::Open(v) = row.tail {
-                if !row.fields.is_empty() { write!(f, ", ")?; }
-                let name = rvs.iter().position(|x| x == &v)
+                if !row.fields.is_empty() {
+                    write!(f, ", ")?;
+                }
+                let name = rvs
+                    .iter()
+                    .position(|x| x == &v)
                     .map(|i| pretty_var_name(tvs.len() + i))
                     .unwrap_or_else(|| format!("?{}", v));
                 write!(f, "..{}", name)?;
@@ -375,11 +465,16 @@ fn fmt_named(ty: &Ty, tvs: &[TyVar], rvs: &[TyVar], f: &mut fmt::Formatter<'_>) 
         Ty::Con(name, args) if args.is_empty() => write!(f, "{}", name),
         Ty::Con(name, args) => {
             write!(f, "{}", name)?;
-            for a in args { write!(f, " ")?; fmt_named_atomic(a, tvs, rvs, f)?; }
+            for a in args {
+                write!(f, " ")?;
+                fmt_named_atomic(a, tvs, rvs, f)?;
+            }
             Ok(())
         }
         Ty::Var(v) => {
-            let name = tvs.iter().position(|x| x == v)
+            let name = tvs
+                .iter()
+                .position(|x| x == v)
                 .map(pretty_var_name)
                 .unwrap_or_else(|| format!("?{}", v));
             write!(f, "{}", name)
@@ -387,10 +482,21 @@ fn fmt_named(ty: &Ty, tvs: &[TyVar], rvs: &[TyVar], f: &mut fmt::Formatter<'_>) 
     }
 }
 
-fn fmt_named_atomic(ty: &Ty, tvs: &[TyVar], rvs: &[TyVar], f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    let needs_parens = matches!(ty, Ty::Func(..)) || matches!(ty, Ty::Con(_, args) if !args.is_empty());
-    if needs_parens { write!(f, "(")?; fmt_named(ty, tvs, rvs, f)?; write!(f, ")") }
-    else { fmt_named(ty, tvs, rvs, f) }
+fn fmt_named_atomic(
+    ty: &Ty,
+    tvs: &[TyVar],
+    rvs: &[TyVar],
+    f: &mut fmt::Formatter<'_>,
+) -> fmt::Result {
+    let needs_parens =
+        matches!(ty, Ty::Func(..)) || matches!(ty, Ty::Con(_, args) if !args.is_empty());
+    if needs_parens {
+        write!(f, "(")?;
+        fmt_named(ty, tvs, rvs, f)?;
+        write!(f, ")")
+    } else {
+        fmt_named(ty, tvs, rvs, f)
+    }
 }
 
 // ── Display impls ─────────────────────────────────────────────────────────────
