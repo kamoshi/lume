@@ -3,12 +3,25 @@
 !.gitignore
 !Cargo.toml
 !Cargo.lock
-!src/
-!src/**
 !examples/
 !examples/**
 !spec.md
 !parser.md
+
+!lume/
+!lume/Cargo.toml
+!lume/src/
+!lume/src/**
+
+!lume-lsp/
+!lume-lsp/Cargo.toml
+!lume-lsp/src/
+!lume-lsp/src/**
+
+!lume-wasm/
+!lume-wasm/Cargo.toml
+!lume-wasm/src/
+!lume-wasm/src/**
 
 !tools/
 !tools/zed-lume/

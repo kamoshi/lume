@@ -1,15 +1,12 @@
-mod ast;
-mod bundle;
-mod codegen;
-mod error;
-mod lexer;
-mod loader;
-mod parser;
-mod types;
-
 use std::path::Path;
-use error::LumeError;
-use lexer::Lexer;
+
+use lume::bundle;
+use lume::codegen;
+use lume::error::LumeError;
+use lume::lexer::Lexer;
+use lume::parser;
+use lume::types;
+use lume::ast;
 
 fn parse(src: &str) -> Result<ast::Program, LumeError> {
     let tokens = Lexer::new(src).tokenize()?;
@@ -135,12 +132,12 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::ast::*;
-    use crate::lexer::Lexer;
-    use crate::parser;
+    use super::parse;
+    use lume::ast::*;
+    use lume::lexer::{Lexer, Spanned, Token};
+    use lume::parser;
 
-    fn lex(src: &str) -> Vec<crate::lexer::Spanned> {
+    fn lex(src: &str) -> Vec<Spanned> {
         Lexer::new(src).tokenize().expect("lex error")
     }
 
@@ -148,7 +145,6 @@ mod tests {
 
     #[test]
     fn lex_keywords() {
-        use crate::lexer::Token;
         let toks: Vec<_> = lex("let type use if then else true false")
             .into_iter()
             .map(|s| s.token)
@@ -160,7 +156,6 @@ mod tests {
 
     #[test]
     fn lex_operators() {
-        use crate::lexer::Token;
         let toks: Vec<_> = lex("|> ?> -> ++ == != <= >=")
             .into_iter()
             .map(|s| s.token)
@@ -177,7 +172,6 @@ mod tests {
 
     #[test]
     fn lex_number() {
-        use crate::lexer::Token;
         let toks = lex("42 4.20");
         assert!(matches!(toks[0].token, Token::Number(n) if n == 42.0));
         assert!(matches!(toks[1].token, Token::Number(n) if (n - 4.20).abs() < 1e-9));
@@ -185,14 +179,12 @@ mod tests {
 
     #[test]
     fn lex_string() {
-        use crate::lexer::Token;
         let toks = lex(r#""hello""#);
         assert!(matches!(&toks[0].token, Token::Text(s) if s == "hello"));
     }
 
     #[test]
     fn lex_comment_ignored() {
-        use crate::lexer::Token;
         let toks = lex("42 -- this is a comment\n99");
         let nums: Vec<_> = toks
             .iter()
@@ -268,10 +260,7 @@ mod tests {
         let expr = parse_expr("x |> double");
         assert!(matches!(
             expr.kind,
-            ExprKind::Binary {
-                op: BinOp::Pipe,
-                ..
-            }
+            ExprKind::Binary { op: BinOp::Pipe, .. }
         ));
     }
 
@@ -280,10 +269,7 @@ mod tests {
         let expr = parse_expr(r#""hello" ++ " world""#);
         assert!(matches!(
             expr.kind,
-            ExprKind::Binary {
-                op: BinOp::Concat,
-                ..
-            }
+            ExprKind::Binary { op: BinOp::Concat, .. }
         ));
     }
 
@@ -317,7 +303,6 @@ mod tests {
 
     #[test]
     fn parse_record_literal() {
-        // Records are parsed as standalone atoms; as arguments they need parens.
         let tokens = lex(r#"{ name: "Alice", age: 30 }"#);
         let (_, expr) = parser::parse_expr(&tokens).expect("parse error");
         if let ExprKind::Record { fields, base, .. } = expr.kind {
@@ -444,8 +429,7 @@ mod tests {
     #[test]
     fn parse_let_binding() {
         let tokens = lex("let x = 42");
-        let (_, binding) = crate::parser::parse_binding(&tokens[..]).expect("parse error");
-        // Note: parse_binding is not pub — we test through parse_program
+        let (_, binding) = parser::parse_binding(&tokens[..]).expect("parse error");
         let _ = binding;
     }
 
@@ -468,12 +452,8 @@ mod tests {
 
     #[test]
     fn parse_type_definition() {
-        // The `let` binding after the type def terminates the variant list,
-        // which prevents the export record `{ x }` from being greedily consumed
-        // as the last variant's payload — the same shape as realistic Lume modules.
         let src = "type Direction = | North | South | East | West\nlet x = 42\n{ x }";
         let program = parse(src).expect("should parse");
-        // items = [TypeDef(Direction), Binding(x)]
         assert_eq!(program.items.len(), 2);
         if let TopItem::TypeDef(td) = &program.items[0] {
             assert_eq!(td.name, "Direction");
@@ -493,7 +473,6 @@ mod tests {
 
     #[test]
     fn parse_binding_with_annotation() {
-        // Parse the binding directly to avoid the trailing-export ambiguity.
         let tokens = lex("let double : Num -> Num = n -> n * 2");
         let (_, b) = parser::parse_binding(&tokens).expect("parse error");
         assert!(b.ty.is_some());
