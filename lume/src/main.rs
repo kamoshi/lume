@@ -86,6 +86,50 @@ fn lua_file(path: &str) -> bool {
     true
 }
 
+fn fmt_file(path: &str) -> bool {
+    let src = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{path}: {e}");
+            return false;
+        }
+    };
+    // Verify it parses before touching it.
+    if let Err(e) = parse(&src) {
+        eprintln!("{path}: parse error: {e}");
+        return false;
+    }
+    // Collapse 3+ consecutive newlines into 2 (one blank line max).
+    let mut formatted = String::with_capacity(src.len());
+    let mut newlines: usize = 0;
+    for ch in src.chars() {
+        if ch == '\n' {
+            newlines += 1;
+        } else {
+            if newlines > 0 {
+                let emit = newlines.min(2);
+                for _ in 0..emit {
+                    formatted.push('\n');
+                }
+                newlines = 0;
+            }
+            formatted.push(ch);
+        }
+    }
+    // Flush trailing newlines, ensure exactly one at EOF.
+    formatted.push('\n');
+
+    if formatted == src {
+        return true;
+    }
+    if let Err(e) = std::fs::write(path, &formatted) {
+        eprintln!("{path}: {e}");
+        return false;
+    }
+    println!("{path}: formatted");
+    true
+}
+
 fn dump_file(path: &str) -> bool {
     let program = match load(path) {
         Some(p) => p,
@@ -114,11 +158,12 @@ fn main() {
 
     let (cmd, paths): (&str, &[String]) = match args.as_slice() {
         [] => {
-            eprintln!("Usage: lume [check|dump|js|lua] <file.lume> ...");
+            eprintln!("Usage: lume [check|dump|fmt|js|lua] <file.lume> ...");
             std::process::exit(1);
         }
         [first, rest @ ..] if first == "check" => ("check", rest),
         [first, rest @ ..] if first == "dump" => ("dump", rest),
+        [first, rest @ ..] if first == "fmt" => ("fmt", rest),
         [first, rest @ ..] if first == "js" => ("js", rest),
         [first, rest @ ..] if first == "lua" => ("lua", rest),
         paths => ("check", paths),
@@ -128,6 +173,7 @@ fn main() {
     for path in paths {
         let ok = match cmd {
             "dump" => dump_file(path),
+            "fmt" => fmt_file(path),
             "js" => js_file(path),
             "lua" => lua_file(path),
             _ => run_file(path),
