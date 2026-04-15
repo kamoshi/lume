@@ -5,9 +5,10 @@ use lume::{
     ast::{self, Expr, ExprKind, NodeId, Program, TopItem},
     error::{LumeError, Span},
     lexer::Lexer,
+    loader::{use_path_context, UsePathContext, UsePathKind, STDLIB_MODULES},
     parser,
     types::{
-        infer::{elaborate_with_env, TypeEnv},
+        infer::{elaborate_with_env_partial, TypeEnv},
         Ty,
     },
 };
@@ -76,20 +77,19 @@ fn analyse(uri: &Url, src: &str) -> (Option<DocInfo>, Vec<Diagnostic>) {
         Err(e) => return (None, vec![error_to_diagnostic(LumeError::Parse(e))]),
     };
     let path = uri.to_file_path().ok();
-    match elaborate_with_env(&program, path.as_deref()) {
-        Ok((node_types, top_env, _)) => {
-            let span_index = collect_spans(&program);
-            (
-                Some(DocInfo {
-                    node_types,
-                    span_index,
-                    top_env,
-                }),
-                vec![],
-            )
-        }
-        Err(e) => (None, vec![error_to_diagnostic(LumeError::Type(e))]),
-    }
+    let (node_types, top_env, type_errors) =
+        elaborate_with_env_partial(&program, path.as_deref());
+    let span_index = collect_spans(&program);
+    let doc_info = Some(DocInfo {
+        node_types,
+        span_index,
+        top_env,
+    });
+    let diagnostics = type_errors
+        .into_iter()
+        .map(|e| error_to_diagnostic(LumeError::Type(e)))
+        .collect();
+    (doc_info, diagnostics)
 }
 
 // ── Span index ────────────────────────────────────────────────────────────────
@@ -272,6 +272,8 @@ enum CompletionCtx {
         prefix: String,
         replace_range: Range,
     },
+    /// Cursor is inside the path string of a `use` declaration.
+    UsePath(UsePathContext),
 }
 
 /// Analyse the text before `pos` to determine what kind of completion is wanted.
@@ -293,6 +295,11 @@ fn completion_ctx(text: &str, pos: Position) -> CompletionCtx {
         }
     };
     let before = &line[..col.min(line.len())];
+
+    // Check for use-path context before anything else.
+    if let Some(ctx) = use_path_context(before) {
+        return CompletionCtx::UsePath(ctx);
+    }
     let is_ident = |c: char| c.is_alphanumeric() || c == '_';
 
     // Find the partial word at the cursor (e.g. "po" in "math.po|").
@@ -402,6 +409,113 @@ fn ident_completions(doc: &DocInfo, prefix: &str, replace_range: Range) -> Vec<C
         .collect()
 }
 
+/// Completion items for `use … = "lume:<prefix>"`.
+fn stdlib_path_completions(prefix: &str, prefix_col: usize, pos: Position) -> Vec<CompletionItem> {
+    let replace_range = Range {
+        start: Position { line: pos.line, character: prefix_col as u32 },
+        end: pos,
+    };
+    let lower = prefix.to_lowercase();
+    STDLIB_MODULES
+        .iter()
+        .filter_map(|&m| {
+            let name = m.strip_prefix("lume:").unwrap();
+            if lower.is_empty() || name.contains(&*lower) {
+                Some(CompletionItem {
+                    label: name.to_string(),
+                    detail: Some("stdlib".to_string()),
+                    kind: Some(CompletionItemKind::MODULE),
+                    text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                        range: replace_range,
+                        new_text: name.to_string(),
+                    })),
+                    ..Default::default()
+                })
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Completion items for `use … = "./<prefix>"` (file-system paths).
+/// Lists `.lume` files and subdirectories relative to `doc_uri`.
+fn file_path_completions(
+    doc_uri: &Url,
+    prefix: &str,
+    prefix_col: usize,
+    pos: Position,
+) -> Vec<CompletionItem> {
+    let replace_range = Range {
+        start: Position { line: pos.line, character: prefix_col as u32 },
+        end: pos,
+    };
+    let doc_path = match doc_uri.to_file_path() {
+        Ok(p) => p,
+        Err(_) => return vec![],
+    };
+    let doc_dir = match doc_path.parent() {
+        Some(d) => d,
+        None => return vec![],
+    };
+
+    // Split prefix into a directory part and the name fragment being typed.
+    let (dir_part, name_part) = match prefix.rfind('/') {
+        Some(i) => (&prefix[..=i], &prefix[i + 1..]),
+        None => ("", prefix),
+    };
+
+    let search_dir = if dir_part.is_empty() {
+        doc_dir.to_path_buf()
+    } else {
+        doc_dir.join(dir_part.trim_start_matches("./"))
+    };
+
+    let entries = match std::fs::read_dir(&search_dir) {
+        Ok(e) => e,
+        Err(_) => return vec![],
+    };
+
+    let lower = name_part.to_lowercase();
+    let mut items = Vec::new();
+    for entry in entries.flatten() {
+        let file_name = match entry.file_name().into_string() {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
+        if entry.path().is_dir() {
+            if lower.is_empty() || file_name.to_lowercase().contains(&*lower) {
+                let label = format!("{}{}/", dir_part, file_name);
+                items.push(CompletionItem {
+                    label: label.clone(),
+                    detail: Some("directory".to_string()),
+                    kind: Some(CompletionItemKind::FOLDER),
+                    text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                        range: replace_range,
+                        new_text: label,
+                    })),
+                    ..Default::default()
+                });
+            }
+        } else if let Some(stem) = file_name.strip_suffix(".lume") {
+            if lower.is_empty() || stem.to_lowercase().contains(&*lower) {
+                let label = format!("{}{}", dir_part, stem);
+                items.push(CompletionItem {
+                    label: label.clone(),
+                    detail: Some("local module".to_string()),
+                    kind: Some(CompletionItemKind::FILE),
+                    text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                        range: replace_range,
+                        new_text: label,
+                    })),
+                    ..Default::default()
+                });
+            }
+        }
+    }
+    items
+}
+
 // ── Language server impl ──────────────────────────────────────────────────────
 
 #[tower_lsp::async_trait]
@@ -411,7 +525,12 @@ impl LanguageServer for Backend {
             capabilities: ServerCapabilities {
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 completion_provider: Some(CompletionOptions {
-                    trigger_characters: Some(vec![".".to_string()]),
+                    trigger_characters: Some(vec![
+                        ".".to_string(),
+                        "\"".to_string(),
+                        ":".to_string(),
+                        "/".to_string(),
+                    ]),
                     resolve_provider: Some(false),
                     ..Default::default()
                 }),
@@ -463,17 +582,43 @@ impl LanguageServer for Backend {
             Some(t) => t.clone(),
             None => return Ok(None),
         };
+
+        let ctx = completion_ctx(&text, pos);
+
+        // Use-path completions don't need type information — serve them even
+        // when the document has errors and doc_info is unavailable.
+        if let CompletionCtx::UsePath(up) = ctx {
+            let ctx_label = format!("UsePath(prefix={:?})", up.prefix);
+            let items = match up.kind {
+                UsePathKind::Stdlib => stdlib_path_completions(&up.prefix, up.prefix_col, pos),
+                UsePathKind::File => file_path_completions(uri, &up.prefix, up.prefix_col, pos),
+            };
+            self.client
+                .log_message(
+                    MessageType::LOG,
+                    format!(
+                        "completion pos={},{} ctx={ctx_label} items={}",
+                        pos.line, pos.character, items.len()
+                    ),
+                )
+                .await;
+            return Ok(Some(CompletionResponse::List(CompletionList {
+                is_incomplete: false,
+                items,
+            })));
+        }
+
         let doc = match self.doc_info.get(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
 
-        let ctx = completion_ctx(&text, pos);
         let ctx_label = match &ctx {
             CompletionCtx::FieldAccess { record, prefix, .. } => {
                 format!("FieldAccess(record={record}, prefix={prefix:?})")
             }
             CompletionCtx::Ident { prefix, .. } => format!("Ident(prefix={prefix:?})"),
+            CompletionCtx::UsePath(_) => unreachable!(),
         };
 
         let items = match ctx {
@@ -486,6 +631,7 @@ impl LanguageServer for Backend {
                 prefix,
                 replace_range,
             } => ident_completions(&doc, &prefix, replace_range),
+            CompletionCtx::UsePath(_) => unreachable!(),
         };
 
         self.client
@@ -546,7 +692,16 @@ impl LanguageServer for Backend {
 
 impl Backend {
     async fn refresh(&self, uri: &Url, text: &str) {
-        let (doc_info, diagnostics) = analyse(uri, text);
+        // Run the blocking, deeply-recursive type-checker on a dedicated OS
+        // thread so it gets a full platform stack and doesn't starve the async
+        // executor.
+        let uri_owned = uri.clone();
+        let text_owned = text.to_string();
+        let (doc_info, diagnostics) =
+            tokio::task::spawn_blocking(move || analyse(&uri_owned, &text_owned))
+                .await
+                .unwrap_or_else(|_| (None, vec![]));
+
         if let Some(info) = doc_info {
             self.doc_info.insert(uri.clone(), info);
         }

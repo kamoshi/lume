@@ -13,6 +13,114 @@ use crate::types::{
 
 // ── Embedded standard library ─────────────────────────────────────────────────
 
+/// Every built-in stdlib module path, sorted alphabetically.
+/// This is the single source of truth for tooling (LSP completions, WASM, etc.).
+pub const STDLIB_MODULES: &[&str] = &[
+    "lume:list",
+    "lume:math",
+    "lume:maybe",
+    "lume:result",
+    "lume:text",
+];
+
+/// Discriminates the kind of path inside a `use` declaration.
+pub enum UsePathKind {
+    /// `"lume:<name>"` — an embedded stdlib module.
+    Stdlib,
+    /// A filesystem path, e.g. `"./utils"` or `"../shared"`.
+    /// Requires filesystem access to produce suggestions; the WASM backend
+    /// returns no completions for this variant.
+    File,
+}
+
+/// Context produced when the cursor is inside the path string of a `use`
+/// declaration.
+pub struct UsePathContext {
+    /// Whether this is a stdlib (`lume:`) or filesystem path.
+    pub kind: UsePathKind,
+    /// Text typed after the scheme separator:
+    /// - `Stdlib`: text after `lume:`, e.g. `"ma"` for `"lume:ma"`
+    /// - `File`:   the entire string content so far, e.g. `"./fo"`
+    pub prefix: String,
+    /// Byte offset within the current line where `prefix` starts.
+    /// Use this to build the replacement range for a completion item.
+    pub prefix_col: usize,
+}
+
+/// If the text from the start of the current line **up to the cursor** is
+/// inside the path string of a `use` declaration, returns the context;
+/// otherwise returns `None`.
+///
+/// Handles both `use ident = "…"` and `use { fields } = "…"` syntax.
+pub fn use_path_context(line_up_to_cursor: &str) -> Option<UsePathContext> {
+    let bytes = line_up_to_cursor.as_bytes();
+    let mut in_string = false;
+    let mut quote_col = 0usize;
+    let mut string_content = String::new();
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        let b = bytes[i];
+        if !in_string {
+            if b == b'-' && bytes.get(i + 1) == Some(&b'-') {
+                return None; // line comment — no completions
+            }
+            if b == b'"' {
+                in_string = true;
+                quote_col = i;
+                string_content.clear();
+            }
+        } else {
+            match b {
+                b'\\' => { i += 1; } // skip escaped character
+                b'"' => {
+                    // String closed before cursor — keep scanning (edge case:
+                    // multiple strings on one line).
+                    in_string = false;
+                    string_content.clear();
+                }
+                _ => string_content.push(b as char),
+            }
+        }
+        i += 1;
+    }
+
+    if !in_string {
+        return None;
+    }
+
+    // The text before the opening quote must look like `use <binding> =`.
+    let before = line_up_to_cursor[..quote_col].trim();
+    if !is_use_assignment(before) {
+        return None;
+    }
+
+    if string_content.starts_with("lume:") {
+        Some(UsePathContext {
+            kind: UsePathKind::Stdlib,
+            prefix: string_content[5..].to_string(),
+            prefix_col: quote_col + 1 + 5, // byte after `"lume:`
+        })
+    } else {
+        Some(UsePathContext {
+            kind: UsePathKind::File,
+            prefix: string_content,
+            prefix_col: quote_col + 1, // byte right after `"`
+        })
+    }
+}
+
+/// Returns `true` if `s` (already trimmed) matches the pattern `use <binding> =`.
+/// Accepts both `use ident =` and `use { … } =`.
+fn is_use_assignment(s: &str) -> bool {
+    let rest = match s.strip_prefix("use") {
+        Some(r) if r.starts_with(|c: char| c.is_whitespace()) => r.trim_start(),
+        _ => return false,
+    };
+    // After "use ", must have at least one non-"=" character followed by "=".
+    !rest.is_empty() && rest.trim_end().ends_with('=')
+}
+
 /// Returns the source for a `lume:*` stdlib module, or `None` if the name is
 /// not recognised.
 ///
@@ -58,8 +166,12 @@ pub fn resolve_path(raw: &str, base: &Path) -> Result<PathBuf, String> {
 /// Loads, parses, and type-checks Lume source files, caching the result of
 /// each module so it is only compiled once per build.
 pub struct Loader {
-    /// Canonical path → generalised export scheme.
+    /// Canonical path → generalised export scheme (completed modules).
     cache: HashMap<PathBuf, Scheme>,
+    /// Canonical paths that are currently being loaded.  Used to detect and
+    /// break import cycles, turning what would be infinite recursion into a
+    /// clean `ImportError`.
+    visiting: std::collections::HashSet<PathBuf>,
 }
 
 impl Default for Loader {
@@ -72,6 +184,7 @@ impl Loader {
     pub fn new() -> Self {
         Loader {
             cache: HashMap::new(),
+            visiting: std::collections::HashSet::new(),
         }
     }
 
@@ -111,6 +224,19 @@ impl Loader {
             return Ok(scheme);
         }
 
+        // Detect import cycles: if we're already in the process of loading this
+        // module, a circular dependency exists.  Return an error rather than
+        // recursing infinitely.
+        if self.visiting.contains(&canonical) {
+            return Err(TypeErrorAt::new(
+                TypeError::ImportError(format!(
+                    "circular import: '{}'",
+                    canonical.display()
+                )),
+                Span::default(),
+            ));
+        }
+
         let src = std::fs::read_to_string(&canonical).map_err(|e| {
             TypeErrorAt::new(
                 TypeError::ImportError(format!("cannot read '{}': {}", canonical.display(), e)),
@@ -121,7 +247,9 @@ impl Loader {
         let program = Self::parse(&src)
             .map_err(|msg| TypeErrorAt::new(TypeError::ImportError(msg), Span::default()))?;
 
+        self.visiting.insert(canonical.clone());
         let scheme = self.check_and_generalise(&program, &canonical)?;
+        self.visiting.remove(&canonical);
         self.cache.insert(canonical, scheme.clone());
         Ok(scheme)
     }

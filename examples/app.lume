@@ -1,7 +1,7 @@
 -- app.lume
 -- Imports from both math and geometry, exercising whole-module and
 -- destructured use declarations.
-use math = "lume:math"
+
 use { circleArea, hypotSq, boundedArea } = "./geometry"
 
 let radius  = 5

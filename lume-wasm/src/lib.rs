@@ -7,9 +7,9 @@ use lume::{
     codegen,
     error::Span,
     lexer::Lexer,
-    loader::{stdlib_path, stdlib_source, Loader},
+    loader::{stdlib_path, stdlib_source, use_path_context, Loader, UsePathKind, STDLIB_MODULES},
     parser,
-    types::{self, infer::elaborate, infer::elaborate_with_env, infer::builtin_env, Ty},
+    types::{self, infer::elaborate_with_env_partial, infer::builtin_env, Ty},
 };
 use wasm_bindgen::prelude::*;
 
@@ -240,13 +240,15 @@ fn stdlib_var(path: &str) -> String {
 
 // ── Public WASM API ───────────────────────────────────────────────────────────
 
-/// Returns a JSON array of the built-in stdlib module paths, e.g.
-/// `["lume:list","lume:math",…]`.  Used by editor tooling for import
-/// path completions.
+/// Returns a JSON array of the built-in stdlib module paths,
+/// e.g. `["lume:list","lume:math",…]`.
 #[wasm_bindgen]
 pub fn stdlib_modules() -> String {
-    // Keep this in sync with `lume::loader::stdlib_source`.
-    r#"["lume:list","lume:math","lume:maybe","lume:result","lume:text"]"#.to_string()
+    let items: Vec<String> = STDLIB_MODULES
+        .iter()
+        .map(|&m| format!("\"{}\"", escape_json_str(m)))
+        .collect();
+    format!("[{}]", items.join(","))
 }
 
 /// Parse Lume source. Returns `"ok"` or throws an error string.
@@ -340,12 +342,12 @@ fn ident_start_at(bytes: &[u8], end: usize) -> usize {
     i
 }
 
-/// Try to run `elaborate_with_env` on `src`, returning `(name, type)` pairs.
+/// Run `elaborate_with_env_partial` on `src`, returning `(name, type)` pairs.
+/// Always succeeds — type errors are ignored so completions work even with errors.
 fn try_elaborate_env(src: &str) -> Option<Vec<(String, String)>> {
     let tokens = Lexer::new(src).tokenize().ok()?;
     let program = parser::parse_program(&tokens).ok()?;
-    let (_, env, _) =
-        elaborate_with_env(&program, Some(Path::new(WASM_ENTRY_PATH))).ok()?;
+    let (_, env, _) = elaborate_with_env_partial(&program, Some(Path::new(WASM_ENTRY_PATH)));
     Some(
         env.iter()
             .map(|(name, scheme)| (name.clone(), scheme.ty.to_string()))
@@ -371,12 +373,19 @@ fn build_completions_json(mut items: Vec<(String, String)>, prefix: &str) -> Str
 }
 
 /// Returns a JSON array of completion items `[{label, detail}]` for the given
-/// byte `offset` in `src`.  Handles both identifier completions (names in scope)
-/// and field/record completions (when the cursor follows a `.`).
+/// byte `offset` in `src`.  Handles use-path completions (inside `use … = "…"`),
+/// field/record completions (cursor follows `.`), and identifier completions.
 #[wasm_bindgen]
 pub fn complete(src: &str, offset: usize) -> String {
     let bytes = src.as_bytes();
     let offset = offset.min(src.len());
+
+    // Use-path completions: check whether the cursor is inside the path string
+    // of a `use` declaration.  Must run before the word/dot checks below.
+    let line_start = src[..offset].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    if let Some(ctx) = use_path_context(&src[line_start..offset]) {
+        return use_path_completions_json(ctx);
+    }
 
     let word_start = ident_start_at(bytes, offset);
     let prefix = &src[word_start..offset];
@@ -388,6 +397,32 @@ pub fn complete(src: &str, offset: usize) -> String {
     }
 
     ident_completions(src, word_start, offset, prefix)
+}
+
+fn use_path_completions_json(ctx: lume::loader::UsePathContext) -> String {
+    match ctx.kind {
+        UsePathKind::Stdlib => {
+            let lower = ctx.prefix.to_lowercase();
+            let mut items: Vec<String> = STDLIB_MODULES
+                .iter()
+                .filter_map(|&m| {
+                    let name = m.strip_prefix("lume:").unwrap();
+                    if lower.is_empty() || name.contains(&*lower) {
+                        Some(format!(
+                            r#"{{"label":"{}","detail":"stdlib"}}"#,
+                            escape_json_str(name)
+                        ))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            items.sort();
+            format!("[{}]", items.join(","))
+        }
+        // No filesystem access in WASM.
+        UsePathKind::File => "[]".to_string(),
+    }
 }
 
 fn ident_completions(src: &str, word_start: usize, offset: usize, prefix: &str) -> String {
@@ -436,8 +471,7 @@ fn field_completions(src: &str, dot_pos: usize, cursor: usize, prefix: &str) -> 
     let get_record_fields = |s: &str| -> Option<Vec<(String, String)>> {
         let tokens = Lexer::new(s).tokenize().ok()?;
         let program = parser::parse_program(&tokens).ok()?;
-        let (_, env, _) =
-            elaborate_with_env(&program, Some(Path::new(WASM_ENTRY_PATH))).ok()?;
+        let (_, env, _) = elaborate_with_env_partial(&program, Some(Path::new(WASM_ENTRY_PATH)));
         let scheme = env.lookup(record_name)?;
         if let Ty::Record(row) = &scheme.ty {
             Some(
@@ -465,7 +499,7 @@ fn field_completions(src: &str, dot_pos: usize, cursor: usize, prefix: &str) -> 
 pub fn type_at(src: &str, offset: usize) -> Option<String> {
     let tokens = Lexer::new(src).tokenize().ok()?;
     let program = parser::parse_program(&tokens).ok()?;
-    let (node_types, _) = elaborate(&program, Some(Path::new(WASM_ENTRY_PATH))).ok()?;
+    let (node_types, _, _) = elaborate_with_env_partial(&program, Some(Path::new(WASM_ENTRY_PATH)));
 
     let mut spans: Vec<(usize, usize, NodeId)> = Vec::new();
     collect_program(src, &program, &mut spans);

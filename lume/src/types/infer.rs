@@ -1337,6 +1337,83 @@ impl Checker {
         }
     }
 
+    /// Like [`apply_imports`] but never fails: each import is attempted
+    /// independently and errors are collected rather than returned immediately.
+    /// On a failed import the binding name(s) are added to `env` with fresh
+    /// type variables so downstream bindings don't cascade into spurious
+    /// "unbound variable" errors.
+    fn apply_imports_partial(
+        &mut self,
+        uses: &[UseDecl],
+        base: Option<&Path>,
+        loader: &mut crate::loader::Loader,
+        env: &mut TypeEnv,
+    ) -> Vec<TypeErrorAt> {
+        let base = match base {
+            Some(b) => b,
+            None => return vec![],
+        };
+        let mut errors = Vec::new();
+        for u in uses {
+            let scheme = match loader.load(&u.path, base) {
+                Ok(s) => s,
+                Err(e) => {
+                    errors.push(e);
+                    // Give the binding(s) a fresh type variable so code that
+                    // references this import doesn't produce cascading errors.
+                    match &u.binding {
+                        UseBinding::Ident(name, _, node_id) => {
+                            let ty = self.fresh_ty();
+                            self.node_types.insert(*node_id, ty.clone());
+                            env.insert(name.clone(), Scheme::mono(ty));
+                        }
+                        UseBinding::Record(rp) => {
+                            for f in &rp.fields {
+                                let ty = self.fresh_ty();
+                                self.node_types.insert(f.node_id, ty.clone());
+                                env.insert(f.name.clone(), Scheme::mono(ty));
+                            }
+                        }
+                    }
+                    continue;
+                }
+            };
+            match &u.binding {
+                UseBinding::Ident(name, _, node_id) => {
+                    let ty = self.instantiate(&scheme);
+                    self.node_types.insert(*node_id, ty.clone());
+                    env.insert(name.clone(), Scheme::mono(ty));
+                }
+                UseBinding::Record(rp) => {
+                    let module_ty = self.instantiate(&scheme);
+                    let module_ty = self.subst.apply(&module_ty);
+                    for f in &rp.fields {
+                        match self.extract_field_ty(&module_ty, &f.name) {
+                            Some(field_ty) => {
+                                let s = self.generalise(env, &field_ty);
+                                self.node_types.insert(f.node_id, field_ty);
+                                env.insert(f.name.clone(), s);
+                            }
+                            None => {
+                                errors.push(TypeErrorAt::new(
+                                    TypeError::FieldNotFound {
+                                        field: f.name.clone(),
+                                        record_ty: module_ty.clone(),
+                                    },
+                                    crate::error::Span::default(),
+                                ));
+                                let ty = self.fresh_ty();
+                                self.node_types.insert(f.node_id, ty.clone());
+                                env.insert(f.name.clone(), Scheme::mono(ty));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        errors
+    }
+
     /// Inject bindings from `uses` into `env`, loading modules via `loader`.
     /// Does nothing if `base` is `None` (e.g. LSP / in-memory source).
     fn apply_imports(
@@ -1663,4 +1740,90 @@ pub fn elaborate_with_env(
         .collect();
 
     Ok((node_types, resolved_env, export_ty))
+}
+
+/// Like [`elaborate_with_env`] but never fails — type errors are collected and
+/// returned alongside whatever partial information was gathered.  Bindings that
+/// produce errors are given fresh type variables so subsequent bindings can
+/// still be checked.
+///
+/// This is the function the LSP should use so that hover / completions remain
+/// available even when the file contains type errors.
+pub fn elaborate_with_env_partial(
+    program: &Program,
+    path: Option<&Path>,
+) -> (HashMap<NodeId, Ty>, TypeEnv, Vec<TypeErrorAt>) {
+    let (base_env, mut var_env) = builtin_env();
+    let prog_vars = build_variant_env(&program.items);
+    var_env.merge(prog_vars);
+    let mut checker = Checker::new(var_env);
+    let mut loader = crate::loader::Loader::new();
+    let mut env = base_env;
+
+    let mut errors = checker.apply_imports_partial(&program.uses, path, &mut loader, &mut env);
+
+    for item in &program.items {
+        if let TopItem::Binding(binding) = item {
+            match checker.check_binding(binding, env.clone()) {
+                Ok(new_env) => {
+                    env = new_env;
+                    if let Pattern::Ident(name, _, node_id) = &binding.pattern {
+                        if let Some(scheme) = env.lookup(name) {
+                            let ty = checker.subst.apply(&scheme.ty);
+                            checker.node_types.insert(*node_id, ty);
+                        }
+                    }
+                }
+                Err(e) => {
+                    errors.push(e);
+                    // Give the failed binding(s) a fresh type variable so
+                    // subsequent code doesn't cascade into "unbound variable".
+                    match &binding.pattern {
+                        Pattern::Ident(name, _, node_id) => {
+                            let ty = checker.fresh_ty();
+                            checker.node_types.insert(*node_id, ty.clone());
+                            env.insert(name.clone(), Scheme::mono(ty));
+                        }
+                        Pattern::Record(rp) => {
+                            for fp in &rp.fields {
+                                let bind_name = fp
+                                    .pattern
+                                    .as_ref()
+                                    .and_then(|p| {
+                                        if let Pattern::Ident(n, _, _) = p {
+                                            Some(n.clone())
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .unwrap_or_else(|| fp.name.clone());
+                                let ty = checker.fresh_ty();
+                                env.insert(bind_name, Scheme::mono(ty));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    // Best-effort export type inference — ignore errors.
+    let _ = checker.infer(&env, &program.exports);
+
+    // Apply final substitution.
+    let resolved_env: TypeEnv = {
+        let mut e = TypeEnv::new();
+        for (name, scheme) in env.iter() {
+            e.insert(name.clone(), checker.subst.apply_scheme(scheme));
+        }
+        e
+    };
+    let node_types: HashMap<NodeId, Ty> = checker
+        .node_types
+        .into_iter()
+        .map(|(id, ty)| (id, checker.subst.apply(&ty)))
+        .collect();
+
+    (node_types, resolved_env, errors)
 }
