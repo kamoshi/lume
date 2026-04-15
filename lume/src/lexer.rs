@@ -22,8 +22,9 @@ pub enum Token {
     If,
     Then,
     Else,
-    And,
-    Or,
+    And,       // keyword: mutual recursion separator
+    AmpAmp,    // &&
+    PipePipe,  // ||
     Not,
     In,
 
@@ -275,14 +276,31 @@ impl<'src> Lexer<'src> {
                 Token::Colon
             }
 
-            // | or |>
+            // | or |> or ||
             b'|' => {
                 self.advance();
                 if self.peek() == Some(b'>') {
                     self.advance();
                     Token::Pipe
+                } else if self.peek() == Some(b'|') {
+                    self.advance();
+                    Token::PipePipe
                 } else {
                     Token::Bar
+                }
+            }
+
+            // &&
+            b'&' => {
+                self.advance();
+                if self.peek() == Some(b'&') {
+                    self.advance();
+                    Token::AmpAmp
+                } else {
+                    return Err(LexError {
+                        kind: LexErrorKind::UnexpectedChar(b'&'),
+                        span: self.span_at(line, col, 1),
+                    });
                 }
             }
 
@@ -398,7 +416,6 @@ impl<'src> Lexer<'src> {
             "true" => Token::True,
             "false" => Token::False,
             "and" => Token::And,
-            "or" => Token::Or,
             "not" => Token::Not,
             "in" => Token::In,
             _ => Token::Ident(word.to_string()),

@@ -7,7 +7,7 @@ let gcd = a -> b ->
 
 -- lcm : Num -> Num -> Num
 let lcm = a -> b ->
-  if a == 0 or b == 0
+  if a == 0 || b == 0
   then 0
   else (a / gcd a b) * b
 

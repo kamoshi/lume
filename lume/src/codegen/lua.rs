@@ -424,6 +424,10 @@ impl Emitter {
                     self.emit_binding(b);
                     self.out.push('\n');
                 }
+                TopItem::BindingGroup(bs) => {
+                    self.emit_binding_group(bs);
+                    self.out.push('\n');
+                }
             }
         }
 
@@ -502,6 +506,45 @@ impl Emitter {
 
     fn emit_binding(&mut self, b: &Binding) {
         self.emit_pat_binding(&b.pattern, &b.value);
+    }
+
+    /// Emit a mutually recursive binding group.
+    ///
+    /// All names are declared with a single `local` statement first, so every
+    /// body in the group can close over every other name.
+    fn emit_binding_group(&mut self, bs: &[Binding]) {
+        // Collect names of simple Ident patterns.
+        let names: Vec<String> = bs
+            .iter()
+            .filter_map(|b| {
+                if let Pattern::Ident(name, _, _) = &b.pattern {
+                    Some(lua_ident(name).into_owned())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if !names.is_empty() {
+            self.out.push_str(&format!("local {}\n", names.join(", ")));
+        }
+
+        // Now emit each assignment (without the `local` prefix).
+        for b in bs {
+            match &b.pattern {
+                Pattern::Ident(name, _, _) => {
+                    let n = lua_ident(name).into_owned();
+                    self.out.push_str(&format!("{} = ", n));
+                    self.emit_expr(&b.value);
+                    self.out.push('\n');
+                }
+                _ => {
+                    // Non-ident patterns fall back to the normal path.
+                    self.emit_pat_binding(&b.pattern, &b.value);
+                    self.out.push('\n');
+                }
+            }
+        }
     }
 
     /// Emit one or more `local` statements for `pat = expr`.

@@ -105,7 +105,19 @@ pub fn parse_program(tokens: &[Spanned]) -> Result<Program, ParseError> {
             Some(Token::Let) => {
                 let (n, b) = parse_binding(&tokens[ptr..])?;
                 ptr += n;
-                items.push(TopItem::Binding(b));
+                // Collect `and let …` continuations into a mutually recursive group.
+                if matches!(first_token(&tokens[ptr..]), Some(Token::And)) {
+                    let mut group = vec![b];
+                    while matches!(first_token(&tokens[ptr..]), Some(Token::And)) {
+                        ptr += 1; // consume `and`
+                        let (n, next) = parse_binding(&tokens[ptr..])?;
+                        ptr += n;
+                        group.push(next);
+                    }
+                    items.push(TopItem::BindingGroup(group));
+                } else {
+                    items.push(TopItem::Binding(b));
+                }
             }
             _ => break,
         }
@@ -383,8 +395,8 @@ fn infix_bp(tok: &Token) -> Option<(u8, u8)> {
     match tok {
         Token::Pipe => Some((10, 11)),       // |>  left-assoc
         Token::ResultPipe => Some((12, 13)), // ?>  left-assoc
-        Token::Or => Some((20, 21)),         // or  left-assoc
-        Token::And => Some((30, 31)),        // and left-assoc
+        Token::PipePipe => Some((20, 21)),    // || left-assoc
+        Token::AmpAmp => Some((30, 31)),     // && left-assoc
         Token::EqEq | Token::BangEq => Some((40, 41)),
         Token::Lt | Token::Gt | Token::LtEq | Token::GtEq => Some((40, 41)),
         Token::Concat => Some((50, 50)), // ++ right-assoc (equal bps)
@@ -398,8 +410,8 @@ fn token_to_binop(tok: &Token) -> Option<BinOp> {
     match tok {
         Token::Pipe => Some(BinOp::Pipe),
         Token::ResultPipe => Some(BinOp::ResultPipe),
-        Token::Or => Some(BinOp::Or),
-        Token::And => Some(BinOp::And),
+        Token::PipePipe => Some(BinOp::Or),
+        Token::AmpAmp => Some(BinOp::And),
         Token::EqEq => Some(BinOp::Eq),
         Token::BangEq => Some(BinOp::NotEq),
         Token::Lt => Some(BinOp::Lt),

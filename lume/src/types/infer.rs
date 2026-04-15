@@ -1483,9 +1483,11 @@ impl Checker {
         self.apply_imports(&program.uses, base, loader, &mut env)?;
 
         for item in &program.items {
-            if let TopItem::Binding(binding) = item {
-                env = self.check_binding(binding, env)?;
-            }
+            env = match item {
+                TopItem::Binding(b) => self.check_binding(b, env)?,
+                TopItem::BindingGroup(bs) => self.check_binding_group(bs, env)?,
+                TopItem::TypeDef(_) => env,
+            };
         }
 
         let export_ty = self.infer(&env, &program.exports)?;
@@ -1529,6 +1531,65 @@ impl Checker {
         let mut new_env = env;
         self.bind_pattern_scheme(&binding.pattern, scheme, &mut new_env)
             .map_err(|e| TypeErrorAt::new(e, value_span.clone()))?;
+        Ok(new_env)
+    }
+
+    /// Type-check a mutually recursive binding group (`let f = … and let g = …`).
+    ///
+    /// All binding names are added as fresh type variables before any body is
+    /// checked so each body can refer to all names in the group.  After all
+    /// bodies are checked the types are generalised together.
+    fn check_binding_group(
+        &mut self,
+        bindings: &[Binding],
+        env: TypeEnv,
+    ) -> Result<TypeEnv, TypeErrorAt> {
+        // Phase 1 — add a fresh placeholder for every name in the group.
+        let mut rec_env = env.clone();
+        let mut placeholders: Vec<(Pattern, Span, Option<Ty>)> = Vec::new();
+        for binding in bindings {
+            let ph = match &binding.pattern {
+                Pattern::Ident(name, _, _) => {
+                    let t = self.fresh_ty();
+                    rec_env = rec_env.extend_one(name.clone(), t.clone());
+                    Some(t)
+                }
+                _ => None,
+            };
+            placeholders.push((binding.pattern.clone(), binding.value.span.clone(), ph));
+        }
+
+        // Phase 2 — infer / check each body inside the extended env.
+        let mut schemes: Vec<Scheme> = Vec::new();
+        for (binding, (_, value_span, ph)) in bindings.iter().zip(placeholders.iter()) {
+            let scheme = if let Some(ann) = &binding.ty {
+                let mut param_vars: HashMap<String, TyVar> = HashMap::new();
+                let ann_ty = self
+                    .lower_ty(ann, &mut param_vars)
+                    .map_err(|e| TypeErrorAt::new(e, value_span.clone()))?;
+                if let Some(ph) = ph {
+                    self.unify_at(ph.clone(), ann_ty.clone(), value_span)?;
+                }
+                self.check(&rec_env, &binding.value, ann_ty.clone())?;
+                self.generalise(&env, &ann_ty)
+            } else {
+                let inferred = self.infer(&rec_env, &binding.value)?;
+                let inferred = self.subst.apply(&inferred);
+                if let Some(ph) = ph {
+                    let ph = self.subst.apply(ph);
+                    self.unify_at(ph, inferred.clone(), value_span)?;
+                }
+                self.generalise(&env, &inferred)
+            };
+            schemes.push(scheme);
+        }
+
+        // Phase 3 — bind all patterns in the output env.
+        let mut new_env = env;
+        for (binding, scheme) in bindings.iter().zip(schemes) {
+            self.bind_pattern_scheme(&binding.pattern, scheme, &mut new_env)
+                .map_err(|e| TypeErrorAt::new(e, binding.value.span.clone()))?;
+        }
         Ok(new_env)
     }
 
@@ -1578,6 +1639,49 @@ pub struct BindingInfo {
     pub scheme: Scheme,
 }
 
+// ── Shared helpers for elaborate* functions ───────────────────────────────────
+
+/// After successfully checking a binding, record the node type for a simple
+/// `let name = …` pattern so hover works on the binding site.
+fn record_ident_node_type(binding: &Binding, checker: &mut Checker, env: &TypeEnv) {
+    if let Pattern::Ident(name, _, node_id) = &binding.pattern {
+        if let Some(scheme) = env.lookup(name) {
+            let ty = checker.subst.apply(&scheme.ty);
+            checker.node_types.insert(*node_id, ty);
+        }
+    }
+}
+
+/// On a failed binding, insert fresh type variables so downstream code doesn't
+/// cascade into spurious "unbound variable" errors.
+fn fresh_fallback_binding(checker: &mut Checker, env: &mut TypeEnv, binding: &Binding) {
+    match &binding.pattern {
+        Pattern::Ident(name, _, node_id) => {
+            let ty = checker.fresh_ty();
+            checker.node_types.insert(*node_id, ty.clone());
+            env.insert(name.clone(), Scheme::mono(ty));
+        }
+        Pattern::Record(rp) => {
+            for fp in &rp.fields {
+                let bind_name = fp
+                    .pattern
+                    .as_ref()
+                    .and_then(|p| {
+                        if let Pattern::Ident(n, _, _) = p {
+                            Some(n.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_else(|| fp.name.clone());
+                let ty = checker.fresh_ty();
+                env.insert(bind_name, Scheme::mono(ty));
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Type-check a program and return top-level binding info for CLI display,
 /// plus the export type.
 pub fn elaborate_bindings(
@@ -1595,9 +1699,18 @@ pub fn elaborate_bindings(
 
     let mut bindings = Vec::new();
     for item in &program.items {
-        if let TopItem::Binding(b) = item {
-            env = checker.check_binding(b, env)?;
-            collect_binding_info(&b.pattern, &env, &checker, &mut bindings);
+        match item {
+            TopItem::Binding(b) => {
+                env = checker.check_binding(b, env)?;
+                collect_binding_info(&b.pattern, &env, &checker, &mut bindings);
+            }
+            TopItem::BindingGroup(bs) => {
+                env = checker.check_binding_group(bs, env)?;
+                for b in bs {
+                    collect_binding_info(&b.pattern, &env, &checker, &mut bindings);
+                }
+            }
+            TopItem::TypeDef(_) => {}
         }
     }
 
@@ -1676,17 +1789,18 @@ pub fn elaborate(
     checker.apply_imports(&program.uses, path, &mut loader, &mut env)?;
 
     for item in &program.items {
-        if let TopItem::Binding(binding) = item {
-            env = checker.check_binding(binding, env)?;
-            // Record the type for the binding name so hover works on `let x = ...`.
-            // For simple `let x = ...`, infer_pattern already recorded it, but
-            // the scheme may be generalized after check_binding so we update it.
-            if let Pattern::Ident(name, _, node_id) = &binding.pattern {
-                if let Some(scheme) = env.lookup(name) {
-                    let ty = checker.subst.apply(&scheme.ty);
-                    checker.node_types.insert(*node_id, ty);
+        match item {
+            TopItem::Binding(b) => {
+                env = checker.check_binding(b, env)?;
+                record_ident_node_type(b, &mut checker, &env);
+            }
+            TopItem::BindingGroup(bs) => {
+                env = checker.check_binding_group(bs, env)?;
+                for b in bs {
+                    record_ident_node_type(b, &mut checker, &env);
                 }
             }
+            TopItem::TypeDef(_) => {}
         }
     }
 
@@ -1720,14 +1834,18 @@ pub fn elaborate_with_env(
     checker.apply_imports(&program.uses, path, &mut loader, &mut env)?;
 
     for item in &program.items {
-        if let TopItem::Binding(binding) = item {
-            env = checker.check_binding(binding, env)?;
-            if let Pattern::Ident(name, _, node_id) = &binding.pattern {
-                if let Some(scheme) = env.lookup(name) {
-                    let ty = checker.subst.apply(&scheme.ty);
-                    checker.node_types.insert(*node_id, ty);
+        match item {
+            TopItem::Binding(b) => {
+                env = checker.check_binding(b, env)?;
+                record_ident_node_type(b, &mut checker, &env);
+            }
+            TopItem::BindingGroup(bs) => {
+                env = checker.check_binding_group(bs, env)?;
+                for b in bs {
+                    record_ident_node_type(b, &mut checker, &env);
                 }
             }
+            TopItem::TypeDef(_) => {}
         }
     }
 
@@ -1772,48 +1890,36 @@ pub fn elaborate_with_env_partial(
     let mut errors = checker.apply_imports_partial(&program.uses, path, &mut loader, &mut env);
 
     for item in &program.items {
-        if let TopItem::Binding(binding) = item {
-            match checker.check_binding(binding, env.clone()) {
-                Ok(new_env) => {
-                    env = new_env;
-                    if let Pattern::Ident(name, _, node_id) = &binding.pattern {
-                        if let Some(scheme) = env.lookup(name) {
-                            let ty = checker.subst.apply(&scheme.ty);
-                            checker.node_types.insert(*node_id, ty);
-                        }
+        match item {
+            TopItem::Binding(binding) => {
+                match checker.check_binding(binding, env.clone()) {
+                    Ok(new_env) => {
+                        env = new_env;
+                        record_ident_node_type(binding, &mut checker, &env);
                     }
-                }
-                Err(e) => {
-                    errors.push(e);
-                    // Give the failed binding(s) a fresh type variable so
-                    // subsequent code doesn't cascade into "unbound variable".
-                    match &binding.pattern {
-                        Pattern::Ident(name, _, node_id) => {
-                            let ty = checker.fresh_ty();
-                            checker.node_types.insert(*node_id, ty.clone());
-                            env.insert(name.clone(), Scheme::mono(ty));
-                        }
-                        Pattern::Record(rp) => {
-                            for fp in &rp.fields {
-                                let bind_name = fp
-                                    .pattern
-                                    .as_ref()
-                                    .and_then(|p| {
-                                        if let Pattern::Ident(n, _, _) = p {
-                                            Some(n.clone())
-                                        } else {
-                                            None
-                                        }
-                                    })
-                                    .unwrap_or_else(|| fp.name.clone());
-                                let ty = checker.fresh_ty();
-                                env.insert(bind_name, Scheme::mono(ty));
-                            }
-                        }
-                        _ => {}
+                    Err(e) => {
+                        errors.push(e);
+                        fresh_fallback_binding(&mut checker, &mut env, binding);
                     }
                 }
             }
+            TopItem::BindingGroup(bs) => {
+                match checker.check_binding_group(bs, env.clone()) {
+                    Ok(new_env) => {
+                        env = new_env;
+                        for b in bs {
+                            record_ident_node_type(b, &mut checker, &env);
+                        }
+                    }
+                    Err(e) => {
+                        errors.push(e);
+                        for b in bs {
+                            fresh_fallback_binding(&mut checker, &mut env, b);
+                        }
+                    }
+                }
+            }
+            TopItem::TypeDef(_) => {}
         }
     }
 

@@ -24,6 +24,8 @@ pub struct Program {
 pub enum TopItem {
     TypeDef(TypeDef),
     Binding(Binding),
+    /// Two or more bindings joined by `and` that are mutually recursive.
+    BindingGroup(Vec<Binding>),
 }
 
 /// `use math = "./math"`  or  `use { area, pi } = "./math"`
@@ -309,9 +311,18 @@ pub fn assign_node_ids(program: &mut Program) {
         }
     }
     for item in &mut program.items {
-        if let TopItem::Binding(b) = item {
-            assign_ids_pattern(&mut b.pattern, &mut counter);
-            assign_ids_expr(&mut b.value, &mut counter);
+        match item {
+            TopItem::Binding(b) => {
+                assign_ids_pattern(&mut b.pattern, &mut counter);
+                assign_ids_expr(&mut b.value, &mut counter);
+            }
+            TopItem::BindingGroup(bs) => {
+                for b in bs {
+                    assign_ids_pattern(&mut b.pattern, &mut counter);
+                    assign_ids_expr(&mut b.value, &mut counter);
+                }
+            }
+            TopItem::TypeDef(_) => {}
         }
     }
     assign_ids_expr(&mut program.exports, &mut counter);

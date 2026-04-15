@@ -21,10 +21,10 @@ let sum = fold 0 (acc -> x -> acc + x)
 let product = fold 1 (acc -> x -> acc * x)
 
 -- any : (a -> Bool) -> List a -> Bool
-let any = f -> fold false (acc -> x -> acc or f x)
+let any = f -> fold false (acc -> x -> acc || f x)
 
 -- all : (a -> Bool) -> List a -> Bool
-let all = f -> fold true (acc -> x -> acc and f x)
+let all = f -> fold true (acc -> x -> acc && f x)
 
 -- count : (a -> Bool) -> List a -> Num
 let count = f -> fold 0 (acc -> x -> if f x then acc + 1 else acc)

@@ -153,6 +153,12 @@ impl Emitter {
                     self.emit_binding(b);
                     self.out.push('\n');
                 }
+                TopItem::BindingGroup(bs) => {
+                    for b in bs {
+                        self.emit_binding(b);
+                        self.out.push('\n');
+                    }
+                }
             }
         }
 
