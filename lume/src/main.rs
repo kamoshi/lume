@@ -38,7 +38,7 @@ fn run_file(path: &str) -> bool {
     };
     match types::infer::check_program(&program, Some(Path::new(path))) {
         Ok(ty) => {
-            println!("{path}: ok  —  exports : {ty}");
+            println!("{path}: ok  -  exports : {ty}");
             true
         }
         Err(e) => {

@@ -77,8 +77,7 @@ fn analyse(uri: &Url, src: &str) -> (Option<DocInfo>, Vec<Diagnostic>) {
         Err(e) => return (None, vec![error_to_diagnostic(LumeError::Parse(e))]),
     };
     let path = uri.to_file_path().ok();
-    let (node_types, top_env, type_errors) =
-        elaborate_with_env_partial(&program, path.as_deref());
+    let (node_types, top_env, type_errors) = elaborate_with_env_partial(&program, path.as_deref());
     let span_index = collect_spans(&program);
     let doc_info = Some(DocInfo {
         node_types,
@@ -272,13 +271,13 @@ fn word_at(text: &str, line: u32, character: u32) -> Option<&str> {
 enum CompletionCtx {
     /// Suppress completions (e.g. cursor is on a binding name after `let`).
     None,
-    /// Cursor is in a position like `record.` or `record.partial` — suggest fields.
+    /// Cursor is in a position like `record.` or `record.partial` - suggest fields.
     FieldAccess {
         record: String,
         prefix: String,
         replace_range: Range,
     },
-    /// Cursor is on a plain identifier — suggest all in-scope names.
+    /// Cursor is on a plain identifier - suggest all in-scope names.
     Ident {
         prefix: String,
         replace_range: Range,
@@ -434,7 +433,10 @@ fn ident_completions(doc: &DocInfo, prefix: &str, replace_range: Range) -> Vec<C
 /// Completion items for `use … = "lume:<prefix>"`.
 fn stdlib_path_completions(prefix: &str, prefix_col: usize, pos: Position) -> Vec<CompletionItem> {
     let replace_range = Range {
-        start: Position { line: pos.line, character: prefix_col as u32 },
+        start: Position {
+            line: pos.line,
+            character: prefix_col as u32,
+        },
         end: pos,
     };
     let lower = prefix.to_lowercase();
@@ -469,7 +471,10 @@ fn file_path_completions(
     pos: Position,
 ) -> Vec<CompletionItem> {
     let replace_range = Range {
-        start: Position { line: pos.line, character: prefix_col as u32 },
+        start: Position {
+            line: pos.line,
+            character: prefix_col as u32,
+        },
         end: pos,
     };
     let doc_path = match doc_uri.to_file_path() {
@@ -611,7 +616,7 @@ impl LanguageServer for Backend {
             return Ok(None);
         }
 
-        // Use-path completions don't need type information — serve them even
+        // Use-path completions don't need type information - serve them even
         // when the document has errors and doc_info is unavailable.
         if let CompletionCtx::UsePath(up) = ctx {
             let ctx_label = format!("UsePath(prefix={:?})", up.prefix);
@@ -624,7 +629,9 @@ impl LanguageServer for Backend {
                     MessageType::LOG,
                     format!(
                         "completion pos={},{} ctx={ctx_label} items={}",
-                        pos.line, pos.character, items.len()
+                        pos.line,
+                        pos.character,
+                        items.len()
                     ),
                 )
                 .await;
@@ -739,7 +746,7 @@ impl Backend {
 
 #[tokio::main]
 async fn main() {
-    // Log to stderr — Zed captures this and shows it in the LSP log panel.
+    // Log to stderr - Zed captures this and shows it in the LSP log panel.
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_ansi(false)

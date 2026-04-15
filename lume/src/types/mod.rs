@@ -6,25 +6,52 @@ pub use error::{TypeError, TypeErrorAt};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
+// TyVar is just a cheap integer handle.  Every unification variable in the
+// program gets a unique ID from the shared counter in Subst.
 pub type TyVar = u32;
 
 // ── Core types ────────────────────────────────────────────────────────────────
 
+// The internal representation of a Lume type.
+//
+// Ground types (Num, Text, Bool) carry no information - equality is structural.
+// Compound types (List, Func, Con) recurse into their children.
+// Record wraps a Row (see below) to carry the field / open-tail information.
+// Var is an *unification variable*: a placeholder that the solver will
+//   eventually bind to a concrete type.  These are never written in user code;
+//   they are generated internally by `Subst::fresh_var`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Ty {
     Num,
     Text,
     Bool,
     List(Box<Ty>),
+    /// Single-argument functions only; multi-argument functions are curried:
+    /// `a -> b -> c` is stored as `Func(a, Func(b, c))`.
     Func(Box<Ty>, Box<Ty>),
     Record(Row),
-    /// User-defined: `Shape`, `Tree Num`, `Maybe Text`
+    /// User-defined type constructor with type arguments.
+    /// `Shape` → `Con("Shape", [])`, `Tree Num` → `Con("Tree", [Num])`.
     Con(String, Vec<Ty>),
-    /// Unification variable
+    /// An unsolved unification variable.  Once the solver binds it via
+    /// `Subst::bind_ty`, every future call to `apply` replaces it.
     Var(TyVar),
 }
 
-/// The "inside" of a record type.
+// Row types are the mechanism behind record / structural typing.
+//
+// A Row describes the fields of a record.  The tail decides whether the record
+// is "closed" (exact field set) or "open" (more fields allowed):
+//
+//   { x: Num }           →  Row { fields:[("x",Num)], tail:Closed }
+//   { x: Num, ..r }      →  Row { fields:[("x",Num)], tail:Open(r) }
+//
+// `Open(v)` is itself an unification variable (row variable).  Unifying two
+// open rows creates a fresh shared tail that captures the union of extra
+// fields - this is what makes row polymorphism work.
+//
+// Fields are always kept sorted by name so that structural equality and
+// display are order-independent.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Row {
     /// Field pairs, kept sorted by name.
@@ -34,11 +61,24 @@ pub struct Row {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum RowTail {
+    /// No more fields - the record is fully determined.
     Closed,
+    /// More fields may be added later; `v` is an unbound row variable.
     Open(TyVar),
 }
 
-/// A polymorphic type scheme ∀vars row_vars. ty
+// A polymorphic type scheme  ∀ vars row_vars . ty
+//
+// `vars` are the quantified *type* variables; `row_vars` are the quantified
+// *row* variables.  Both start as ordinary TyVar integers - the quantification
+// is only by membership in these lists, not by a separate namespace.
+//
+// A monomorphic type has empty `vars` and `row_vars`.  `Scheme::mono` is a
+// convenience constructor for that common case.
+//
+// Schemes live in the TypeEnv.  When a name is used, its scheme is
+// *instantiated* (all quantified vars are replaced with fresh ones) so that
+// each use site gets an independent set of type variables.
 #[derive(Debug, Clone)]
 pub struct Scheme {
     pub vars: Vec<TyVar>,
@@ -58,8 +98,23 @@ impl Scheme {
 
 // ── Substitution ──────────────────────────────────────────────────────────────
 
-/// The shared mutable state of the type inference engine:
-/// a fresh-variable counter plus two union-find tables.
+// The Subst is the *entire* mutable state of one type-checking session.
+//
+// It plays three roles simultaneously:
+//
+//  1. Fresh-variable allocator - `counter` is bumped on every `fresh_var`.
+//
+//  2. Type-variable binding map - `tys` maps solved type variables to their
+//     concrete types.  Before a variable is solved it simply isn't present.
+//     Think of it as the "find" table of a union-find structure.
+//
+//  3. Row-variable binding map - `rows` does the same for row variables.
+//     The value is a partial Row (fields + new tail) rather than a full type.
+//
+// One Subst is created per module being type-checked.  All checkers for
+// transitive imports use their own Subst; the export type is fully normalised
+// before being packaged into a Scheme, so no Subst leaks across module
+// boundaries.
 #[derive(Debug, Clone, Default)]
 pub struct Subst {
     pub counter: u32,
@@ -72,6 +127,8 @@ impl Subst {
         Self::default()
     }
 
+    /// Allocate a fresh type variable.  The returned ID is guaranteed not to
+    /// have been used before in this Subst session.
     pub fn fresh_var(&mut self) -> TyVar {
         let v = self.counter;
         self.counter += 1;
@@ -82,14 +139,63 @@ impl Subst {
         Ty::Var(self.fresh_var())
     }
 
+    // Record the decision that unification variable `v` equals `ty`.
+    //
+    // Invariants maintained:
+    //
+    //  • No self-loops: if `apply(ty) == Var(v)` the mapping would create a
+    //    trivial cycle; we drop it.
+    //
+    //  • No redundant overwrites: if `v` is already bound, the new type must
+    //    be *consistent* with the existing one, so we delegate to `unify`
+    //    rather than blindly overwriting.  Overwriting is the classic source
+    //    of "phantom" cycles where previously-solved information is lost.
+    //
+    //  • Normalisation before insertion: we apply the current substitution to
+    //    `ty` first so that the stored value is as ground as possible.  This
+    //    keeps chains short and prevents false cycles from path compression.
     pub fn bind_ty(&mut self, v: TyVar, ty: Ty) {
-        self.tys.insert(v, ty);
-    }
-    pub fn bind_row(&mut self, v: TyVar, row: Row) {
-        self.rows.insert(v, row);
+        // Normalize through the current substitution so chains that already
+        // lead back to `v` are collapsed before we insert anything.
+        let ty = self.apply(&ty);
+        if ty == Ty::Var(v) {
+            return; // self-loop / already equivalent - nothing to do
+        }
+        if let Some(existing) = self.tys.get(&v).cloned() {
+            // v is already solved; the two solutions must agree.
+            let _ = unify(self, existing, ty);
+        } else {
+            self.tys.insert(v, ty);
+        }
     }
 
-    /// Apply substitution to a type (normalise, following chains).
+    // Same contract as `bind_ty` but for row variables.
+    //
+    // A row self-loop looks like: Open(v) with no extra fields and tail=Open(v),
+    // i.e. the row variable points back to itself with nothing new.
+    pub fn bind_row(&mut self, v: TyVar, row: Row) {
+        let row = self.apply_row(&row);
+        if row.tail == RowTail::Open(v) && row.fields.is_empty() {
+            return; // self-loop
+        }
+        if let Some(existing) = self.rows.get(&v).cloned() {
+            let _ = unify_rows(self, existing, row);
+        } else {
+            self.rows.insert(v, row);
+        }
+    }
+
+    // Walk a type to its fully-normalised form.
+    //
+    // For `Var(v)`: follow the chain `v → tys[v] → tys[tys[v]] → …` until we
+    // reach either a non-Var type or an unbound variable.  This is the "find"
+    // step of the union-find.
+    //
+    // For structural types: recurse into children so the entire tree is
+    // normalised.  We do *not* increment a depth counter for structural
+    // recursion - only Var-chain following matters for cycle detection.
+    // Cycles in `tys` are prevented by `bind_ty`; once that invariant holds,
+    // `apply` always terminates.
     pub fn apply(&self, ty: &Ty) -> Ty {
         match ty {
             Ty::Var(v) => match self.tys.get(v) {
@@ -104,8 +210,18 @@ impl Subst {
         }
     }
 
-    /// Apply substitution to a row, following row-variable chains and
-    /// merging fields from each step in the chain.
+    // Normalise a row by following the row-variable chain and collecting all
+    // accumulated fields.
+    //
+    // The row chain is a linked list: each Open(v) node may have a binding in
+    // `self.rows` that extends it with more fields and a new tail.  We walk
+    // the chain (iteratively, not recursively, to stay stack-safe) merging
+    // every extension into a single flat field list.  Earlier fields win if
+    // the same name appears twice (the binder closest to the head of the
+    // chain is the most recent constraint).
+    //
+    // The result always has a canonical sorted field list and either a Closed
+    // tail or an Open(v) where v is unbound.
     pub fn apply_row(&self, row: &Row) -> Row {
         let mut fields: Vec<(String, Ty)> = row
             .fields
@@ -118,8 +234,9 @@ impl Subst {
             match tail.clone() {
                 RowTail::Closed => break,
                 RowTail::Open(v) => match self.rows.get(&v) {
-                    None => break,
+                    None => break, // unbound - chain ends here
                     Some(ext) => {
+                        // Merge extension fields; earlier (more-derived) fields take priority.
                         for (k, t) in &ext.fields {
                             if !fields.iter().any(|(fk, _)| fk == k) {
                                 fields.push((k.clone(), self.apply(t)));
@@ -134,7 +251,16 @@ impl Subst {
         Row { fields, tail }
     }
 
-    /// Apply substitution to a scheme, skipping quantified variables.
+    // Apply the substitution to a scheme while *skipping* the quantified vars.
+    //
+    // Quantified vars (those in `scheme.vars` / `scheme.row_vars`) are
+    // placeholders that will be replaced at every *use site* by fresh vars.
+    // They must not be substituted away by the ambient substitution - doing so
+    // would corrupt the scheme's polymorphism.
+    //
+    // We implement the skip by building a restricted Subst that excludes the
+    // quantified vars from the binding maps.  The restricted Subst is
+    // temporary and only used for this one `apply` call.
     pub fn apply_scheme(&self, scheme: &Scheme) -> Scheme {
         let tys: HashMap<TyVar, Ty> = self
             .tys
@@ -162,6 +288,14 @@ impl Subst {
 }
 
 // ── Free variable collection ──────────────────────────────────────────────────
+
+// These two functions collect the *syntactic* free variables of a (possibly
+// partially-solved) type - i.e. the Var nodes that remain after every chain
+// has been followed as far as it goes.
+//
+// They are used by `generalise` to decide which variables are safe to
+// quantify: a variable that still appears free in the *environment* is a
+// monomorphic "skolem" and must not be generalised.
 
 pub fn free_type_vars(ty: &Ty) -> HashSet<TyVar> {
     let mut set = HashSet::new();
@@ -191,6 +325,8 @@ fn collect_ftv(ty: &Ty, set: &mut HashSet<TyVar>) {
     }
 }
 
+// Row variables (Open tails) are tracked separately because they participate
+// in a different part of the scheme: `Scheme::row_vars` vs `Scheme::vars`.
 fn collect_frv(ty: &Ty, set: &mut HashSet<TyVar>) {
     match ty {
         Ty::List(t) => collect_frv(t, set),
@@ -211,6 +347,23 @@ fn collect_frv(ty: &Ty, set: &mut HashSet<TyVar>) {
 
 // ── Unification ───────────────────────────────────────────────────────────────
 
+// Robinson-style first-order unification.
+//
+// Given two types `t1` and `t2`, find the most-general substitution that
+// makes them equal.  The substitution is accumulated destructively in `s`.
+//
+// Steps:
+//  1. Normalise both types through the current substitution first - so we
+//     always work with the most-ground versions, not stale Var pointers.
+//  2. If both are the same ground type (Num/Text/Bool), nothing to do.
+//  3. If either is a Var:
+//      a. If it's the same var, trivially equal.
+//      b. Run the occurs check: binding `v` to a type that contains `v`
+//         itself would create an infinite type (e.g. `a = List a`).  Reject.
+//      c. Record the binding via `bind_ty`.
+//  4. Structural cases (List, Func, Con): unify children pairwise.
+//  5. Records delegate to `unify_rows`.
+//  6. Anything else: mismatch error.
 pub fn unify(s: &mut Subst, t1: Ty, t2: Ty) -> Result<(), TypeError> {
     let t1 = s.apply(&t1);
     let t2 = s.apply(&t2);
@@ -220,7 +373,7 @@ pub fn unify(s: &mut Subst, t1: Ty, t2: Ty) -> Result<(), TypeError> {
 
         (Ty::Var(v), t) => {
             if t == Ty::Var(v) {
-                return Ok(());
+                return Ok(()); // already the same variable
             }
             if ty_occurs(v, &t) {
                 return Err(TypeError::OccursCheck(v));
@@ -238,6 +391,9 @@ pub fn unify(s: &mut Subst, t1: Ty, t2: Ty) -> Result<(), TypeError> {
 
         (Ty::List(a), Ty::List(b)) => unify(s, *a, *b),
 
+        // Functions unify contra-co-variantly: param types must match and
+        // return types must match.  (Lume has no subtyping so both are
+        // invariant in practice.)
         (Ty::Func(p1, r1), Ty::Func(p2, r2)) => {
             unify(s, *p1, *p2)?;
             unify(s, *r1, *r2)
@@ -245,6 +401,8 @@ pub fn unify(s: &mut Subst, t1: Ty, t2: Ty) -> Result<(), TypeError> {
 
         (Ty::Record(r1), Ty::Record(r2)) => unify_rows(s, r1, r2),
 
+        // Nominal: two Con types unify only if they have the same constructor
+        // name and the same arity, then their arguments are unified pairwise.
         (Ty::Con(n1, a1), Ty::Con(n2, a2)) if n1 == n2 && a1.len() == a2.len() => {
             for (t1, t2) in a1.into_iter().zip(a2.into_iter()) {
                 unify(s, t1, t2)?;
@@ -256,13 +414,36 @@ pub fn unify(s: &mut Subst, t1: Ty, t2: Ty) -> Result<(), TypeError> {
     }
 }
 
-/// Row unification — the core of row polymorphism.
-///
-/// After normalising both rows:
-/// - Common fields are unified pairwise.
-/// - Extra fields from each side are absorbed by the other row's tail variable.
-/// - If both are closed, field sets must match exactly.
-/// - If both are open with different row vars, a fresh shared tail is created.
+// Row unification - the core of row polymorphism.
+//
+// Intuition: a row represents a *set* of field constraints.  Unifying two
+// rows means finding an assignment of the tail variables that satisfies both
+// sets simultaneously.
+//
+// Algorithm (after normalising both sides):
+//
+//  1. Collect common fields and unify them pairwise.
+//  2. Collect the fields that appear on only one side ("extras").
+//  3. Dispatch on the tail combination:
+//
+//     Closed × Closed  - No extras allowed; exact match required.
+//
+//     Open(v) × Closed - The open side must not have fields the closed side
+//                         lacks (that would violate the closed constraint).
+//                         The open tail absorbs the closed side's extras:
+//                           bind v → { extras_from_closed | Closed }
+//
+//     Closed × Open(v) - Symmetric.
+//
+//     Open(v1) × Open(v2), v1 ≠ v2 - Neither side is fully known.  Create a
+//                         fresh shared tail `f` and bind:
+//                           v1 → { extras_from_r2 | Open(f) }
+//                           v2 → { extras_from_r1 | Open(f) }
+//                         This encodes: "both rows must have all the fields
+//                         of the other, plus whatever `f` brings."
+//
+//     Open(v) × Open(v) - Same variable: no extras allowed (they're already
+//                         structurally equal once we normalised).
 fn unify_rows(s: &mut Subst, r1: Row, r2: Row) -> Result<(), TypeError> {
     let r1 = s.apply_row(&r1);
     let r2 = s.apply_row(&r2);
@@ -288,7 +469,7 @@ fn unify_rows(s: &mut Subst, r1: Row, r2: Row) -> Result<(), TypeError> {
 
     match (r1.tail, r2.tail) {
         (RowTail::Closed, RowTail::Closed) => {
-            // Both closed — field sets must be identical.
+            // Both closed - field sets must be identical.
             let bad = extras1.first().or(extras2.first()).map(|(f, _)| f.clone());
             if let Some(f) = bad {
                 return Err(TypeError::RowMismatch(f));
@@ -329,7 +510,7 @@ fn unify_rows(s: &mut Subst, r1: Row, r2: Row) -> Result<(), TypeError> {
 
         (RowTail::Open(v1), RowTail::Open(v2)) => {
             if v1 == v2 {
-                // Same row var — no extras allowed.
+                // Same row var - no extras allowed.
                 let bad = extras1.first().or(extras2.first()).map(|(f, _)| f.clone());
                 if let Some(f) = bad {
                     return Err(TypeError::RowMismatch(f));
@@ -356,6 +537,9 @@ fn unify_rows(s: &mut Subst, r1: Row, r2: Row) -> Result<(), TypeError> {
     Ok(())
 }
 
+// The occurs check prevents binding `v` to any type that contains `v`.
+// Without it, `unify(a, List a)` would succeed and create an infinite type,
+// causing `apply` to loop forever when it tried to normalise `a`.
 fn ty_occurs(v: TyVar, ty: &Ty) -> bool {
     match ty {
         Ty::Var(u) => *u == v,
@@ -369,6 +553,9 @@ fn ty_occurs(v: TyVar, ty: &Ty) -> bool {
     }
 }
 
+// Row-variable occurs check: `v` must not appear in the tail or in any field
+// type of `row`, otherwise binding v → row would create a cycle in the row
+// chain (analogous to infinite types for regular variables).
 fn row_var_occurs(v: TyVar, row: &Row) -> bool {
     row.tail == RowTail::Open(v) || row.fields.iter().any(|(_, t)| ty_occurs(v, t))
 }

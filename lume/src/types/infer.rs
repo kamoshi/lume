@@ -12,6 +12,15 @@ use std::path::Path;
 
 // ── Type environment ──────────────────────────────────────────────────────────
 
+// The typing environment Γ maps source-level names to their Schemes.
+//
+// It is passed *immutably* through most of inference and cloned when a new
+// scope is entered (let-binding, lambda parameter, match arm).  This gives us
+// a purely-functional snapshot of the environment at each program point
+// without needing a stack of undo operations.
+//
+// Cloning is cheap because Scheme is reference-counted internally via String
+// and Vec, and environments are typically small (dozens of bindings).
 #[derive(Debug, Clone, Default)]
 pub struct TypeEnv(HashMap<String, Scheme>);
 
@@ -46,7 +55,14 @@ impl TypeEnv {
         self.0.iter()
     }
 
-    /// Free type vars and row vars across all schemes after applying `s`.
+    // Compute the free variables of every scheme in the environment, taking
+    // the current substitution into account.
+    //
+    // This is used by `generalise` to decide which variables are *not* safe
+    // to quantify: any variable that is still free in the environment is
+    // "in use" at the current let-binding level and must remain monomorphic.
+    // Only variables that are free in the type being generalised but NOT in
+    // the environment can be safely quantified.
     fn free_vars(&self, s: &Subst) -> (HashSet<TyVar>, HashSet<TyVar>) {
         let mut tvs = HashSet::new();
         let mut rvs = HashSet::new();
@@ -98,6 +114,15 @@ impl VariantEnv {
 
 // ── Build variant environment from type definitions ───────────────────────────
 
+// Scan the top-level items of a parsed program and register every variant
+// constructor into a VariantEnv.  This pre-pass runs before type inference so
+// that constructors like `Some`, `Ok`, `Node` etc. are available everywhere
+// in the module, regardless of definition order.
+//
+// The stored payload uses AST types (not internal Ty), which means the fields
+// are lowered fresh on every instantiation of the constructor.  This is
+// intentional: each use site gets independent fresh type variables for the
+// constructor's type parameters.
 pub fn build_variant_env(items: &[TopItem]) -> VariantEnv {
     let mut env = VariantEnv::default();
     for item in items {
@@ -125,8 +150,21 @@ pub fn build_variant_env(items: &[TopItem]) -> VariantEnv {
 
 // ── Built-in environment ──────────────────────────────────────────────────────
 
-/// Initial (TypeEnv, VariantEnv) populated with Lume's standard library.
-pub fn builtin_env() -> (TypeEnv, VariantEnv) {
+// Produce the initial TypeEnv and VariantEnv containing all language-level
+// built-ins (arithmetic, list ops, Maybe/Result constructors, etc.).
+//
+// WHY this takes `&mut Subst`:
+//   Each type scheme that needs polymorphic variables (e.g. `map`, `fold`)
+//   must use variable IDs that are guaranteed not to clash with any variable
+//   the caller's type-checker will later allocate.  We achieve this by
+//   drawing the IDs from the same shared counter via `s.fresh_var()`.
+//   After `builtin_env` returns, the counter is past every ID it used, so the
+//   caller's subsequent `fresh_var()` calls produce strictly larger IDs.
+//
+//   If we used hardcoded IDs (0, 1, 2 …) the ids would overlap with the
+//   first variables the module's type-checker allocates, creating false
+//   bindings when `instantiate`'s renaming substitution is applied.
+pub fn builtin_env(s: &mut Subst) -> (TypeEnv, VariantEnv) {
     let mut env = TypeEnv::new();
     let mut var_env = VariantEnv::default();
 
@@ -137,10 +175,16 @@ pub fn builtin_env() -> (TypeEnv, VariantEnv) {
         ty,
     };
 
+    let v0 = s.fresh_var();
+    let v1 = s.fresh_var();
+
     // Basic functions
     env.insert(
         "show".into(),
-        mk_scheme(vec![0], Ty::Func(Box::new(Ty::Var(0)), Box::new(Ty::Text))),
+        mk_scheme(
+            vec![v0],
+            Ty::Func(Box::new(Ty::Var(v0)), Box::new(Ty::Text)),
+        ),
     );
     env.insert(
         "not".into(),
@@ -194,17 +238,17 @@ pub fn builtin_env() -> (TypeEnv, VariantEnv) {
         )),
     );
 
-    // List functions — use vars 0, 1
-    let list_a = Ty::List(Box::new(Ty::Var(0)));
-    let list_b = Ty::List(Box::new(Ty::Var(1)));
+    // List functions - use vars v0, v1
+    let list_a = Ty::List(Box::new(Ty::Var(v0)));
+    let list_b = Ty::List(Box::new(Ty::Var(v1)));
 
     // map : (a -> b) -> List a -> List b
     env.insert(
         "map".into(),
         mk_scheme(
-            vec![0, 1],
+            vec![v0, v1],
             Ty::Func(
-                Box::new(Ty::Func(Box::new(Ty::Var(0)), Box::new(Ty::Var(1)))),
+                Box::new(Ty::Func(Box::new(Ty::Var(v0)), Box::new(Ty::Var(v1)))),
                 Box::new(Ty::Func(Box::new(list_a.clone()), Box::new(list_b.clone()))),
             ),
         ),
@@ -214,9 +258,9 @@ pub fn builtin_env() -> (TypeEnv, VariantEnv) {
     env.insert(
         "filter".into(),
         mk_scheme(
-            vec![0],
+            vec![v0],
             Ty::Func(
-                Box::new(Ty::Func(Box::new(Ty::Var(0)), Box::new(Ty::Bool))),
+                Box::new(Ty::Func(Box::new(Ty::Var(v0)), Box::new(Ty::Bool))),
                 Box::new(Ty::Func(Box::new(list_a.clone()), Box::new(list_a.clone()))),
             ),
         ),
@@ -226,15 +270,15 @@ pub fn builtin_env() -> (TypeEnv, VariantEnv) {
     env.insert(
         "fold".into(),
         mk_scheme(
-            vec![0, 1],
+            vec![v0, v1],
             Ty::Func(
-                Box::new(Ty::Var(1)),
+                Box::new(Ty::Var(v1)),
                 Box::new(Ty::Func(
                     Box::new(Ty::Func(
-                        Box::new(Ty::Var(1)),
-                        Box::new(Ty::Func(Box::new(Ty::Var(0)), Box::new(Ty::Var(1)))),
+                        Box::new(Ty::Var(v1)),
+                        Box::new(Ty::Func(Box::new(Ty::Var(v0)), Box::new(Ty::Var(v1)))),
                     )),
-                    Box::new(Ty::Func(Box::new(list_a.clone()), Box::new(Ty::Var(1)))),
+                    Box::new(Ty::Func(Box::new(list_a.clone()), Box::new(Ty::Var(v1)))),
                 )),
             ),
         ),
@@ -244,7 +288,7 @@ pub fn builtin_env() -> (TypeEnv, VariantEnv) {
     env.insert(
         "length".into(),
         mk_scheme(
-            vec![0],
+            vec![v0],
             Ty::Func(Box::new(list_a.clone()), Box::new(Ty::Num)),
         ),
     );
@@ -252,7 +296,7 @@ pub fn builtin_env() -> (TypeEnv, VariantEnv) {
     env.insert(
         "reverse".into(),
         mk_scheme(
-            vec![0],
+            vec![v0],
             Ty::Func(Box::new(list_a.clone()), Box::new(list_a.clone())),
         ),
     );
@@ -267,7 +311,7 @@ pub fn builtin_env() -> (TypeEnv, VariantEnv) {
     env.insert(
         "take".into(),
         mk_scheme(
-            vec![0],
+            vec![v0],
             Ty::Func(
                 Box::new(Ty::Num),
                 Box::new(Ty::Func(Box::new(list_a.clone()), Box::new(list_a.clone()))),
@@ -277,7 +321,7 @@ pub fn builtin_env() -> (TypeEnv, VariantEnv) {
     env.insert(
         "drop".into(),
         mk_scheme(
-            vec![0],
+            vec![v0],
             Ty::Func(
                 Box::new(Ty::Num),
                 Box::new(Ty::Func(Box::new(list_a.clone()), Box::new(list_a.clone()))),
@@ -285,11 +329,11 @@ pub fn builtin_env() -> (TypeEnv, VariantEnv) {
         ),
     );
     // any, all : (a -> Bool) -> List a -> Bool
-    let pred_a = Ty::Func(Box::new(Ty::Var(0)), Box::new(Ty::Bool));
+    let pred_a = Ty::Func(Box::new(Ty::Var(v0)), Box::new(Ty::Bool));
     env.insert(
         "any".into(),
         mk_scheme(
-            vec![0],
+            vec![v0],
             Ty::Func(
                 Box::new(pred_a.clone()),
                 Box::new(Ty::Func(Box::new(list_a.clone()), Box::new(Ty::Bool))),
@@ -299,7 +343,7 @@ pub fn builtin_env() -> (TypeEnv, VariantEnv) {
     env.insert(
         "all".into(),
         mk_scheme(
-            vec![0],
+            vec![v0],
             Ty::Func(
                 Box::new(pred_a.clone()),
                 Box::new(Ty::Func(Box::new(list_a.clone()), Box::new(Ty::Bool))),
@@ -320,9 +364,9 @@ pub fn builtin_env() -> (TypeEnv, VariantEnv) {
     env.insert(
         "sortBy".into(),
         mk_scheme(
-            vec![0],
+            vec![v0],
             Ty::Func(
-                Box::new(Ty::Func(Box::new(Ty::Var(0)), Box::new(Ty::Num))),
+                Box::new(Ty::Func(Box::new(Ty::Var(v0)), Box::new(Ty::Num))),
                 Box::new(Ty::Func(Box::new(list_a.clone()), Box::new(list_a.clone()))),
             ),
         ),
@@ -433,10 +477,10 @@ pub fn builtin_env() -> (TypeEnv, VariantEnv) {
     env.insert(
         "unwrap".into(),
         mk_scheme(
-            vec![0, 1],
+            vec![v0, v1],
             Ty::Func(
-                Box::new(Ty::Con("Result".into(), vec![Ty::Var(0), Ty::Var(1)])),
-                Box::new(Ty::Var(0)),
+                Box::new(Ty::Con("Result".into(), vec![Ty::Var(v0), Ty::Var(v1)])),
+                Box::new(Ty::Var(v0)),
             ),
         ),
     );
@@ -444,12 +488,12 @@ pub fn builtin_env() -> (TypeEnv, VariantEnv) {
     env.insert(
         "withDefault".into(),
         mk_scheme(
-            vec![0],
+            vec![v0],
             Ty::Func(
-                Box::new(Ty::Var(0)),
+                Box::new(Ty::Var(v0)),
                 Box::new(Ty::Func(
-                    Box::new(Ty::Con("Maybe".into(), vec![Ty::Var(0)])),
-                    Box::new(Ty::Var(0)),
+                    Box::new(Ty::Con("Maybe".into(), vec![Ty::Var(v0)])),
+                    Box::new(Ty::Var(v0)),
                 )),
             ),
         ),
@@ -513,6 +557,14 @@ type VariantInstance = (Ty, Option<Vec<(String, Ty)>>);
 
 // ── The typechecker ───────────────────────────────────────────────────────────
 
+// Checker owns the mutable state for one type-checking session (one module).
+//
+// `subst`       - the live substitution; grows as constraints are solved.
+// `variant_env` - constructor metadata; read-only after construction.
+// `node_types`  - side channel: every AST node's inferred type, keyed by
+//                 NodeId.  Used by the LSP for hover/completion information.
+//                 Types here still contain unification variables; callers
+//                 apply the final `subst` to obtain ground types.
 pub struct Checker {
     pub subst: Subst,
     pub variant_env: VariantEnv,
@@ -529,6 +581,18 @@ impl Checker {
         }
     }
 
+    // Construct a Checker that continues from an existing Subst (pre-populated
+    // counter and bindings).  Used by `check_and_generalise` in the loader so
+    // that the Subst started by `builtin_env` is handed directly to the
+    // Checker rather than recreated, keeping variable IDs consistent.
+    pub fn with_subst(variant_env: VariantEnv, subst: Subst) -> Self {
+        Checker {
+            subst,
+            variant_env,
+            node_types: HashMap::new(),
+        }
+    }
+
     fn fresh_var(&mut self) -> TyVar {
         self.subst.fresh_var()
     }
@@ -538,10 +602,43 @@ impl Checker {
 
     // ── Instantiation & generalisation ──────────────────────────────────────
 
-    /// Replace each quantified var with a fresh variable.
+    // Create a *fresh copy* of a polymorphic scheme for use at a single call
+    // site (the HM "inst" rule).
+    //
+    // Every quantified variable in the scheme is replaced by a brand-new
+    // unification variable drawn from the current Subst counter.  Different
+    // call sites therefore get independent sets of variables that unify
+    // independently - this is what makes a function like `id : a -> a`
+    // usable at both `id 1` (a=Num) and `id true` (a=Bool) in the same scope.
+    //
+    // Implementation note - the counter-advance before allocation:
+    //   The scheme's quantified var IDs are arbitrary integers (e.g. [3, 7]).
+    //   If our counter happened to be at 3, the first fresh var would be
+    //   Var(3), which equals the first quantified var.  The temporary Subst
+    //   `tmp` would then map { 3 → Var(3) } - an identity - and when
+    //   `tmp.apply` followed Var(3), it would chain into the *next* entry
+    //   in the mapping, creating spurious connections between scheme vars.
+    //
+    //   The fix: advance the counter to max(scheme_vars)+1 before we draw any
+    //   fresh vars.  This guarantees domain and range are disjoint, so
+    //   `tmp.apply` is a true one-step renaming with no accidental chaining.
     fn instantiate(&mut self, scheme: &Scheme) -> Ty {
         if scheme.vars.is_empty() && scheme.row_vars.is_empty() {
             return scheme.ty.clone();
+        }
+        // Advance the counter past all quantified var IDs so that the fresh
+        // vars we create are disjoint from the ones we're renaming.  Without
+        // this, `tmp.apply` can follow a chain old→fresh→old (when a fresh var
+        // happens to equal another quantified var), creating spurious cycles.
+        let max_qv = scheme
+            .vars
+            .iter()
+            .chain(scheme.row_vars.iter())
+            .copied()
+            .max()
+            .unwrap_or(0);
+        if self.subst.counter <= max_qv {
+            self.subst.counter = max_qv + 1;
         }
         let mut local_tys: HashMap<TyVar, Ty> = HashMap::new();
         let mut local_rows: HashMap<TyVar, Row> = HashMap::new();
@@ -549,6 +646,8 @@ impl Checker {
             local_tys.insert(v, self.fresh_ty());
         }
         for &v in &scheme.row_vars {
+            // Row vars are instantiated as fresh *open* rows (no known fields
+            // yet); unification will fill them in as needed.
             local_rows.insert(
                 v,
                 Row {
@@ -557,6 +656,10 @@ impl Checker {
                 },
             );
         }
+        // Build a temporary Subst containing *only* the renaming.  It does
+        // not include the ambient `self.subst` bindings because the scheme's
+        // type was already fully normalised by `generalise_toplevel` / the
+        // caller; remaining Var nodes are exactly the quantified ones.
         let tmp = Subst {
             counter: self.subst.counter,
             tys: local_tys,
@@ -565,7 +668,21 @@ impl Checker {
         tmp.apply(&scheme.ty)
     }
 
-    /// Quantify over type and row variables that are free in `ty` but not in `env`.
+    // Generalise a type into a scheme by quantifying the variables that are
+    // free in `ty` but NOT free in `env` (the HM "gen" / "let" rule).
+    //
+    // The logic:
+    //   • Apply the current substitution to `ty` to get a maximally-ground type.
+    //   • Collect free type/row vars of that normalised type.
+    //   • Subtract the free vars of the environment (those are monomorphic at
+    //     this point: they appear in an outer lambda parameter or a recursive
+    //     placeholder that hasn't been solved yet).
+    //   • The remaining vars are truly generic - they can be safely quantified.
+    //
+    // Example: in `let id = fn x -> x`, after inferring `x : ?a`, the body
+    // has type `?a`.  The env has `x : ?a` so ?a IS in the env's free vars.
+    // But at the let-binding level, the *outer* env does not contain ?a, so
+    // generalise over the outer env produces ∀ a. a.
     fn generalise(&self, env: &TypeEnv, ty: &Ty) -> Scheme {
         let ty = self.subst.apply(ty);
         let (env_tvs, env_rvs) = env.free_vars(&self.subst);
@@ -590,8 +707,13 @@ impl Checker {
 
     // ── AST type lowering ────────────────────────────────────────────────────
 
-    /// Convert an AST `Type` to an internal `Ty`.
-    /// `param_vars` maps type parameter *names* (e.g. `"a"`) to their fresh `TyVar`.
+    // Convert a surface-syntax type annotation into an internal `Ty`.
+    //
+    // `param_vars` is a mutable map from type-parameter *names* (the strings
+    // written in source, e.g. "a", "b") to the fresh TyVar allocated for that
+    // name.  The map is shared across all fields / nested types of the same
+    // annotation so that the same name always maps to the same variable.
+    // Example: `a -> Maybe a` correctly gets the same TyVar for both `a`s.
     fn lower_ty(
         &mut self,
         ty: &ast::Type,
@@ -646,8 +768,19 @@ impl Checker {
 
     // ── Variant helpers ──────────────────────────────────────────────────────
 
-    /// Instantiate a variant constructor, returning (result_type, payload_row_type).
-    /// `payload_row_type` is None for unit variants.
+    // Produce fresh types for one use of a variant constructor.
+    //
+    // Returns `(result_ty, payload_fields)` where:
+    //   • `result_ty`      is the ADT type with fresh vars for each param,
+    //                      e.g. `Maybe ?a` with a fresh ?a per call.
+    //   • `payload_fields` is the typed record the constructor expects as its
+    //                      argument, or None for unit constructors.
+    //
+    // The payload's AST types (stored in VariantInfo) are lowered through
+    // `lower_ty` using the same `param_vars` map that was populated when
+    // building `result_ty`.  This guarantees the param names unify correctly:
+    // `Some { value: a }` gives a payload field `value : ?a` where ?a is the
+    // same variable as in `Maybe ?a`.
     fn instantiate_variant(&mut self, name: &str) -> Result<VariantInstance, TypeError> {
         let info = self
             .variant_env
@@ -688,20 +821,41 @@ impl Checker {
 
     // ── Inference (⇒ mode) ───────────────────────────────────────────────────
 
-    /// Infer the type of `expr`, record it in `node_types`, and return it.
+    // The top-level inference entry point.  Delegates to `infer_inner` for the
+    // actual logic, then stores the type in `node_types` for the LSP.
     pub fn infer(&mut self, env: &TypeEnv, expr: &Expr) -> Result<Ty, TypeErrorAt> {
         let ty = self.infer_inner(env, expr)?;
         self.node_types.insert(expr.id, ty.clone());
         Ok(ty)
     }
 
+    // Bidirectional type inference - the synthesis (⇒) direction.
+    //
+    // For each expression form we *produce* a type rather than checking against
+    // a known one.  The dual direction (checking ⇐) is in `check` below.
+    //
+    // A recurring pattern throughout:
+    //   1. Infer subexpression types.
+    //   2. Apply the current substitution to them (`self.subst.apply`) to get
+    //      the most-ground version before unification.  This is important: a
+    //      variable that was solved by a previous step might appear in the type
+    //      returned by an earlier `infer` call, and we must chase the chain to
+    //      see whether it's already grounded.
+    //   3. Unify subexpression types with whatever constraints the form imposes
+    //      (e.g. both branches of an `if` must agree).
+    //   4. Return the result type (also applied to get the latest ground form).
     fn infer_inner(&mut self, env: &TypeEnv, expr: &Expr) -> Result<Ty, TypeErrorAt> {
         let span = &expr.span;
         match &expr.kind {
+            // Literal forms have fixed, known types - no constraints needed.
             ExprKind::Number(_) => Ok(Ty::Num),
             ExprKind::Text(_) => Ok(Ty::Text),
             ExprKind::Bool(_) => Ok(Ty::Bool),
 
+            // List literal: all elements must share the same type.
+            // We introduce a fresh element variable and unify each element's
+            // type against it.  If the list is empty the element type stays
+            // polymorphic (a free variable in the result).
             ExprKind::List(exprs) => {
                 let elem = self.fresh_ty();
                 for e in exprs {
@@ -713,6 +867,9 @@ impl Checker {
                 Ok(Ty::List(Box::new(self.subst.apply(&elem))))
             }
 
+            // Variable reference: look up the scheme and instantiate it.
+            // Instantiation replaces quantified vars with fresh ones so that
+            // this particular use of the variable gets its own type variables.
             ExprKind::Ident(name) => match env.lookup(name) {
                 Some(scheme) => Ok(self.instantiate(scheme)),
                 None => Err(TypeErrorAt::new(
@@ -721,6 +878,10 @@ impl Checker {
                 )),
             },
 
+            // Variant used without a payload (e.g. bare `None` or `Some` as
+            // a first-class function).
+            // If the variant *has* a payload type, treat the bare name as a
+            // curried constructor: `{ payload_fields } -> ConType`.
             ExprKind::Variant {
                 name,
                 payload: None,
@@ -741,6 +902,9 @@ impl Checker {
                 }
             }
 
+            // Variant applied to a payload expression (e.g. `Some { value: x }`).
+            // We check the payload expression against the expected record type
+            // (check mode, not infer) because we know the exact shape.
             ExprKind::Variant {
                 name,
                 payload: Some(payload_expr),
@@ -836,7 +1000,11 @@ impl Checker {
 
             ExprKind::Match(arms) => self.infer_match(env, arms, span),
 
-            ExprKind::LetIn { pattern, value, body } => {
+            ExprKind::LetIn {
+                pattern,
+                value,
+                body,
+            } => {
                 let val_ty = self.infer(env, value)?;
                 let bindings = self
                     .infer_pattern(pattern, val_ty)
@@ -879,6 +1047,19 @@ impl Checker {
         }))
     }
 
+    // Record update syntax: `{ base | field: val, … }`.
+    //
+    // The result type keeps all fields of `base` and overlays the updated
+    // fields.  We achieve this with a row variable trick:
+    //
+    //   1. Infer the types of the override fields normally.
+    //   2. Unify `base` with an *empty open row* - this binds a fresh row var
+    //      `base_rv` to "whatever fields base has".  After unification,
+    //      `base_rv` points to the base record's full field set.
+    //   3. Return a new record whose explicit fields are the overrides and
+    //      whose tail is `Open(base_rv)`.  Row-polymorphism then ensures that
+    //      downstream consumers see the union: the override fields shadow any
+    //      same-named fields inherited from the base.
     fn infer_record_update(
         &mut self,
         env: &TypeEnv,
@@ -923,6 +1104,16 @@ impl Checker {
         }))
     }
 
+    // Field access `expr.field`.
+    //
+    // Fast path: if we already know the full record type, look the field up
+    // directly.  If the record is open and the field isn't found yet, extend
+    // the open tail with a new field constraint.
+    //
+    // Generic path: if the expression's type is not yet known to be a record
+    // (e.g. it's still a Var), unify it against a minimal one-field open
+    // record.  This *adds* the field constraint to whatever the variable
+    // eventually resolves to.
     fn infer_field_access(
         &mut self,
         env: &TypeEnv,
@@ -939,6 +1130,8 @@ impl Checker {
             if let Some((_, t)) = row.fields.iter().find(|(k, _)| k == field) {
                 return Ok(t.clone());
             }
+            // The field is not present yet but the row is open - extend the
+            // tail to include the missing field.
             if let RowTail::Open(v) = row.tail {
                 let field_ty = self.fresh_ty();
                 let rest_var = self.fresh_var();
@@ -1117,6 +1310,12 @@ impl Checker {
         Ok(Ty::Con("Result".into(), vec![b, e]))
     }
 
+    // A top-level `| pat -> body` chain is treated as a lambda:
+    //   • `t_in`  - the (unknown) argument type, shared across all arms.
+    //   • `t_out` - the (unknown) result type, also shared.
+    // Each arm narrows `t_in` by unifying the pattern's expected type against
+    // it, and narrows `t_out` by unifying the body's inferred type against it.
+    // The final type is `t_in -> t_out`.
     fn infer_match(
         &mut self,
         env: &TypeEnv,
@@ -1127,6 +1326,7 @@ impl Checker {
         let t_out = self.fresh_ty();
 
         for arm in arms {
+            // Re-apply t_in each iteration: earlier arms may have solved it.
             let t_in_c = self.subst.apply(&t_in);
             let bindings = self
                 .infer_pattern(&arm.pattern, t_in_c)
@@ -1155,7 +1355,16 @@ impl Checker {
 
     // ── Check mode (⇐) ───────────────────────────────────────────────────────
 
-    /// Check `expr` against `expected`, using bidirectional rules where possible.
+    // The checking (⇐) direction: we know what type `expr` *must* have and
+    // verify it against that expectation.
+    //
+    // This avoids introducing a unification variable for forms where we already
+    // know the type - primarily lambdas.  For a lambda `fn x -> body` checked
+    // against `A -> B`, we can directly bind the parameter `x : A` without
+    // going through a fresh variable and a subsequent unification.
+    //
+    // For all other expression forms we fall back to synthesise-then-unify:
+    // infer the expression's type and unify it with `expected`.
     pub fn check(&mut self, env: &TypeEnv, expr: &Expr, expected: Ty) -> Result<(), TypeErrorAt> {
         let span = &expr.span;
         let expected = self.subst.apply(&expected);
@@ -1244,7 +1453,7 @@ impl Checker {
                 self.infer_pattern(p, payload_ty)
             }
             (None, Some(p)) => {
-                // Unit variant but pattern given — wildcard fallback
+                // Unit variant but pattern given - wildcard fallback
                 self.infer_pattern(
                     p,
                     Ty::Record(Row {
@@ -1290,7 +1499,7 @@ impl Checker {
             if let Some(sub_pat) = &fp.pattern {
                 bindings.extend(self.infer_pattern(sub_pat, field_ty)?);
             } else {
-                // Shorthand `{ age }` — the field name is the binding.
+                // Shorthand `{ age }` - the field name is the binding.
                 self.node_types.insert(fp.node_id, field_ty.clone());
                 bindings.push((fp.name.clone(), field_ty));
             }
@@ -1544,7 +1753,7 @@ impl Checker {
         bindings: &[Binding],
         env: TypeEnv,
     ) -> Result<TypeEnv, TypeErrorAt> {
-        // Phase 1 — add a fresh placeholder for every name in the group.
+        // Phase 1 - add a fresh placeholder for every name in the group.
         let mut rec_env = env.clone();
         let mut placeholders: Vec<(Pattern, Span, Option<Ty>)> = Vec::new();
         for binding in bindings {
@@ -1559,7 +1768,7 @@ impl Checker {
             placeholders.push((binding.pattern.clone(), binding.value.span.clone(), ph));
         }
 
-        // Phase 2 — infer / check each body inside the extended env.
+        // Phase 2 - infer / check each body inside the extended env.
         let mut schemes: Vec<Scheme> = Vec::new();
         for (binding, (_, value_span, ph)) in bindings.iter().zip(placeholders.iter()) {
             let scheme = if let Some(ann) = &binding.ty {
@@ -1584,7 +1793,7 @@ impl Checker {
             schemes.push(scheme);
         }
 
-        // Phase 3 — bind all patterns in the output env.
+        // Phase 3 - bind all patterns in the output env.
         let mut new_env = env;
         for (binding, scheme) in bindings.iter().zip(schemes) {
             self.bind_pattern_scheme(&binding.pattern, scheme, &mut new_env)
@@ -1625,10 +1834,11 @@ impl Checker {
 /// `path` is the file being checked; it is used to resolve relative `use`
 /// paths.  Pass `None` when checking an in-memory buffer (imports are skipped).
 pub fn check_program(program: &Program, path: Option<&Path>) -> Result<Ty, TypeErrorAt> {
-    let (env, mut var_env) = builtin_env();
+    let mut subst = Subst::new();
+    let (env, mut var_env) = builtin_env(&mut subst);
     let prog_vars = build_variant_env(&program.items);
     var_env.merge(prog_vars);
-    let mut checker = Checker::new(var_env);
+    let mut checker = Checker::with_subst(var_env, subst);
     let mut loader = crate::loader::Loader::new();
     checker.check_program(program, env, path, &mut loader)
 }
@@ -1688,10 +1898,11 @@ pub fn elaborate_bindings(
     program: &Program,
     path: Option<&Path>,
 ) -> Result<(Vec<BindingInfo>, Ty), TypeErrorAt> {
-    let (env, mut var_env) = builtin_env();
+    let mut subst = Subst::new();
+    let (env, mut var_env) = builtin_env(&mut subst);
     let prog_vars = build_variant_env(&program.items);
     var_env.merge(prog_vars);
-    let mut checker = Checker::new(var_env);
+    let mut checker = Checker::with_subst(var_env, subst);
     let mut loader = crate::loader::Loader::new();
     let mut env = env;
 
@@ -1779,10 +1990,11 @@ pub fn elaborate(
     program: &Program,
     path: Option<&Path>,
 ) -> Result<(HashMap<NodeId, Ty>, Ty), TypeErrorAt> {
-    let (env, mut var_env) = builtin_env();
+    let mut subst = Subst::new();
+    let (env, mut var_env) = builtin_env(&mut subst);
     let prog_vars = build_variant_env(&program.items);
     var_env.merge(prog_vars);
-    let mut checker = Checker::new(var_env);
+    let mut checker = Checker::with_subst(var_env, subst);
     let mut loader = crate::loader::Loader::new();
     let mut env = env;
 
@@ -1824,10 +2036,11 @@ pub fn elaborate_with_env(
     program: &Program,
     path: Option<&Path>,
 ) -> Result<(HashMap<NodeId, Ty>, TypeEnv, Ty), TypeErrorAt> {
-    let (base_env, mut var_env) = builtin_env();
+    let mut subst = Subst::new();
+    let (base_env, mut var_env) = builtin_env(&mut subst);
     let prog_vars = build_variant_env(&program.items);
     var_env.merge(prog_vars);
-    let mut checker = Checker::new(var_env);
+    let mut checker = Checker::with_subst(var_env, subst);
     let mut loader = crate::loader::Loader::new();
     let mut env = base_env;
 
@@ -1869,7 +2082,7 @@ pub fn elaborate_with_env(
     Ok((node_types, resolved_env, export_ty))
 }
 
-/// Like [`elaborate_with_env`] but never fails — type errors are collected and
+/// Like [`elaborate_with_env`] but never fails - type errors are collected and
 /// returned alongside whatever partial information was gathered.  Bindings that
 /// produce errors are given fresh type variables so subsequent bindings can
 /// still be checked.
@@ -1880,10 +2093,11 @@ pub fn elaborate_with_env_partial(
     program: &Program,
     path: Option<&Path>,
 ) -> (HashMap<NodeId, Ty>, TypeEnv, Vec<TypeErrorAt>) {
-    let (base_env, mut var_env) = builtin_env();
+    let mut subst = Subst::new();
+    let (base_env, mut var_env) = builtin_env(&mut subst);
     let prog_vars = build_variant_env(&program.items);
     var_env.merge(prog_vars);
-    let mut checker = Checker::new(var_env);
+    let mut checker = Checker::with_subst(var_env, subst);
     let mut loader = crate::loader::Loader::new();
     let mut env = base_env;
 
@@ -1891,39 +2105,35 @@ pub fn elaborate_with_env_partial(
 
     for item in &program.items {
         match item {
-            TopItem::Binding(binding) => {
-                match checker.check_binding(binding, env.clone()) {
-                    Ok(new_env) => {
-                        env = new_env;
-                        record_ident_node_type(binding, &mut checker, &env);
-                    }
-                    Err(e) => {
-                        errors.push(e);
-                        fresh_fallback_binding(&mut checker, &mut env, binding);
+            TopItem::Binding(binding) => match checker.check_binding(binding, env.clone()) {
+                Ok(new_env) => {
+                    env = new_env;
+                    record_ident_node_type(binding, &mut checker, &env);
+                }
+                Err(e) => {
+                    errors.push(e);
+                    fresh_fallback_binding(&mut checker, &mut env, binding);
+                }
+            },
+            TopItem::BindingGroup(bs) => match checker.check_binding_group(bs, env.clone()) {
+                Ok(new_env) => {
+                    env = new_env;
+                    for b in bs {
+                        record_ident_node_type(b, &mut checker, &env);
                     }
                 }
-            }
-            TopItem::BindingGroup(bs) => {
-                match checker.check_binding_group(bs, env.clone()) {
-                    Ok(new_env) => {
-                        env = new_env;
-                        for b in bs {
-                            record_ident_node_type(b, &mut checker, &env);
-                        }
-                    }
-                    Err(e) => {
-                        errors.push(e);
-                        for b in bs {
-                            fresh_fallback_binding(&mut checker, &mut env, b);
-                        }
+                Err(e) => {
+                    errors.push(e);
+                    for b in bs {
+                        fresh_fallback_binding(&mut checker, &mut env, b);
                     }
                 }
-            }
+            },
             TopItem::TypeDef(_) => {}
         }
     }
 
-    // Best-effort export type inference — ignore errors.
+    // Best-effort export type inference - ignore errors.
     let _ = checker.infer(&env, &program.exports);
 
     // Apply final substitution.

@@ -4,12 +4,12 @@ exclude = ["tools/zed-lume"]
 default-members = ["lume", "lume-lsp"]
 resolver = "2"
 
-# Standard release — used for native CLI and LSP binaries.
+# Standard release - used for native CLI and LSP binaries.
 [profile.release]
 lto = "thin"        # cross-crate dead-code elimination, faster than fat LTO
 codegen-units = 1   # required for LTO; allows better inlining
 
-# WASM-specific release — use with: wasm-pack build --profile wasm-release
+# WASM-specific release - use with: wasm-pack build --profile wasm-release
 # Requires wasm-pack 0.14.0+ for --profile support.
 [profile.wasm-release]
 inherits = "release"

@@ -7,7 +7,7 @@ let circleArea : Num -> Num = r -> pi * pow2 r
 
 let circlePerimeter : Num -> Num = r -> 2 * pi * r
 
--- Hypotenuse of a right triangle (no sqrt — returns the squared value)
+-- Hypotenuse of a right triangle (no sqrt - returns the squared value)
 let hypotSq : Num -> Num -> Num = a -> b -> pow2 a + pow2 b
 
 -- Clamp a radius to a valid range before computing area

@@ -66,7 +66,7 @@ fn collect_inner(
         return Ok(());
     }
 
-    // Read source — either from the embedded stdlib or the filesystem.
+    // Read source - either from the embedded stdlib or the filesystem.
     let src_owned: String;
     let src: &str = if let Some(s) = stdlib_source_for_key(canonical) {
         s

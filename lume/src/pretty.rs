@@ -85,7 +85,7 @@ pub fn join(sep: Doc, docs: impl IntoIterator<Item = Doc>) -> Doc {
     iter.fold(first, |acc, d| concat(acc, concat(sep.clone(), d)))
 }
 
-/// `space()` — a single literal space.
+/// `space()` - a single literal space.
 pub fn space() -> Doc {
     text(" ")
 }

@@ -9,7 +9,7 @@ use lume::{
     lexer::Lexer,
     loader::{stdlib_path, stdlib_source, use_path_context, Loader, UsePathKind, STDLIB_MODULES},
     parser,
-    types::{self, infer::elaborate_with_env_partial, infer::builtin_env, Ty},
+    types::{self, infer::builtin_env, infer::elaborate_with_env_partial, Ty},
 };
 use wasm_bindgen::prelude::*;
 
@@ -352,7 +352,7 @@ fn ident_start_at(bytes: &[u8], end: usize) -> usize {
 }
 
 /// Run `elaborate_with_env_partial` on `src`, returning `(name, type)` pairs.
-/// Always succeeds — type errors are ignored so completions work even with errors.
+/// Always succeeds - type errors are ignored so completions work even with errors.
 fn try_elaborate_env(src: &str) -> Option<Vec<(String, String)>> {
     let tokens = Lexer::new(src).tokenize().ok()?;
     let program = parser::parse_program(&tokens).ok()?;
@@ -525,7 +525,7 @@ pub fn type_at(src: &str, offset: usize) -> Option<String> {
 
     // Keep only spans that contain the cursor offset.
     spans.retain(|(from, to, _)| *from <= offset && offset < *to);
-    // Sort ascending by range size — smallest (innermost) first.
+    // Sort ascending by range size - smallest (innermost) first.
     // For equal-length spans (e.g. Apply nodes sharing the func token's span),
     // sort by NodeId descending: assign_node_ids is pre-order, so inner leaves
     // always have a higher id than the parent Apply that wraps them.

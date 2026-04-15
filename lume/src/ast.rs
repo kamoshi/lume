@@ -77,7 +77,7 @@ pub struct Expr {
     pub span: Span,
 }
 
-/// The expression payload — identical to the old `Expr` enum, but now children
+/// The expression payload - identical to the old `Expr` enum, but now children
 /// are `Box<Expr>` (the wrapper) so every node in the tree carries a span.
 #[derive(Debug, Clone)]
 pub enum ExprKind {
@@ -421,7 +421,11 @@ fn assign_ids_expr(expr: &mut Expr, counter: &mut NodeId) {
                 assign_ids_expr(&mut arm.body, counter);
             }
         }
-        ExprKind::LetIn { pattern, value, body } => {
+        ExprKind::LetIn {
+            pattern,
+            value,
+            body,
+        } => {
             assign_ids_pattern(pattern, counter);
             assign_ids_expr(value, counter);
             assign_ids_expr(body, counter);

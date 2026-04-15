@@ -8,10 +8,10 @@
 
 Lume is a small, functional language designed around four values:
 
-- **Expressiveness** — say a lot with a little
-- **Legibility** — code is for humans first
-- **Predictability** — no surprises, no magic
-- **Smallness** — a tiny core; everything else is library
+- **Expressiveness** - say a lot with a little
+- **Legibility** - code is for humans first
+- **Predictability** - no surprises, no magic
+- **Smallness** - a tiny core; everything else is library
 
 Lume draws from Lua (small core, files as values), Elm and PureScript (row polymorphism, result types, immutability), and Haskell (type inference, pattern matching, pipelines). The sharp edges from each are filed off.
 
@@ -27,7 +27,7 @@ Lume draws from Lua (small core, files as values), Elm and PureScript (row polym
 
 **Identifiers:** `[a-z][a-zA-Z0-9_]*` for values and fields  
 **Type names / variant names:** `[A-Z][a-zA-Z0-9]*`  
-**Type variables:** single lowercase letters — `a`, `b`, `r`
+**Type variables:** single lowercase letters - `a`, `b`, `r`
 
 **Literals:**
 
@@ -60,7 +60,7 @@ let greet : Text -> Text = name -> "Hello, " ++ name
 
 All bindings are immutable. There is no assignment or mutation.
 
-Lume is **expression-oriented** — everything evaluates to a value. There are no statements.
+Lume is **expression-oriented** - everything evaluates to a value. There are no statements.
 
 ---
 
@@ -248,8 +248,8 @@ let c2 = Circle { radius }   -- same as Circle { radius: radius }
 
 All sum types automatically support:
 
-- **Structural equality** — `==` and `!=`
-- **`show`** — human-readable string representation for debugging
+- **Structural equality** - `==` and `!=`
+- **`show`** - human-readable string representation for debugging
 
 ```lume
 North == North                              -- true
@@ -337,8 +337,8 @@ let [first, ..rest] = myList
 
 | Operator | Meaning                              |
 |----------|--------------------------------------|
-| `\|>`    | Pipe — pass value into function      |
-| `?>`     | Result pipe — pipe only if `Ok`      |
+| `\|>`    | Pipe - pass value into function      |
+| `?>`     | Result pipe - pipe only if `Ok`      |
 | `->`     | Lambda / function arrow              |
 | `++`     | Concatenate (text, lists, records)   |
 | `\|`     | Match arm / type variant separator   |
@@ -371,11 +371,11 @@ let safeDivide = a -> b ->
 
 ## 10. Type system
 
-- **Inferred** — the compiler infers all types. Annotations are optional and serve as documentation.
-- **Sound** — if the program compiles, it is type-correct. No runtime type errors.
-- **Row polymorphic** — functions can be polymorphic over the "rest" of a record's fields (see §6.5).
-- **No implicit coercions** — `Num` never becomes `Text` silently.
-- **No `null` or `undefined`** — absence is represented by `Maybe`.
+- **Inferred** - the compiler infers all types. Annotations are optional and serve as documentation.
+- **Sound** - if the program compiles, it is type-correct. No runtime type errors.
+- **Row polymorphic** - functions can be polymorphic over the "rest" of a record's fields (see §6.5).
+- **No implicit coercions** - `Num` never becomes `Text` silently.
+- **No `null` or `undefined`** - absence is represented by `Maybe`.
 
 Type annotations use `:`:
 
@@ -447,7 +447,7 @@ use utils = "./utils"
 use cfg   = "../config"
 ```
 
-`use` is a static declaration — always at the top of the file, never inside a function or branch.
+`use` is a static declaration - always at the top of the file, never inside a function or branch.
 
 ### 11.3 Circular imports
 
@@ -477,7 +477,7 @@ pub { area, pi }
 
 ## 12. Standard library (core)
 
-The following are available globally — no import needed:
+The following are available globally - no import needed:
 
 ### Basics
 
@@ -632,13 +632,13 @@ students
 | Feature               | Reason omitted                                              |
 |-----------------------|-------------------------------------------------------------|
 | Mutation / `var`      | Immutability eliminates a class of bugs; use update syntax |
-| `null` / `undefined`  | Use `Maybe` — absence is explicit and handled              |
-| Exceptions            | Use `Result` — errors are values                           |
+| `null` / `undefined`  | Use `Maybe` - absence is explicit and handled              |
+| Exceptions            | Use `Result` - errors are values                           |
 | Classes / inheritance | Row polymorphism covers the use cases more simply          |
-| Interfaces / traits   | Row types are structural — no declaration needed           |
+| Interfaces / traits   | Row types are structural - no declaration needed           |
 | Macros / metaprogramming | Keeps the language predictable and tooling simple       |
 | Concurrency primitives | Single-threaded; use packages for async I/O               |
-| Operator overloading  | `++` for concat, `+` for numbers — unambiguous             |
+| Operator overloading  | `++` for concat, `+` for numbers - unambiguous             |
 | Implicit coercions    | All conversions are explicit                               |
 
 ---
@@ -692,4 +692,4 @@ typevars    = ident*
 
 ---
 
-*Lume — version 0.1 draft*
+*Lume - version 0.1 draft*

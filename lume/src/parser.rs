@@ -337,7 +337,7 @@ fn try_parse_let_in(tokens: &[Spanned]) -> Result<(usize, Expr), ParseError> {
     let (n, value) = parse_expr(&tokens[ptr..])?;
     ptr += n;
 
-    // Require `in` — if absent, this is a top-level binding, not a let-in expr.
+    // Require `in` - if absent, this is a top-level binding, not a let-in expr.
     consume(&tokens[ptr..], &Token::In)?;
     ptr += 1;
 
@@ -390,12 +390,12 @@ fn try_parse_lambda(tokens: &[Spanned]) -> Result<(usize, Expr), ParseError> {
 // ── Pratt parser ──────────────────────────────────────────────────────────────
 
 /// Binding powers for infix operators.
-/// Returns `(left_bp, right_bp)` — right_bp > left_bp means right-associative.
+/// Returns `(left_bp, right_bp)` - right_bp > left_bp means right-associative.
 fn infix_bp(tok: &Token) -> Option<(u8, u8)> {
     match tok {
         Token::Pipe => Some((10, 11)),       // |>  left-assoc
         Token::ResultPipe => Some((12, 13)), // ?>  left-assoc
-        Token::PipePipe => Some((20, 21)),    // || left-assoc
+        Token::PipePipe => Some((20, 21)),   // || left-assoc
         Token::AmpAmp => Some((30, 31)),     // && left-assoc
         Token::EqEq | Token::BangEq => Some((40, 41)),
         Token::Lt | Token::Gt | Token::LtEq | Token::GtEq => Some((40, 41)),
@@ -574,7 +574,7 @@ fn can_start_atom(tokens: &[Spanned]) -> bool {
                 | Token::LBrace
                 | Token::LBracket
                 | Token::LParen
-                | Token::If // Token::Bar intentionally excluded — match arms as arguments need parens.
+                | Token::If // Token::Bar intentionally excluded - match arms as arguments need parens.
         )
     )
 }
@@ -790,7 +790,7 @@ fn parse_record_field(tokens: &[Spanned]) -> Result<(usize, RecordField), ParseE
     let (n, name) = consume_ident(&tokens[ptr..])?;
     ptr += n;
 
-    // Field shorthand: `{ age }` — no colon
+    // Field shorthand: `{ age }` - no colon
     if !matches!(first_token(&tokens[ptr..]), Some(Token::Colon)) {
         return Ok((
             ptr,
@@ -968,7 +968,7 @@ pub fn parse_pattern(tokens: &[Spanned]) -> Result<(usize, Pattern), ParseError>
                     ptr += n;
                     Some(Box::new(Pattern::List(lp)))
                 }
-                // `Variant _`  — wildcard payload without braces
+                // `Variant _`  - wildcard payload without braces
                 Some(Token::Ident(s)) if s == "_" => {
                     ptr += 1;
                     Some(Box::new(Pattern::Wildcard))
@@ -1138,7 +1138,7 @@ pub fn parse_type(tokens: &[Spanned]) -> Result<(usize, Type), ParseError> {
     Ok((ptr, ty))
 }
 
-/// Parse a single "unapplied" type atom — a type that can appear as an
+/// Parse a single "unapplied" type atom - a type that can appear as an
 /// argument without parentheses: a bare type name with no args, a type
 /// variable, a record type, or a parenthesized type.
 ///

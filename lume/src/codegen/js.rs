@@ -37,7 +37,7 @@ static JS_STDLIB: &[(&str, &str, &str)] = &[
     ("toNum", "toNum", "const toNum = (s) => { const n = Number(s); return isNaN(n) ? { $tag: \"None\" } : { $tag: \"Some\", value: n }; };\n\n"),
     ("range", "range", "const range = (from) => (to) => { const r = []; for (let i = Math.floor(from); i <= Math.floor(to); i++) r.push(i); return r; };\n\n"),
 
-    // Node.js fs-based IO — these will throw at runtime in browser/WASM envs.
+    // Node.js fs-based IO - these will throw at runtime in browser/WASM envs.
     ("readLine", "readLine", concat!(
         "const readLine = (_) => {\n",
         "  const fs = await import(\"fs\"); // sync fallback via readFileSync on /dev/stdin\n",
@@ -384,15 +384,23 @@ impl Emitter {
                 self.out.push(')');
             }
             ExprKind::Match(arms) => self.emit_match_fn(arms),
-            ExprKind::LetIn { pattern, value, body } => {
+            ExprKind::LetIn {
+                pattern,
+                value,
+                body,
+            } => {
                 // Emit as IIFE: (param => body)(value)
                 self.out.push('(');
                 self.emit_lambda_param(pattern);
                 self.out.push_str(" => ");
                 let needs_parens = matches!(body.kind, ExprKind::Record { .. });
-                if needs_parens { self.out.push('('); }
+                if needs_parens {
+                    self.out.push('(');
+                }
                 self.emit_expr(body);
-                if needs_parens { self.out.push(')'); }
+                if needs_parens {
+                    self.out.push(')');
+                }
                 self.out.push_str(")(");
                 self.emit_expr(value);
                 self.out.push(')');
@@ -514,8 +522,8 @@ impl Emitter {
                         self.emit_lambda_param(p);
                     }
                 }
-                // Open pattern `{ name, .. }` — JS destructuring naturally ignores extras.
-                // Named rest `{ name, ..rest }` — emit as spread.
+                // Open pattern `{ name, .. }` - JS destructuring naturally ignores extras.
+                // Named rest `{ name, ..rest }` - emit as spread.
                 if let Some(Some(rest_name)) = &rp.rest {
                     if !first {
                         self.out.push_str(", ");
@@ -592,7 +600,7 @@ impl Emitter {
                     .push_str(&format!("    const {} = {};\n", lhs, rhs));
             }
             if always_matches && !has_guard {
-                // Unconditional arm — return immediately.
+                // Unconditional arm - return immediately.
                 self.out.push_str("    return ");
                 self.emit_expr(&arm.body);
                 self.out.push_str(";\n");

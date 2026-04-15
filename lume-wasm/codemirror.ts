@@ -7,7 +7,7 @@
  *
  *   new EditorView({ extensions: [basicSetup, ...lumeExtensions()], parent })
  *
- * The WASM module is initialised lazily on first use — no manual `await init()`
+ * The WASM module is initialised lazily on first use - no manual `await init()`
  * needed. Peer deps: @codemirror/lint, @codemirror/view, @codemirror/state.
  */
 
@@ -21,7 +21,7 @@ import { hoverTooltip } from "@codemirror/view";
 // like './pkg/lume_wasm.js' for a local build.
 import init, { lint as wasmLint, type_at as wasmTypeAt } from "./pkg";
 
-// Single shared init promise — the WASM binary loads once.
+// Single shared init promise - the WASM binary loads once.
 const ready: Promise<void> = init().then(() => {});
 
 // ── Public API ────────────────────────────────────────────────────────────────

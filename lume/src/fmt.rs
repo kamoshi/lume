@@ -121,10 +121,7 @@ fn fmt_typedef(td: &TypeDef) -> Doc {
 fn fmt_variant(v: &Variant) -> Doc {
     match &v.payload {
         None => text(format!("| {}", v.name)),
-        Some(rt) => concat_all(vec![
-            text(format!("| {} ", v.name)),
-            fmt_record_type(rt),
-        ]),
+        Some(rt) => concat_all(vec![text(format!("| {} ", v.name)), fmt_record_type(rt)]),
     }
 }
 
@@ -149,7 +146,7 @@ fn fmt_expr_binding_rhs(expr: &Expr) -> Doc {
 
 // ── Expressions ────────────────────────────────────────────────────────────────
 
-/// Context precedence — wrap in parens if the expression's own precedence is lower.
+/// Context precedence - wrap in parens if the expression's own precedence is lower.
 fn expr_prec(expr: &Expr) -> u8 {
     match &expr.kind {
         ExprKind::Lambda { .. } => 0,
@@ -225,7 +222,11 @@ fn fmt_expr_inner(expr: &Expr) -> Doc {
             }
             let items: Vec<Doc> = elems.iter().map(|e| fmt_expr(e, 0)).collect();
             let inner = join(concat(text(","), line()), items);
-            group(wrap("[", "]", concat(nest(INDENT, concat(line(), inner)), line())))
+            group(wrap(
+                "[",
+                "]",
+                concat(nest(INDENT, concat(line(), inner)), line()),
+            ))
         }
 
         ExprKind::Record { base, fields, .. } => fmt_record_expr(base.as_deref(), fields),
@@ -234,7 +235,10 @@ fn fmt_expr_inner(expr: &Expr) -> Doc {
             concat(fmt_expr(record, 100), text(format!(".{}", field)))
         }
 
-        ExprKind::Variant { name, payload: None } => text(name.clone()),
+        ExprKind::Variant {
+            name,
+            payload: None,
+        } => text(name.clone()),
         ExprKind::Variant {
             name,
             payload: Some(p),
@@ -313,7 +317,11 @@ fn fmt_expr_inner(expr: &Expr) -> Doc {
             concat_all(arms_doc)
         }
 
-        ExprKind::LetIn { pattern, value, body } => {
+        ExprKind::LetIn {
+            pattern,
+            value,
+            body,
+        } => {
             let pat_doc = fmt_pattern(pattern);
             let val_doc = fmt_expr(value, 0);
             let body_doc = fmt_expr(body, 0);
@@ -411,7 +419,10 @@ fn fmt_pattern(pat: &Pattern) -> Doc {
             Literal::Bool(b) => text(if *b { "true" } else { "false" }),
         },
         Pattern::Ident(name, _, _) => text(name.clone()),
-        Pattern::Variant { name, payload: None } => text(name.clone()),
+        Pattern::Variant {
+            name,
+            payload: None,
+        } => text(name.clone()),
         Pattern::Variant {
             name,
             payload: Some(p),
@@ -475,7 +486,9 @@ fn fmt_type_prec(ty: &Type, ctx: u8) -> Doc {
             } else {
                 let args_doc = join(
                     space(),
-                    args.iter().map(|a| fmt_type_prec(a, 10)).collect::<Vec<_>>(),
+                    args.iter()
+                        .map(|a| fmt_type_prec(a, 10))
+                        .collect::<Vec<_>>(),
                 );
                 let d = concat(text(format!("{} ", name)), args_doc);
                 if ctx >= 10 {

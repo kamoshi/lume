@@ -48,7 +48,7 @@ static STDLIB: &[(&str, &str, &str)] = &[
     // does not shadow the raw Lua `print` used inside `_show` above.
     ("print", "_print", "local function _print(s) print(s) return {} end\n\n"),
 
-    // readLine : {} -> Text  — reads one line from stdin (strips trailing newline)
+    // readLine : {} -> Text  - reads one line from stdin (strips trailing newline)
     ("readLine", "readLine", "local readLine = function(_) return io.read(\"l\") or \"\" end\n\n"),
 
     // readFile : Text -> Result Text Text
@@ -62,7 +62,7 @@ static STDLIB: &[(&str, &str, &str)] = &[
         "end\n\n",
     )),
 
-    // writeFile : Text -> Text -> Result {} Text  — truncates then writes
+    // writeFile : Text -> Text -> Result {} Text  - truncates then writes
     ("writeFile", "writeFile", concat!(
         "local writeFile = function(path) return function(content)\n",
         "  local f, err = io.open(path, \"w\")\n",
@@ -73,7 +73,7 @@ static STDLIB: &[(&str, &str, &str)] = &[
         "end end\n\n",
     )),
 
-    // appendFile : Text -> Text -> Result {} Text  — appends without truncating
+    // appendFile : Text -> Text -> Result {} Text  - appends without truncating
     ("appendFile", "appendFile", concat!(
         "local appendFile = function(path) return function(content)\n",
         "  local f, err = io.open(path, \"a\")\n",
@@ -471,7 +471,7 @@ impl Emitter {
                 }
             },
             None => {
-                // Not in bundle — fall back to require().
+                // Not in bundle - fall back to require().
                 let raw = &u.path;
                 let path = if raw.ends_with(".lume") {
                     format!("{}.lua", &raw[..raw.len() - 5])
@@ -749,7 +749,11 @@ impl Emitter {
                 self.out.push_str(" end end)()");
             }
             ExprKind::Match(arms) => self.emit_match_fn(arms),
-            ExprKind::LetIn { pattern, value, body } => {
+            ExprKind::LetIn {
+                pattern,
+                value,
+                body,
+            } => {
                 // Emit as IIFE: (function(param) return body end)(value)
                 self.out.push('(');
                 self.emit_lambda(pattern, body);
@@ -834,8 +838,12 @@ impl Emitter {
                 self.emit_tail_expr(else_branch, &format!("{}  ", indent));
                 self.out.push_str(&format!("\n{}end", indent));
             }
-            ExprKind::LetIn { pattern, value, body } => {
-                // Emit as local bindings + tail body — no IIFE, so LuaJIT can
+            ExprKind::LetIn {
+                pattern,
+                value,
+                body,
+            } => {
+                // Emit as local bindings + tail body - no IIFE, so LuaJIT can
                 // see the tail call in `body` as a proper tail call.
                 match pattern {
                     Pattern::Ident(name, _, _) => {
@@ -867,7 +875,8 @@ impl Emitter {
                         self.emit_expr(value);
                         self.out.push('\n');
                         for (lhs, rhs) in &all_binds {
-                            self.out.push_str(&format!("{}local {} = {}\n", indent, lhs, rhs));
+                            self.out
+                                .push_str(&format!("{}local {} = {}\n", indent, lhs, rhs));
                         }
                         self.out.push_str(indent);
                         self.emit_tail_expr(body, indent);

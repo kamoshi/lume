@@ -15,7 +15,7 @@ let botName   = getName bot
 -- The updated record carries all of alice's original fields plus `score`.
 let aliceWithScore = { alice | score: 95 }
 
--- This function only requires a `score` field — it works on any record that has one.
+-- This function only requires a `score` field - it works on any record that has one.
 let getScore = { score, .. } -> score
 
 let aliceScore = getScore aliceWithScore

@@ -8,7 +8,7 @@ use crate::parser;
 use crate::types::error::{TypeError, TypeErrorAt};
 use crate::types::{
     infer::{build_variant_env, builtin_env, Checker},
-    Scheme,
+    Scheme, Subst,
 };
 
 // ── Embedded standard library ─────────────────────────────────────────────────
@@ -25,7 +25,7 @@ pub const STDLIB_MODULES: &[&str] = &[
 
 /// Discriminates the kind of path inside a `use` declaration.
 pub enum UsePathKind {
-    /// `"lume:<name>"` — an embedded stdlib module.
+    /// `"lume:<name>"` - an embedded stdlib module.
     Stdlib,
     /// A filesystem path, e.g. `"./utils"` or `"../shared"`.
     /// Requires filesystem access to produce suggestions; the WASM backend
@@ -63,7 +63,7 @@ pub fn use_path_context(line_up_to_cursor: &str) -> Option<UsePathContext> {
         let b = bytes[i];
         if !in_string {
             if b == b'-' && bytes.get(i + 1) == Some(&b'-') {
-                return None; // line comment — no completions
+                return None; // line comment - no completions
             }
             if b == b'"' {
                 in_string = true;
@@ -72,9 +72,11 @@ pub fn use_path_context(line_up_to_cursor: &str) -> Option<UsePathContext> {
             }
         } else {
             match b {
-                b'\\' => { i += 1; } // skip escaped character
+                b'\\' => {
+                    i += 1;
+                } // skip escaped character
                 b'"' => {
-                    // String closed before cursor — keep scanning (edge case:
+                    // String closed before cursor - keep scanning (edge case:
                     // multiple strings on one line).
                     in_string = false;
                     string_content.clear();
@@ -138,7 +140,7 @@ pub fn stdlib_source(name: &str) -> Option<&'static str> {
 }
 
 /// A synthetic, stable `PathBuf` used as the cache key for an embedded stdlib
-/// module.  It never exists on disk — it just needs to be unique per module.
+/// module.  It never exists on disk - it just needs to be unique per module.
 pub fn stdlib_path(name: &str) -> PathBuf {
     PathBuf::from(format!("<{}>", name))
 }
@@ -229,10 +231,7 @@ impl Loader {
         // recursing infinitely.
         if self.visiting.contains(&canonical) {
             return Err(TypeErrorAt::new(
-                TypeError::ImportError(format!(
-                    "circular import: '{}'",
-                    canonical.display()
-                )),
+                TypeError::ImportError(format!("circular import: '{}'", canonical.display())),
                 Span::default(),
             ));
         }
@@ -261,10 +260,11 @@ impl Loader {
         program: &Program,
         path: &Path,
     ) -> Result<Scheme, TypeErrorAt> {
-        let (env, mut var_env) = builtin_env();
+        let mut subst = Subst::new();
+        let (env, mut var_env) = builtin_env(&mut subst);
         let prog_vars = build_variant_env(&program.items);
         var_env.merge(prog_vars);
-        let mut checker = Checker::new(var_env);
+        let mut checker = Checker::with_subst(var_env, subst);
         let export_ty = checker.check_program(program, env, Some(path), self)?;
         Ok(generalise_toplevel(&checker.subst, &export_ty))
     }

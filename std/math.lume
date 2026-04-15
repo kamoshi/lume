@@ -12,7 +12,7 @@ let lcm = a -> b ->
   else (a / gcd a b) * b
 
 -- clamp : Num -> Num -> Num -> Num
--- clamp lo hi x — keeps x within [lo, hi]
+-- clamp lo hi x - keeps x within [lo, hi]
 let clamp = lo -> hi -> x -> max lo (min hi x)
 
 -- sign : Num -> Num  (-1, 0, or 1)
