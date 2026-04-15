@@ -460,7 +460,8 @@ fn ident_completions(src: &str, word_start: usize, offset: usize, prefix: &str) 
     }
 
     // Fallback: builtins only.
-    let (env, _) = builtin_env();
+    let mut subst = types::Subst::new();
+    let (env, _) = builtin_env(&mut subst);
     let items: Vec<(String, String)> = env
         .iter()
         .map(|(n, s)| (n.clone(), s.ty.to_string()))

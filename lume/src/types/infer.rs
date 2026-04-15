@@ -1397,8 +1397,11 @@ impl Checker {
 
     // ── Pattern checking ─────────────────────────────────────────────────────
 
-    /// Check `pat` against `expected`; returns (name, type) bindings.
-    /// Pattern errors don't carry expression spans; callers convert as needed.
+    // Patterns do two things simultaneously:
+    //  1. They ensure the shape of the data matches the `expected` type (by unifying).
+    //  2. They return a list of local bindings (name -> type) introduced by the pattern.
+    //
+    // Pattern errors don't carry expression spans; callers convert as needed.
     pub fn infer_pattern(
         &mut self,
         pat: &Pattern,
@@ -1418,6 +1421,7 @@ impl Checker {
                 Ok(vec![])
             }
 
+            // The simplest binding: `x` simply takes on whatever the `expected` type is.
             Pattern::Ident(name, _, node_id) => {
                 self.node_types.insert(*node_id, expected.clone());
                 Ok(vec![(name.clone(), expected)])
@@ -1433,6 +1437,12 @@ impl Checker {
         }
     }
 
+    // Checking a record pattern: `{ x, y, ..rest }`
+    //
+    // We construct a fresh row type representing the fields we *know* about from the
+    // pattern. If the pattern has `..rest`, the row tail is Open (a fresh variable),
+    // meaning the actual record can have more fields. If it has no `..rest`, the tail
+    // is Closed, meaning the expected record must have *exactly* these fields.
     fn check_variant_pattern(
         &mut self,
         name: &str,
@@ -1599,8 +1609,8 @@ impl Checker {
             match &u.binding {
                 UseBinding::Ident(name, _, node_id) => {
                     let ty = self.instantiate(&scheme);
-                    self.node_types.insert(*node_id, ty.clone());
-                    env.insert(name.clone(), Scheme::mono(ty));
+                    self.node_types.insert(*node_id, ty);
+                    env.insert(name.clone(), scheme);
                 }
                 UseBinding::Record(rp) => {
                     let module_ty = self.instantiate(&scheme);
@@ -1651,9 +1661,13 @@ impl Checker {
             match &u.binding {
                 UseBinding::Ident(name, _, node_id) => {
                     // Import the whole module as a record value.
+                    // Store the original scheme so each use site gets a fresh
+                    // instantiation; storing Scheme::mono would share unification
+                    // variables across call sites, breaking e.g. two uses of a
+                    // polymorphic field like `maybe.withDefault`.
                     let ty = self.instantiate(&scheme);
-                    self.node_types.insert(*node_id, ty.clone());
-                    env.insert(name.clone(), Scheme::mono(ty));
+                    self.node_types.insert(*node_id, ty);
+                    env.insert(name.clone(), scheme);
                 }
                 UseBinding::Record(rp) => {
                     // Destructured import: give each field its own scheme so
