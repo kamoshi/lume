@@ -112,9 +112,18 @@ fn collect_spans(program: &Program) -> Vec<(Span, NodeId)> {
         }
     }
     for item in &program.items {
-        if let TopItem::Binding(b) = item {
-            collect_pattern_spans(&b.pattern, &mut out);
-            collect_expr_spans(&b.value, &mut out);
+        match item {
+            TopItem::Binding(b) => {
+                collect_pattern_spans(&b.pattern, &mut out);
+                collect_expr_spans(&b.value, &mut out);
+            }
+            TopItem::BindingGroup(bs) => {
+                for b in bs {
+                    collect_pattern_spans(&b.pattern, &mut out);
+                    collect_expr_spans(&b.value, &mut out);
+                }
+            }
+            TopItem::TypeDef(_) => {}
         }
     }
     collect_expr_spans(&program.exports, &mut out);

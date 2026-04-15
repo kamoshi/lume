@@ -138,9 +138,18 @@ fn collect_pat(src: &str, pat: &Pattern, out: &mut Vec<(usize, usize, NodeId)>) 
 
 fn collect_program(src: &str, program: &Program, out: &mut Vec<(usize, usize, NodeId)>) {
     for item in &program.items {
-        if let TopItem::Binding(b) = item {
-            collect_pat(src, &b.pattern, out);
-            collect_expr(src, &b.value, out);
+        match item {
+            TopItem::Binding(b) => {
+                collect_pat(src, &b.pattern, out);
+                collect_expr(src, &b.value, out);
+            }
+            TopItem::BindingGroup(bs) => {
+                for b in bs {
+                    collect_pat(src, &b.pattern, out);
+                    collect_expr(src, &b.value, out);
+                }
+            }
+            TopItem::TypeDef(_) => {}
         }
     }
     collect_expr(src, &program.exports, out);
