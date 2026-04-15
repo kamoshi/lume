@@ -220,6 +220,11 @@ fn collect_expr_spans(expr: &Expr, out: &mut Vec<(Span, NodeId)>) {
                 collect_expr_spans(&arm.body, out);
             }
         }
+        ExprKind::LetIn { pattern, value, body } => {
+            collect_pattern_spans(pattern, out);
+            collect_expr_spans(value, out);
+            collect_expr_spans(body, out);
+        }
         // Leaves: Number, Text, Bool, Ident, Variant { payload: None }
         _ => {}
     }
