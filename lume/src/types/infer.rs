@@ -2251,7 +2251,7 @@ pub fn elaborate_with_env(
 pub fn elaborate_with_env_partial(
     program: &Program,
     path: Option<&Path>,
-) -> (HashMap<NodeId, Ty>, TypeEnv, Vec<TypeErrorAt>) {
+) -> (HashMap<NodeId, Ty>, TypeEnv, HashMap<String, TraitDef>, Vec<TypeErrorAt>) {
     let mut subst = Subst::new();
     let (base_env, mut var_env) = builtin_env(&mut subst);
     let prog_vars = build_variant_env(&program.items);
@@ -2325,5 +2325,5 @@ pub fn elaborate_with_env_partial(
         .map(|(id, ty)| (id, checker.subst.apply(&ty)))
         .collect();
 
-    (node_types, resolved_env, errors)
+    (node_types, resolved_env, checker.trait_env, errors)
 }

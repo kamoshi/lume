@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use dashmap::DashMap;
 use lume::{
-    ast::{self, Expr, ExprKind, NodeId, Program, TopItem},
+    ast::{self, Expr, ExprKind, NodeId, Program, TopItem, TraitDef},
     error::{LumeError, Span},
     lexer::Lexer,
     loader::{use_path_context, UsePathContext, UsePathKind, STDLIB_MODULES},
@@ -27,6 +27,10 @@ struct DocInfo {
     span_index: Vec<(Span, NodeId)>,
     /// All names in scope at the end of the file (builtins + imports + lets).
     top_env: TypeEnv,
+    /// Trait definitions visible in this file (local + imported).
+    trait_env: HashMap<String, TraitDef>,
+    /// NodeId → (trait_name, method_name) for every TraitCall expression.
+    trait_calls: HashMap<NodeId, (String, String)>,
 }
 
 // ── LSP backend ───────────────────────────────────────────────────────────────
@@ -77,18 +81,65 @@ fn analyse(uri: &Url, src: &str) -> (Option<DocInfo>, Vec<Diagnostic>) {
         Err(e) => return (None, vec![error_to_diagnostic(LumeError::Parse(e))]),
     };
     let path = uri.to_file_path().ok();
-    let (node_types, top_env, type_errors) = elaborate_with_env_partial(&program, path.as_deref());
+    let (node_types, top_env, trait_env, type_errors) =
+        elaborate_with_env_partial(&program, path.as_deref());
     let span_index = collect_spans(&program);
+    let trait_calls = collect_trait_calls(&program);
     let doc_info = Some(DocInfo {
         node_types,
         span_index,
         top_env,
+        trait_env,
+        trait_calls,
     });
     let diagnostics = type_errors
         .into_iter()
         .map(|e| error_to_diagnostic(LumeError::Type(e)))
         .collect();
     (doc_info, diagnostics)
+}
+
+/// Walk every expression and collect NodeId → (trait_name, method_name) for
+/// all `TraitCall` nodes.
+fn collect_trait_calls(program: &Program) -> HashMap<NodeId, (String, String)> {
+    let mut out = HashMap::new();
+    fn walk(expr: &Expr, out: &mut HashMap<NodeId, (String, String)>) {
+        if let ExprKind::TraitCall { trait_name, method_name } = &expr.kind {
+            out.insert(expr.id, (trait_name.clone(), method_name.clone()));
+        }
+        match &expr.kind {
+            ExprKind::List(es) => es.iter().for_each(|e| walk(e, out)),
+            ExprKind::Record { base, fields, .. } => {
+                if let Some(b) = base { walk(b, out); }
+                for f in fields { if let Some(v) = &f.value { walk(v, out); } }
+            }
+            ExprKind::FieldAccess { record, .. } => walk(record, out),
+            ExprKind::Variant { payload: Some(p), .. } => walk(p, out),
+            ExprKind::Lambda { body, .. } => walk(body, out),
+            ExprKind::Apply { func, arg } => { walk(func, out); walk(arg, out); }
+            ExprKind::Binary { left, right, .. } => { walk(left, out); walk(right, out); }
+            ExprKind::Unary { operand, .. } => walk(operand, out),
+            ExprKind::If { cond, then_branch, else_branch } => {
+                walk(cond, out); walk(then_branch, out); walk(else_branch, out);
+            }
+            ExprKind::Match(arms) => arms.iter().for_each(|a| {
+                if let Some(g) = &a.guard { walk(g, out); }
+                walk(&a.body, out);
+            }),
+            ExprKind::LetIn { value, body, .. } => { walk(value, out); walk(body, out); }
+            _ => {}
+        }
+    }
+    for item in &program.items {
+        match item {
+            TopItem::Binding(b) => walk(&b.value, &mut out),
+            TopItem::BindingGroup(bs) => bs.iter().for_each(|b| walk(&b.value, &mut out)),
+            TopItem::ImplDef(id) => id.methods.iter().for_each(|m| walk(&m.value, &mut out)),
+            _ => {}
+        }
+    }
+    walk(&program.exports, &mut out);
+    out
 }
 
 // ── Span index ────────────────────────────────────────────────────────────────
@@ -232,19 +283,16 @@ fn collect_expr_spans(expr: &Expr, out: &mut Vec<(Span, NodeId)>) {
 
 // ── Hover lookup ─────────────────────────────────────────────────────────────
 
-/// Find the type of the innermost (shortest-span) expression that contains
-/// `pos` in `doc`.
+/// Find the type and NodeId of the innermost expression at `pos`.
 ///
 /// Spans are 1-indexed (line and col); LSP positions are 0-indexed.
-fn type_at(pos: Position, doc: &DocInfo) -> Option<Ty> {
-    let line = pos.line as usize + 1; // convert to 1-indexed
+fn type_at_with_id(pos: Position, doc: &DocInfo) -> Option<(NodeId, Ty)> {
+    let line = pos.line as usize + 1;
     let col = pos.character as usize + 1;
-
-    // span_index is sorted shortest-first; the first match is the most specific.
     doc.span_index
         .iter()
         .find(|(span, _)| span.line == line && span.col <= col && col < span.col + span.len)
-        .and_then(|(_, id)| doc.node_types.get(id).cloned())
+        .and_then(|(_, id)| doc.node_types.get(id).map(|ty| (*id, ty.clone())))
 }
 
 /// Return the identifier word under the cursor (for the hover label).
@@ -279,6 +327,12 @@ enum CompletionCtx {
     /// Cursor is in a position like `record.` or `record.partial` - suggest fields.
     FieldAccess {
         record: String,
+        prefix: String,
+        replace_range: Range,
+    },
+    /// Cursor is in a position like `TraitName.` or `TraitName.partial`.
+    TraitAccess {
+        trait_name: String,
         prefix: String,
         replace_range: Range,
     },
@@ -342,7 +396,7 @@ fn completion_ctx(text: &str, pos: Position) -> CompletionCtx {
         return CompletionCtx::None;
     }
 
-    // If the char immediately before the partial word is '.', it's field access.
+    // If the char immediately before the partial word is '.', it's field or trait access.
     if partial_start > 0 && before.as_bytes()[partial_start - 1] == b'.' {
         let before_dot = &before[..partial_start - 1];
         let rec_start = before_dot
@@ -351,6 +405,14 @@ fn completion_ctx(text: &str, pos: Position) -> CompletionCtx {
             .unwrap_or(0);
         let record = &before_dot[rec_start..];
         if !record.is_empty() {
+            // If the name starts with an uppercase letter it's a trait access.
+            if record.starts_with(|c: char| c.is_uppercase()) {
+                return CompletionCtx::TraitAccess {
+                    trait_name: record.to_string(),
+                    prefix,
+                    replace_range,
+                };
+            }
             return CompletionCtx::FieldAccess {
                 record: record.to_string(),
                 prefix,
@@ -363,6 +425,46 @@ fn completion_ctx(text: &str, pos: Position) -> CompletionCtx {
         prefix,
         replace_range,
     }
+}
+
+/// Format a trait method type with its constraint for display.
+/// e.g. trait `ToText a` with method `toNum : a -> Num` → `ToText a => a -> Num`
+fn format_trait_method_ty(trait_def: &TraitDef, method_ty: &str) -> String {
+    format!("{} {} => {}", trait_def.name, trait_def.type_param, method_ty)
+}
+
+/// Return completion items for `TraitName.` — the methods of that trait.
+fn trait_completions(
+    trait_name: &str,
+    prefix: &str,
+    replace_range: Range,
+    doc: &DocInfo,
+) -> Vec<CompletionItem> {
+    let trait_def = match doc.trait_env.get(trait_name) {
+        Some(td) => td,
+        None => return vec![],
+    };
+    let lower = prefix.to_lowercase();
+    trait_def
+        .methods
+        .iter()
+        .filter(|m| lower.is_empty() || m.name.to_lowercase().contains(&lower))
+        .map(|m| {
+            let detail = format_trait_method_ty(trait_def, &m.ty.to_string());
+            CompletionItem {
+                label: m.name.clone(),
+                filter_text: Some(m.name.clone()),
+                insert_text: Some(m.name.clone()),
+                text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                    range: replace_range.clone(),
+                    new_text: m.name.clone(),
+                })),
+                detail: Some(detail),
+                kind: Some(CompletionItemKind::METHOD),
+                ..Default::default()
+            }
+        })
+        .collect()
 }
 
 /// Return field completion items for a record variable name.
@@ -655,6 +757,9 @@ impl LanguageServer for Backend {
             CompletionCtx::FieldAccess { record, prefix, .. } => {
                 format!("FieldAccess(record={record}, prefix={prefix:?})")
             }
+            CompletionCtx::TraitAccess { trait_name, prefix, .. } => {
+                format!("TraitAccess(trait={trait_name}, prefix={prefix:?})")
+            }
             CompletionCtx::Ident { prefix, .. } => format!("Ident(prefix={prefix:?})"),
             CompletionCtx::None | CompletionCtx::UsePath(_) => unreachable!(),
         };
@@ -665,6 +770,11 @@ impl LanguageServer for Backend {
                 prefix,
                 replace_range,
             } => field_completions(&record, &prefix, replace_range, &doc),
+            CompletionCtx::TraitAccess {
+                trait_name,
+                prefix,
+                replace_range,
+            } => trait_completions(&trait_name, &prefix, replace_range, &doc),
             CompletionCtx::Ident {
                 prefix,
                 replace_range,
@@ -704,18 +814,33 @@ impl LanguageServer for Backend {
             None => return Ok(None),
         };
 
-        let ty = match type_at(pos, &doc) {
+        let (node_id, ty) = match type_at_with_id(pos, &doc) {
             Some(t) => t,
             None => return Ok(None),
         };
 
-        // Use the identifier under the cursor as a label only when it is a
-        // genuine identifier (starts with a letter or `_`), not a number fragment.
-        let label = match word_at(&text, pos.line, pos.character) {
-            Some(w) if w.starts_with(|c: char| c.is_alphabetic() || c == '_') => {
-                format!("{w} : {ty}")
+        // Check if this node is a TraitCall — if so, show the constrained type.
+        let label = if let Some((trait_name, method_name)) = doc.trait_calls.get(&node_id) {
+            if let Some(trait_def) = doc.trait_env.get(trait_name) {
+                if let Some(method) = trait_def.methods.iter().find(|m| &m.name == method_name) {
+                    // Show: `methodName : TraitName param => method_type`
+                    let constrained = format_trait_method_ty(trait_def, &method.ty.to_string());
+                    format!("{method_name} : {constrained}")
+                } else {
+                    format!("{method_name} : {ty}")
+                }
+            } else {
+                format!("{method_name} : {ty}")
             }
-            _ => ty.to_string(),
+        } else {
+            // Use the identifier under the cursor as a label only when it is a
+            // genuine identifier (starts with a letter or `_`), not a number fragment.
+            match word_at(&text, pos.line, pos.character) {
+                Some(w) if w.starts_with(|c: char| c.is_alphabetic() || c == '_') => {
+                    format!("{w} : {ty}")
+                }
+                _ => ty.to_string(),
+            }
         };
 
         Ok(Some(Hover {

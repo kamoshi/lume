@@ -770,8 +770,16 @@ fn parse_atom(tokens: &[Spanned]) -> Result<(usize, Expr), ParseError> {
             // Trait call: `Show.show`
             if matches!(first_token(&tokens[ptr..]), Some(Token::Dot)) {
                 ptr += 1; // consume `.`
+                let method_span = span(&tokens[ptr..]);
                 let (n, method_name) = consume_ident(&tokens[ptr..])?;
                 ptr += n;
+                // Extend the span to cover "TraitName.methodName" so hovering
+                // over either part shows the trait call type.
+                let full_span = Span {
+                    line: type_span.line,
+                    col: type_span.col,
+                    len: (method_span.col + method_span.len).saturating_sub(type_span.col),
+                };
                 return Ok((
                     ptr,
                     Expr {
@@ -780,7 +788,7 @@ fn parse_atom(tokens: &[Spanned]) -> Result<(usize, Expr), ParseError> {
                             trait_name: name,
                             method_name,
                         },
-                        span: type_span,
+                        span: full_span,
                     },
                 ));
             }

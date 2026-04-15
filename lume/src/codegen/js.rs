@@ -384,8 +384,13 @@ impl Emitter {
                 self.out.push(')');
             }
             ExprKind::Match(arms) => self.emit_match_fn(arms),
-            ExprKind::TraitCall { .. } => {
-                unreachable!("TraitCall must be desugared before codegen")
+            ExprKind::TraitCall { trait_name, method_name } => {
+                // A TraitCall with an ambiguous (polymorphic) type survives desugaring.
+                // Emit a function that throws when called; the fix is a type annotation.
+                self.out.push_str(&format!(
+                    "() => {{ throw new Error(\"ambiguous trait call {}.{}: add a type annotation\"); }}",
+                    trait_name, method_name
+                ));
             }
             ExprKind::LetIn {
                 pattern,

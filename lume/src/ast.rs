@@ -321,6 +321,38 @@ pub struct FieldType {
     pub ty: Type,
 }
 
+impl std::fmt::Display for Type {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Type::Named { name, args } if args.is_empty() => write!(f, "{}", name),
+            Type::Named { name, args } => {
+                write!(f, "{}", name)?;
+                for a in args {
+                    write!(f, " {}", a)?;
+                }
+                Ok(())
+            }
+            Type::Var(v) => write!(f, "{}", v),
+            Type::Record(rt) => {
+                write!(f, "{{ ")?;
+                for (i, field) in rt.fields.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{}: {}", field.name, field.ty)?;
+                }
+                if rt.open { write!(f, ", ..")?; }
+                write!(f, " }}")
+            }
+            Type::Func { param, ret } => {
+                // Parenthesise function params for clarity.
+                match param.as_ref() {
+                    Type::Func { .. } => write!(f, "({}) -> {}", param, ret),
+                    _ => write!(f, "{} -> {}", param, ret),
+                }
+            }
+        }
+    }
+}
+
 // ── Node ID assignment ────────────────────────────────────────────────────────
 
 /// Walk every `Expr` in `program` in pre-order and assign a unique `NodeId`.
