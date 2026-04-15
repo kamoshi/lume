@@ -55,6 +55,27 @@ fn consume_ident(tokens: &[Spanned]) -> Result<(usize, String), ParseError> {
     }
 }
 
+/// Like `consume_ident` but also accepts a `TypeIdent` (uppercase-start).
+/// Used for record field names which may be either case.
+fn consume_any_ident(tokens: &[Spanned]) -> Result<(usize, String), ParseError> {
+    match tokens.first() {
+        Some(Spanned {
+            token: Token::Ident(s),
+            ..
+        })
+        | Some(Spanned {
+            token: Token::TypeIdent(s),
+            ..
+        }) => Ok((1, s.clone())),
+        Some(t) => Err(ParseError::unexpected(
+            format!("{:?}", t.token),
+            "identifier",
+            t.span.clone(),
+        )),
+        None => Err(ParseError::unexpected_eof(Span::default())),
+    }
+}
+
 /// Like `consume` but also returns the matched type identifier string.
 fn consume_type_ident(tokens: &[Spanned]) -> Result<(usize, String), ParseError> {
     match tokens.first() {
@@ -85,15 +106,22 @@ fn first_token(tokens: &[Spanned]) -> Option<&Token> {
 pub fn parse_program(tokens: &[Spanned]) -> Result<Program, ParseError> {
     let mut ptr = 0;
 
-    // use declarations
+    // use declarations (module imports only; impl defs are deferred to items loop)
     let mut uses = Vec::new();
     while matches!(first_token(&tokens[ptr..]), Some(Token::Use)) {
+        // `use TypeIdent in …` is an impl def — handled in items loop below.
+        if matches!(
+            tokens.get(ptr + 1).map(|t| &t.token),
+            Some(Token::TypeIdent(_))
+        ) {
+            break;
+        }
         let (n, u) = parse_use(&tokens[ptr..])?;
         ptr += n;
         uses.push(u);
     }
 
-    // top-level type definitions and let bindings
+    // top-level type definitions, let bindings, trait defs, and impl defs
     let mut items = Vec::new();
     loop {
         match first_token(&tokens[ptr..]) {
@@ -118,6 +146,17 @@ pub fn parse_program(tokens: &[Spanned]) -> Result<Program, ParseError> {
                 } else {
                     items.push(TopItem::Binding(b));
                 }
+            }
+            Some(Token::Trait) => {
+                let (n, td) = parse_trait_def(&tokens[ptr..])?;
+                ptr += n;
+                items.push(TopItem::TraitDef(td));
+            }
+            Some(Token::Use) => {
+                // Must be an impl def (module imports consumed above).
+                let (n, id) = parse_impl_def(&tokens[ptr..])?;
+                ptr += n;
+                items.push(TopItem::ImplDef(id));
             }
             _ => break,
         }
@@ -194,6 +233,77 @@ fn parse_use(tokens: &[Spanned]) -> Result<(usize, UseDecl), ParseError> {
     ptr += 1;
 
     Ok((ptr, UseDecl { binding, path }))
+}
+
+// ── Trait definitions ─────────────────────────────────────────────────────────
+
+/// `trait Show a { show: a -> Text }`
+fn parse_trait_def(tokens: &[Spanned]) -> Result<(usize, TraitDef), ParseError> {
+    let mut ptr = 0;
+    ptr += consume(&tokens[ptr..], &Token::Trait)?;
+
+    let (n, name) = consume_type_ident(&tokens[ptr..])?;
+    ptr += n;
+
+    let (n, type_param) = consume_ident(&tokens[ptr..])?;
+    ptr += n;
+
+    ptr += consume(&tokens[ptr..], &Token::LBrace)?;
+
+    let mut methods = Vec::new();
+    while !matches!(first_token(&tokens[ptr..]), Some(Token::RBrace) | None) {
+        let (n, method_name) = consume_ident(&tokens[ptr..])?;
+        ptr += n;
+        ptr += consume(&tokens[ptr..], &Token::Colon)?;
+        let (n, ty) = parse_type(&tokens[ptr..])?;
+        ptr += n;
+        methods.push(TraitMethod { name: method_name, ty });
+        // optional comma between methods
+        if matches!(first_token(&tokens[ptr..]), Some(Token::Comma)) {
+            ptr += 1;
+        }
+    }
+
+    ptr += consume(&tokens[ptr..], &Token::RBrace)?;
+    Ok((ptr, TraitDef { name, type_param, methods }))
+}
+
+/// `use Show in Num { show = x -> show x }`
+fn parse_impl_def(tokens: &[Spanned]) -> Result<(usize, ImplDef), ParseError> {
+    let mut ptr = 0;
+    ptr += consume(&tokens[ptr..], &Token::Use)?;
+
+    let (n, trait_name) = consume_type_ident(&tokens[ptr..])?;
+    ptr += n;
+
+    ptr += consume(&tokens[ptr..], &Token::In)?;
+
+    let (n, type_name) = consume_type_ident(&tokens[ptr..])?;
+    ptr += n;
+
+    ptr += consume(&tokens[ptr..], &Token::LBrace)?;
+
+    let mut methods = Vec::new();
+    while !matches!(first_token(&tokens[ptr..]), Some(Token::RBrace) | None) {
+        let name_span = span(&tokens[ptr..]);
+        let (n, method_name) = consume_ident(&tokens[ptr..])?;
+        ptr += n;
+        ptr += consume(&tokens[ptr..], &Token::Equal)?;
+        let (n, value) = parse_expr(&tokens[ptr..])?;
+        ptr += n;
+        methods.push(Binding {
+            pattern: Pattern::Ident(method_name, name_span, 0),
+            ty: None,
+            value,
+        });
+        // optional comma between methods
+        if matches!(first_token(&tokens[ptr..]), Some(Token::Comma)) {
+            ptr += 1;
+        }
+    }
+
+    ptr += consume(&tokens[ptr..], &Token::RBrace)?;
+    Ok((ptr, ImplDef { trait_name, type_name, methods }))
 }
 
 // ── Type definitions ──────────────────────────────────────────────────────────
@@ -656,6 +766,25 @@ fn parse_atom(tokens: &[Spanned]) -> Result<(usize, Expr), ParseError> {
             let name = name.clone();
             let type_span = span(tokens);
             let mut ptr = 1;
+
+            // Trait call: `Show.show`
+            if matches!(first_token(&tokens[ptr..]), Some(Token::Dot)) {
+                ptr += 1; // consume `.`
+                let (n, method_name) = consume_ident(&tokens[ptr..])?;
+                ptr += n;
+                return Ok((
+                    ptr,
+                    Expr {
+                        id: 0,
+                        kind: ExprKind::TraitCall {
+                            trait_name: name,
+                            method_name,
+                        },
+                        span: type_span,
+                    },
+                ));
+            }
+
             // Optional record payload: `Circle { radius: 5 }`
             let payload = if matches!(first_token(&tokens[ptr..]), Some(Token::LBrace)) {
                 let (n, rec) = parse_record_expr(&tokens[ptr..])?;
@@ -787,18 +916,31 @@ fn parse_record_expr(tokens: &[Spanned]) -> Result<(usize, Expr), ParseError> {
 fn parse_record_field(tokens: &[Spanned]) -> Result<(usize, RecordField), ParseError> {
     let mut ptr = 0;
     let name_span = span(tokens);
-    let (n, name) = consume_ident(&tokens[ptr..])?;
+    // Check if the field name is a constructor (TypeIdent) before consuming.
+    let is_constructor = matches!(tokens.first(), Some(Spanned { token: Token::TypeIdent(_), .. }));
+    let (n, name) = consume_any_ident(&tokens[ptr..])?;
     ptr += n;
 
-    // Field shorthand: `{ age }` - no colon
+    // Field shorthand: `{ age }` or `{ Circle }` - no colon
     if !matches!(first_token(&tokens[ptr..]), Some(Token::Colon)) {
+        // If the field name is an uppercase constructor, synthesize a Variant value
+        // so that `pub { Circle }` exports it as a constructor function.
+        let value = if is_constructor {
+            Some(Expr {
+                id: 0,
+                kind: ExprKind::Variant { name: name.clone(), payload: None },
+                span: name_span.clone(),
+            })
+        } else {
+            None
+        };
         return Ok((
             ptr,
             RecordField {
                 name,
                 name_span,
                 name_node_id: 0,
-                value: None,
+                value,
             },
         ));
     }
@@ -1045,7 +1187,7 @@ fn parse_record_pattern(tokens: &[Spanned]) -> Result<(usize, RecordPattern), Pa
 fn parse_field_pattern(tokens: &[Spanned]) -> Result<(usize, FieldPattern), ParseError> {
     let mut ptr = 0;
     let field_span = span(tokens);
-    let (n, name) = consume_ident(&tokens[ptr..])?;
+    let (n, name) = consume_any_ident(&tokens[ptr..])?;
     ptr += n;
 
     // optional `: pattern`

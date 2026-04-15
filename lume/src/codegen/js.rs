@@ -148,7 +148,7 @@ impl Emitter {
 
         for item in &program.items {
             match item {
-                TopItem::TypeDef(_) => {}
+                TopItem::TypeDef(_) | TopItem::TraitDef(_) | TopItem::ImplDef(_) => {}
                 TopItem::Binding(b) => {
                     self.emit_binding(b);
                     self.out.push('\n');
@@ -384,6 +384,9 @@ impl Emitter {
                 self.out.push(')');
             }
             ExprKind::Match(arms) => self.emit_match_fn(arms),
+            ExprKind::TraitCall { .. } => {
+                unreachable!("TraitCall must be desugared before codegen")
+            }
             ExprKind::LetIn {
                 pattern,
                 value,
@@ -464,9 +467,9 @@ impl Emitter {
         if Self::is_simple_pattern(param) {
             self.emit_lambda_param(param);
             self.out.push_str(" => ");
-            // A record literal as a concise arrow body is ambiguous with a block statement.
+            // A record or variant literal as a concise arrow body is ambiguous with a block statement.
             // JS requires parens: `x => ({ ... })` rather than `x => { ... }`.
-            let needs_parens = matches!(body.kind, ExprKind::Record { .. });
+            let needs_parens = matches!(body.kind, ExprKind::Record { .. } | ExprKind::Variant { .. });
             if needs_parens {
                 self.out.push('(');
             }

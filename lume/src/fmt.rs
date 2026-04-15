@@ -89,6 +89,8 @@ fn fmt_top_item(item: &TopItem) -> Doc {
             }
             concat_all(parts)
         }
+        // Trait/impl defs are not yet formatted — emit nothing.
+        TopItem::TraitDef(_) | TopItem::ImplDef(_) => nil(),
     }
 }
 
@@ -334,6 +336,11 @@ fn fmt_expr_inner(expr: &Expr) -> Doc {
                 nest(INDENT, concat(line(), body_doc)),
             ])
         }
+
+        ExprKind::TraitCall {
+            trait_name,
+            method_name,
+        } => text(format!("{}.{}", trait_name, method_name)),
     }
 }
 

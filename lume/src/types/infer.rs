@@ -1,6 +1,6 @@
 use crate::ast::{
-    self, BinOp, Binding, Expr, ExprKind, ListPattern, Literal, MatchArm, NodeId, Pattern, Program,
-    RecordField, RecordPattern, TopItem, UnOp, UseBinding, UseDecl,
+    self, BinOp, Binding, Expr, ExprKind, ImplDef, ListPattern, Literal, MatchArm, NodeId,
+    Pattern, Program, RecordField, RecordPattern, TopItem, TraitDef, UnOp, UseBinding, UseDecl,
 };
 use crate::error::Span;
 use crate::types::{
@@ -561,6 +561,7 @@ type VariantInstance = (Ty, Option<Vec<(String, Ty)>>);
 //
 // `subst`       - the live substitution; grows as constraints are solved.
 // `variant_env` - constructor metadata; read-only after construction.
+// `trait_env`   - declared traits; used for TraitCall typing and impl completeness.
 // `node_types`  - side channel: every AST node's inferred type, keyed by
 //                 NodeId.  Used by the LSP for hover/completion information.
 //                 Types here still contain unification variables; callers
@@ -568,6 +569,7 @@ type VariantInstance = (Ty, Option<Vec<(String, Ty)>>);
 pub struct Checker {
     pub subst: Subst,
     pub variant_env: VariantEnv,
+    pub trait_env: HashMap<String, TraitDef>,
     /// Maps each expression's NodeId to its inferred type (with type vars, resolved at end).
     pub node_types: HashMap<NodeId, Ty>,
 }
@@ -577,6 +579,7 @@ impl Checker {
         Checker {
             subst: Subst::new(),
             variant_env,
+            trait_env: HashMap::new(),
             node_types: HashMap::new(),
         }
     }
@@ -589,6 +592,7 @@ impl Checker {
         Checker {
             subst,
             variant_env,
+            trait_env: HashMap::new(),
             node_types: HashMap::new(),
         }
     }
@@ -999,6 +1003,33 @@ impl Checker {
             },
 
             ExprKind::Match(arms) => self.infer_match(env, arms, span),
+
+            ExprKind::TraitCall { trait_name, method_name } => {
+                // Look up the trait and find the method's declared type.
+                // The type parameter is treated as a fresh unification variable.
+                let trait_def = self.trait_env.get(trait_name).cloned();
+                match trait_def {
+                    Some(td) => {
+                        match td.methods.iter().find(|m| m.name == *method_name) {
+                            Some(method) => {
+                                let mut param_vars: HashMap<String, TyVar> = HashMap::new();
+                                self.lower_ty(&method.ty, &mut param_vars)
+                                    .map_err(|e| TypeErrorAt::new(e, span.clone()))
+                            }
+                            None => Err(TypeErrorAt::new(
+                                TypeError::UnboundVariable(format!(
+                                    "{}.{}", trait_name, method_name
+                                )),
+                                span.clone(),
+                            )),
+                        }
+                    }
+                    None => {
+                        // Trait not yet known (e.g. cross-module); fall back to fresh var.
+                        Ok(Ty::Var(self.subst.fresh_var()))
+                    }
+                }
+            }
 
             ExprKind::LetIn {
                 pattern,
@@ -1583,8 +1614,8 @@ impl Checker {
         };
         let mut errors = Vec::new();
         for u in uses {
-            let scheme = match loader.load(&u.path, base) {
-                Ok(s) => s,
+            let exports = match loader.load(&u.path, base) {
+                Ok(e) => e,
                 Err(e) => {
                     errors.push(e);
                     // Give the binding(s) a fresh type variable so code that
@@ -1606,6 +1637,9 @@ impl Checker {
                     continue;
                 }
             };
+            let scheme = exports.scheme;
+            self.variant_env.merge(exports.variant_env);
+            self.trait_env.extend(exports.trait_env);
             match &u.binding {
                 UseBinding::Ident(name, _, node_id) => {
                     let ty = self.instantiate(&scheme);
@@ -1656,7 +1690,10 @@ impl Checker {
             None => return Ok(()),
         };
         for u in uses {
-            let scheme = loader.load(&u.path, base)?;
+            let exports = loader.load(&u.path, base)?;
+            let scheme = exports.scheme;
+            self.variant_env.merge(exports.variant_env);
+            self.trait_env.extend(exports.trait_env);
 
             match &u.binding {
                 UseBinding::Ident(name, _, node_id) => {
@@ -1705,16 +1742,52 @@ impl Checker {
     ) -> Result<Ty, TypeErrorAt> {
         self.apply_imports(&program.uses, base, loader, &mut env)?;
 
+        // Pre-pass: collect all trait definitions so ImplDef checking and
+        // TraitCall typing can reference them.
+        for item in &program.items {
+            if let TopItem::TraitDef(td) = item {
+                self.trait_env.insert(td.name.clone(), td.clone());
+            }
+        }
+
         for item in &program.items {
             env = match item {
                 TopItem::Binding(b) => self.check_binding(b, env)?,
                 TopItem::BindingGroup(bs) => self.check_binding_group(bs, env)?,
-                TopItem::TypeDef(_) => env,
+                TopItem::ImplDef(id) => {
+                    self.check_impl_completeness(id)?;
+                    let b = synth_impl_binding(id);
+                    self.check_binding(&b, env)?
+                }
+                TopItem::TypeDef(_) | TopItem::TraitDef(_) => env,
             };
         }
 
         let export_ty = self.infer(&env, &program.exports)?;
         Ok(self.subst.apply(&export_ty))
+    }
+
+    /// Verify that an impl block provides every method declared in its trait.
+    fn check_impl_completeness(&self, id: &ImplDef) -> Result<(), TypeErrorAt> {
+        let trait_def = match self.trait_env.get(&id.trait_name) {
+            Some(td) => td,
+            None => return Ok(()), // unknown trait (cross-module); skip
+        };
+        for method in &trait_def.methods {
+            let provided = id.methods.iter().any(|m| {
+                matches!(&m.pattern, crate::ast::Pattern::Ident(n, _, _) if n == &method.name)
+            });
+            if !provided {
+                return Err(TypeErrorAt::new(
+                    TypeError::UnboundVariable(format!(
+                        "impl {} in {}: missing method '{}'",
+                        id.trait_name, id.type_name, method.name
+                    )),
+                    crate::error::Span::default(),
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn check_binding(&mut self, binding: &Binding, env: TypeEnv) -> Result<TypeEnv, TypeErrorAt> {
@@ -1865,6 +1938,45 @@ pub struct BindingInfo {
 
 // ── Shared helpers for elaborate* functions ───────────────────────────────────
 
+/// Synthesize a dictionary-record `Binding` from an `ImplDef` so the type
+/// checker can add the dict name to the environment.
+///
+/// `use Show in Num { show = expr }` → `let __show_Num = { show = expr }`
+fn synth_impl_binding(id: &ImplDef) -> Binding {
+    let dict_name = format!(
+        "__{}_{}", id.trait_name.to_ascii_lowercase(), id.type_name
+    );
+    let fields: Vec<RecordField> = id
+        .methods
+        .iter()
+        .map(|b| {
+            let name = match &b.pattern {
+                Pattern::Ident(n, _, _) => n.clone(),
+                _ => panic!("impl method patterns must be simple identifiers"),
+            };
+            RecordField {
+                name,
+                name_span: crate::error::Span::default(),
+                name_node_id: 0,
+                value: Some(b.value.clone()),
+            }
+        })
+        .collect();
+    Binding {
+        pattern: Pattern::Ident(dict_name, crate::error::Span::default(), 0),
+        ty: None,
+        value: Expr {
+            id: 0,
+            kind: ExprKind::Record {
+                base: None,
+                fields,
+                spread: false,
+            },
+            span: crate::error::Span::default(),
+        },
+    }
+}
+
 /// After successfully checking a binding, record the node type for a simple
 /// `let name = …` pattern so hover works on the binding site.
 fn record_ident_node_type(binding: &Binding, checker: &mut Checker, env: &TypeEnv) {
@@ -1922,6 +2034,12 @@ pub fn elaborate_bindings(
 
     checker.apply_imports(&program.uses, path, &mut loader, &mut env)?;
 
+    for item in &program.items {
+        if let TopItem::TraitDef(td) = item {
+            checker.trait_env.insert(td.name.clone(), td.clone());
+        }
+    }
+
     let mut bindings = Vec::new();
     for item in &program.items {
         match item {
@@ -1935,7 +2053,12 @@ pub fn elaborate_bindings(
                     collect_binding_info(&b.pattern, &env, &checker, &mut bindings);
                 }
             }
-            TopItem::TypeDef(_) => {}
+            TopItem::ImplDef(id) => {
+                checker.check_impl_completeness(id)?;
+                let b = synth_impl_binding(id);
+                env = checker.check_binding(&b, env)?;
+            }
+            TopItem::TypeDef(_) | TopItem::TraitDef(_) => {}
         }
     }
 
@@ -2015,6 +2138,12 @@ pub fn elaborate(
     checker.apply_imports(&program.uses, path, &mut loader, &mut env)?;
 
     for item in &program.items {
+        if let TopItem::TraitDef(td) = item {
+            checker.trait_env.insert(td.name.clone(), td.clone());
+        }
+    }
+
+    for item in &program.items {
         match item {
             TopItem::Binding(b) => {
                 env = checker.check_binding(b, env)?;
@@ -2026,7 +2155,12 @@ pub fn elaborate(
                     record_ident_node_type(b, &mut checker, &env);
                 }
             }
-            TopItem::TypeDef(_) => {}
+            TopItem::ImplDef(id) => {
+                checker.check_impl_completeness(id)?;
+                let b = synth_impl_binding(id);
+                env = checker.check_binding(&b, env)?;
+            }
+            TopItem::TypeDef(_) | TopItem::TraitDef(_) => {}
         }
     }
 
@@ -2061,6 +2195,12 @@ pub fn elaborate_with_env(
     checker.apply_imports(&program.uses, path, &mut loader, &mut env)?;
 
     for item in &program.items {
+        if let TopItem::TraitDef(td) = item {
+            checker.trait_env.insert(td.name.clone(), td.clone());
+        }
+    }
+
+    for item in &program.items {
         match item {
             TopItem::Binding(b) => {
                 env = checker.check_binding(b, env)?;
@@ -2072,7 +2212,12 @@ pub fn elaborate_with_env(
                     record_ident_node_type(b, &mut checker, &env);
                 }
             }
-            TopItem::TypeDef(_) => {}
+            TopItem::ImplDef(id) => {
+                checker.check_impl_completeness(id)?;
+                let b = synth_impl_binding(id);
+                env = checker.check_binding(&b, env)?;
+            }
+            TopItem::TypeDef(_) | TopItem::TraitDef(_) => {}
         }
     }
 
@@ -2118,6 +2263,12 @@ pub fn elaborate_with_env_partial(
     let mut errors = checker.apply_imports_partial(&program.uses, path, &mut loader, &mut env);
 
     for item in &program.items {
+        if let TopItem::TraitDef(td) = item {
+            checker.trait_env.insert(td.name.clone(), td.clone());
+        }
+    }
+
+    for item in &program.items {
         match item {
             TopItem::Binding(binding) => match checker.check_binding(binding, env.clone()) {
                 Ok(new_env) => {
@@ -2143,7 +2294,17 @@ pub fn elaborate_with_env_partial(
                     }
                 }
             },
-            TopItem::TypeDef(_) => {}
+            TopItem::ImplDef(id) => {
+                if let Err(e) = checker.check_impl_completeness(id) {
+                    errors.push(e);
+                }
+                let b = synth_impl_binding(id);
+                match checker.check_binding(&b, env.clone()) {
+                    Ok(new_env) => env = new_env,
+                    Err(e) => errors.push(e),
+                }
+            }
+            TopItem::TypeDef(_) | TopItem::TraitDef(_) => {}
         }
     }
 

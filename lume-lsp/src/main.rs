@@ -122,7 +122,7 @@ fn collect_spans(program: &Program) -> Vec<(Span, NodeId)> {
                     collect_expr_spans(&b.value, &mut out);
                 }
             }
-            TopItem::TypeDef(_) => {}
+            TopItem::TypeDef(_) | TopItem::TraitDef(_) | TopItem::ImplDef(_) => {}
         }
     }
     collect_expr_spans(&program.exports, &mut out);

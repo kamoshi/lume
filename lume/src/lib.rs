@@ -1,6 +1,7 @@
 pub mod ast;
 pub mod bundle;
 pub mod codegen;
+pub mod desugar;
 pub mod error;
 pub mod fmt;
 pub mod lexer;

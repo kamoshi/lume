@@ -419,7 +419,7 @@ impl Emitter {
 
         for item in &program.items {
             match item {
-                TopItem::TypeDef(_) => {}
+                TopItem::TypeDef(_) | TopItem::TraitDef(_) | TopItem::ImplDef(_) => {}
                 TopItem::Binding(b) => {
                     self.emit_binding(b);
                     self.out.push('\n');
@@ -749,6 +749,9 @@ impl Emitter {
                 self.out.push_str(" end end)()");
             }
             ExprKind::Match(arms) => self.emit_match_fn(arms),
+            ExprKind::TraitCall { .. } => {
+                unreachable!("TraitCall must be desugared before codegen")
+            }
             ExprKind::LetIn {
                 pattern,
                 value,

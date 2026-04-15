@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::ast::Program;
+use crate::ast::{Program, TopItem, TraitDef};
 use crate::error::Span;
 use crate::lexer::Lexer;
 use crate::parser;
 use crate::types::error::{TypeError, TypeErrorAt};
 use crate::types::{
-    infer::{build_variant_env, builtin_env, Checker},
+    infer::{build_variant_env, builtin_env, Checker, VariantEnv},
     Scheme, Subst,
 };
 
@@ -165,11 +165,19 @@ pub fn resolve_path(raw: &str, base: &Path) -> Result<PathBuf, String> {
         .map_err(|e| format!("cannot resolve '{}': {}", raw, e))
 }
 
+/// Exported information from a compiled module.
+#[derive(Clone)]
+pub struct ModuleExports {
+    pub scheme: Scheme,
+    pub variant_env: VariantEnv,
+    pub trait_env: HashMap<String, TraitDef>,
+}
+
 /// Loads, parses, and type-checks Lume source files, caching the result of
 /// each module so it is only compiled once per build.
 pub struct Loader {
-    /// Canonical path → generalised export scheme (completed modules).
-    cache: HashMap<PathBuf, Scheme>,
+    /// Canonical path → compiled module exports.
+    cache: HashMap<PathBuf, ModuleExports>,
     /// Canonical paths that are currently being loaded.  Used to detect and
     /// break import cycles, turning what would be infinite recursion into a
     /// clean `ImportError`.
@@ -197,33 +205,33 @@ impl Loader {
     }
 
     /// Load, parse, and type-check the module at `raw_path` (resolved relative
-    /// to `base`).  Returns the generalised export scheme.  Results are cached
-    /// so each module is compiled at most once.
+    /// to `base`).  Returns the module's exports (scheme, variant env, trait env).
+    /// Results are cached so each module is compiled at most once.
     ///
     /// Paths of the form `"lume:*"` are resolved against the embedded standard
     /// library instead of the filesystem.
-    pub fn load(&mut self, raw_path: &str, base: &Path) -> Result<Scheme, TypeErrorAt> {
+    pub fn load(&mut self, raw_path: &str, base: &Path) -> Result<ModuleExports, TypeErrorAt> {
         // ── Embedded stdlib ───────────────────────────────────────────────────
         if let Some(src) = stdlib_source(raw_path) {
             let key = stdlib_path(raw_path);
-            if let Some(scheme) = self.cache.get(&key).cloned() {
-                return Ok(scheme);
+            if let Some(exports) = self.cache.get(&key).cloned() {
+                return Ok(exports);
             }
             let program = Self::parse(src)
                 .map_err(|msg| TypeErrorAt::new(TypeError::ImportError(msg), Span::default()))?;
             // Stdlib modules have no on-disk path so pass the synthetic key as
             // the base; relative imports inside stdlib are not supported.
-            let scheme = self.check_and_generalise(&program, &key)?;
-            self.cache.insert(key, scheme.clone());
-            return Ok(scheme);
+            let exports = self.check_and_generalise(&program, &key)?;
+            self.cache.insert(key, exports.clone());
+            return Ok(exports);
         }
 
         // ── Filesystem module ─────────────────────────────────────────────────
         let canonical = resolve_path(raw_path, base)
             .map_err(|msg| TypeErrorAt::new(TypeError::ImportError(msg), Span::default()))?;
 
-        if let Some(scheme) = self.cache.get(&canonical).cloned() {
-            return Ok(scheme);
+        if let Some(exports) = self.cache.get(&canonical).cloned() {
+            return Ok(exports);
         }
 
         // Detect import cycles: if we're already in the process of loading this
@@ -247,26 +255,40 @@ impl Loader {
             .map_err(|msg| TypeErrorAt::new(TypeError::ImportError(msg), Span::default()))?;
 
         self.visiting.insert(canonical.clone());
-        let scheme = self.check_and_generalise(&program, &canonical)?;
+        let exports = self.check_and_generalise(&program, &canonical)?;
         self.visiting.remove(&canonical);
-        self.cache.insert(canonical, scheme.clone());
-        Ok(scheme)
+        self.cache.insert(canonical, exports.clone());
+        Ok(exports)
     }
 
-    /// Type-check `program` (located at `path`) and return its generalised
-    /// export scheme.  Uses `self` to resolve any transitive imports.
+    /// Type-check `program` (located at `path`) and return its exports:
+    /// generalised scheme, locally-defined variant env, and locally-defined trait env.
+    /// Uses `self` to resolve any transitive imports.
     pub fn check_and_generalise(
         &mut self,
         program: &Program,
         path: &Path,
-    ) -> Result<Scheme, TypeErrorAt> {
+    ) -> Result<ModuleExports, TypeErrorAt> {
         let mut subst = Subst::new();
         let (env, mut var_env) = builtin_env(&mut subst);
         let prog_vars = build_variant_env(&program.items);
-        var_env.merge(prog_vars);
+        var_env.merge(prog_vars.clone());
         let mut checker = Checker::with_subst(var_env, subst);
         let export_ty = checker.check_program(program, env, Some(path), self)?;
-        Ok(generalise_toplevel(&checker.subst, &export_ty))
+        let scheme = generalise_toplevel(&checker.subst, &export_ty);
+        // Collect locally-defined traits for export.
+        let trait_env: HashMap<String, TraitDef> = program
+            .items
+            .iter()
+            .filter_map(|item| {
+                if let TopItem::TraitDef(td) = item {
+                    Some((td.name.clone(), td.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        Ok(ModuleExports { scheme, variant_env: prog_vars, trait_env })
     }
 }
 

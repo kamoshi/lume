@@ -3,6 +3,7 @@ use std::path::Path;
 use lume::ast;
 use lume::bundle;
 use lume::codegen;
+use lume::desugar;
 use lume::error::LumeError;
 use lume::lexer::Lexer;
 use lume::parser;
@@ -48,39 +49,120 @@ fn run_file(path: &str) -> bool {
     }
 }
 
+/// Type-check and desugar every module in the bundle in place.
+/// Returns `false` (and prints an error) if any module fails to type-check.
+fn desugar_bundle(b: &mut Vec<bundle::BundleModule>) -> bool {
+    use lume::ast::TopItem;
+
+    // Build the global trait/impl/variant context from all modules so cross-module
+    // TraitCalls can be resolved to `_mod_dep.__trait_Type.method` and bare
+    // constructor references are desugared to constructor lambdas.
+    let mut global = desugar::GlobalCtx {
+        traits: std::collections::HashMap::new(),
+        impls: std::collections::HashMap::new(),
+        variants: std::collections::HashMap::new(),
+    };
+    for m in b.iter() {
+        for item in &m.program.items {
+            match item {
+                TopItem::TraitDef(td) => {
+                    global.traits.insert(td.name.clone(), td.clone());
+                }
+                TopItem::ImplDef(id) => {
+                    let dict = desugar::dict_name(&id.trait_name, &id.type_name);
+                    global.impls.insert(
+                        (id.trait_name.clone(), id.type_name.clone()),
+                        desugar::ImplEntry {
+                            // We don't know yet which module is "local"; we'll
+                            // patch that per-module below.
+                            module_var: Some(m.var.clone()),
+                            dict_ident: dict,
+                        },
+                    );
+                }
+                TopItem::TypeDef(td) => {
+                    for variant in &td.variants {
+                        let payload = variant.payload.as_ref().map(|rt| {
+                            rt.fields
+                                .iter()
+                                .map(|f| (f.name.clone(), f.ty.clone()))
+                                .collect()
+                        });
+                        global.variants.insert(
+                            variant.name.clone(),
+                            lume::types::infer::VariantInfo {
+                                type_name: td.name.clone(),
+                                type_params: td.params.clone(),
+                                payload_fields: payload,
+                            },
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Desugar each module with its own local view: impls defined in this
+    // module are accessed by bare name (module_var = None).
+    for m in b.iter_mut() {
+        // Patch local impls to have no module prefix.
+        let local_global = desugar::GlobalCtx {
+            traits: global.traits.clone(),
+            impls: global.impls
+                .iter()
+                .map(|(k, e)| {
+                    let is_local = e.module_var.as_deref() == Some(&m.var);
+                    let entry = desugar::ImplEntry {
+                        module_var: if is_local { None } else { e.module_var.clone() },
+                        dict_ident: e.dict_ident.clone(),
+                    };
+                    (k.clone(), entry)
+                })
+                .collect(),
+            variants: global.variants.clone(),
+        };
+
+        let module_path = Some(m.canonical.as_path());
+        let node_types = match types::infer::elaborate(&m.program, module_path) {
+            Ok((nt, _)) => nt,
+            Err(e) => {
+                eprintln!("{}: type error: {e}", m.canonical.display());
+                return false;
+            }
+        };
+        m.program = desugar::desugar(m.program.clone(), &node_types, &local_global);
+        // Suppress the unused-variable warning
+        let _ = &local_global;
+    }
+    true
+}
+
 fn js_file(path: &str) -> bool {
-    let b = match bundle::collect(Path::new(path)) {
+    let mut b = match bundle::collect(Path::new(path)) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("{path}: {e}");
             return false;
         }
     };
-    match types::infer::check_program(&b.last().unwrap().program, Some(Path::new(path))) {
-        Ok(_) => {}
-        Err(e) => {
-            eprintln!("{path}: type error: {e}");
-            return false;
-        }
+    if !desugar_bundle(&mut b) {
+        return false;
     }
     print!("{}", codegen::js::emit(&b));
     true
 }
 
 fn lua_file(path: &str) -> bool {
-    let b = match bundle::collect(Path::new(path)) {
+    let mut b = match bundle::collect(Path::new(path)) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("{path}: {e}");
             return false;
         }
     };
-    match types::infer::check_program(&b.last().unwrap().program, Some(Path::new(path))) {
-        Ok(_) => {}
-        Err(e) => {
-            eprintln!("{path}: type error: {e}");
-            return false;
-        }
+    if !desugar_bundle(&mut b) {
+        return false;
     }
     print!("{}", codegen::lua::emit(&b));
     true

@@ -26,6 +26,30 @@ pub enum TopItem {
     Binding(Binding),
     /// Two or more bindings joined by `and` that are mutually recursive.
     BindingGroup(Vec<Binding>),
+    TraitDef(TraitDef),
+    ImplDef(ImplDef),
+}
+
+/// `trait Show a { show: a -> Text }`
+#[derive(Debug, Clone)]
+pub struct TraitDef {
+    pub name: String,
+    pub type_param: String,
+    pub methods: Vec<TraitMethod>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TraitMethod {
+    pub name: String,
+    pub ty: Type,
+}
+
+/// `use Show in Num { show = x -> show x }`
+#[derive(Debug, Clone)]
+pub struct ImplDef {
+    pub trait_name: String,
+    pub type_name: String,
+    pub methods: Vec<Binding>,
 }
 
 /// `use math = "./math"`  or  `use { area, pi } = "./math"`
@@ -151,6 +175,13 @@ pub enum ExprKind {
         pattern: Pattern,
         value: Box<Expr>,
         body: Box<Expr>,
+    },
+
+    /// `Show.show` — a qualified trait method reference.
+    /// Resolved by the type checker to a concrete dict field access.
+    TraitCall {
+        trait_name: String,
+        method_name: String,
     },
 }
 
@@ -322,7 +353,13 @@ pub fn assign_node_ids(program: &mut Program) {
                     assign_ids_expr(&mut b.value, &mut counter);
                 }
             }
-            TopItem::TypeDef(_) => {}
+            TopItem::TypeDef(_) | TopItem::TraitDef(_) => {}
+            TopItem::ImplDef(id) => {
+                for b in &mut id.methods {
+                    assign_ids_pattern(&mut b.pattern, &mut counter);
+                    assign_ids_expr(&mut b.value, &mut counter);
+                }
+            }
         }
     }
     assign_ids_expr(&mut program.exports, &mut counter);

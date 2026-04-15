@@ -27,6 +27,7 @@ pub enum Token {
     PipePipe,  // ||
     Not,
     In,
+    Trait,     // `trait`
 
     // Operators
     Arrow,      // ->
@@ -418,6 +419,7 @@ impl<'src> Lexer<'src> {
             "and" => Token::And,
             "not" => Token::Not,
             "in" => Token::In,
+            "trait" => Token::Trait,
             _ => Token::Ident(word.to_string()),
         }
     }
