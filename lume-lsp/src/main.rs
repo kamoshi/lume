@@ -261,6 +261,8 @@ fn word_at(text: &str, line: u32, character: u32) -> Option<&str> {
 
 /// The completion context derived from the text before the cursor.
 enum CompletionCtx {
+    /// Suppress completions (e.g. cursor is on a binding name after `let`).
+    None,
     /// Cursor is in a position like `record.` or `record.partial` — suggest fields.
     FieldAccess {
         record: String,
@@ -315,6 +317,17 @@ fn completion_ctx(text: &str, pos: Position) -> CompletionCtx {
         },
         end: pos,
     };
+
+    // Suppress completions when the cursor is on a binding name (right after `let`).
+    // Detect by finding the last non-empty ident token before the partial word.
+    let before_prefix = before[..partial_start].trim_end();
+    let last_token = before_prefix
+        .rsplit(|c: char| !c.is_alphanumeric() && c != '_')
+        .find(|s| !s.is_empty())
+        .unwrap_or("");
+    if last_token == "let" {
+        return CompletionCtx::None;
+    }
 
     // If the char immediately before the partial word is '.', it's field access.
     if partial_start > 0 && before.as_bytes()[partial_start - 1] == b'.' {
@@ -585,6 +598,10 @@ impl LanguageServer for Backend {
 
         let ctx = completion_ctx(&text, pos);
 
+        if matches!(ctx, CompletionCtx::None) {
+            return Ok(None);
+        }
+
         // Use-path completions don't need type information — serve them even
         // when the document has errors and doc_info is unavailable.
         if let CompletionCtx::UsePath(up) = ctx {
@@ -618,7 +635,7 @@ impl LanguageServer for Backend {
                 format!("FieldAccess(record={record}, prefix={prefix:?})")
             }
             CompletionCtx::Ident { prefix, .. } => format!("Ident(prefix={prefix:?})"),
-            CompletionCtx::UsePath(_) => unreachable!(),
+            CompletionCtx::None | CompletionCtx::UsePath(_) => unreachable!(),
         };
 
         let items = match ctx {
@@ -631,7 +648,7 @@ impl LanguageServer for Backend {
                 prefix,
                 replace_range,
             } => ident_completions(&doc, &prefix, replace_range),
-            CompletionCtx::UsePath(_) => unreachable!(),
+            CompletionCtx::None | CompletionCtx::UsePath(_) => unreachable!(),
         };
 
         self.client

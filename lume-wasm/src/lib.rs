@@ -390,6 +390,16 @@ pub fn complete(src: &str, offset: usize) -> String {
     let word_start = ident_start_at(bytes, offset);
     let prefix = &src[word_start..offset];
 
+    // Suppress completions when the cursor is on a binding name (after `let`).
+    let before_word = src[line_start..word_start].trim_end();
+    let last_token = before_word
+        .rsplit(|c: char| !c.is_alphanumeric() && c != '_')
+        .find(|s| !s.is_empty())
+        .unwrap_or("");
+    if last_token == "let" {
+        return "[]".to_string();
+    }
+
     // Field access: character immediately before the current word is '.'
     if word_start > 0 && bytes[word_start - 1] == b'.' {
         let dot_pos = word_start - 1;
