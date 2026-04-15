@@ -124,14 +124,14 @@ fn desugar_bundle(b: &mut Vec<bundle::BundleModule>) -> bool {
         };
 
         let module_path = Some(m.canonical.as_path());
-        let node_types = match types::infer::elaborate(&m.program, module_path) {
-            Ok((nt, _)) => nt,
+        let (node_types, type_env) = match types::infer::elaborate_with_env(&m.program, module_path) {
+            Ok((nt, env, _)) => (nt, env),
             Err(e) => {
                 eprintln!("{}: type error: {e}", m.canonical.display());
                 return false;
             }
         };
-        m.program = desugar::desugar(m.program.clone(), &node_types, &local_global);
+        m.program = desugar::desugar(m.program.clone(), &node_types, &type_env, &local_global);
         // Suppress the unused-variable warning
         let _ = &local_global;
     }

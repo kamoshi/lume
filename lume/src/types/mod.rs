@@ -83,6 +83,8 @@ pub enum RowTail {
 pub struct Scheme {
     pub vars: Vec<TyVar>,
     pub row_vars: Vec<TyVar>,
+    /// Trait constraints on quantified type variables: `(trait_name, var)`.
+    pub constraints: Vec<(String, TyVar)>,
     pub ty: Ty,
 }
 
@@ -91,6 +93,7 @@ impl Scheme {
         Scheme {
             vars: vec![],
             row_vars: vec![],
+            constraints: vec![],
             ty,
         }
     }
@@ -282,6 +285,7 @@ impl Subst {
         Scheme {
             vars: scheme.vars.clone(),
             row_vars: scheme.row_vars.clone(),
+            constraints: scheme.constraints.clone(),
             ty: restricted.apply(&scheme.ty),
         }
     }
@@ -706,8 +710,22 @@ impl fmt::Display for Row {
 
 impl fmt::Display for Scheme {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Use the quantified vars (in their declared order) as the name source,
-        // so `∀ a b. List a -> b` is consistent.
+        if !self.constraints.is_empty() {
+            write!(f, "(")?;
+            for (i, (trait_name, var)) in self.constraints.iter().enumerate() {
+                if i > 0 {
+                    write!(f, ", ")?;
+                }
+                let var_name = self
+                    .vars
+                    .iter()
+                    .position(|v| v == var)
+                    .map(pretty_var_name)
+                    .unwrap_or_else(|| format!("?{}", var));
+                write!(f, "{} {}", trait_name, var_name)?;
+            }
+            write!(f, ") => ")?;
+        }
         fmt_named(&self.ty, &self.vars, &self.row_vars, f)
     }
 }

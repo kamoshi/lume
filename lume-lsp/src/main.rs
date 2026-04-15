@@ -515,7 +515,7 @@ fn ident_completions(doc: &DocInfo, prefix: &str, replace_range: Range) -> Vec<C
             if !lower.is_empty() && !name.to_lowercase().contains(&lower) {
                 return None;
             }
-            let detail = scheme.ty.to_string();
+            let detail = scheme.to_string();
             let kind = if matches!(scheme.ty, Ty::Func(..)) {
                 CompletionItemKind::FUNCTION
             } else {
@@ -837,7 +837,13 @@ impl LanguageServer for Backend {
             // genuine identifier (starts with a letter or `_`), not a number fragment.
             match word_at(&text, pos.line, pos.character) {
                 Some(w) if w.starts_with(|c: char| c.is_alphabetic() || c == '_') => {
-                    format!("{w} : {ty}")
+                    // Prefer the Scheme from top_env (shows constraints) over the
+                    // raw Ty from node_types (which strips constraint information).
+                    if let Some(scheme) = doc.top_env.lookup(&w) {
+                        format!("{w} : {scheme}")
+                    } else {
+                        format!("{w} : {ty}")
+                    }
                 }
                 _ => ty.to_string(),
             }

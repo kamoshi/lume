@@ -172,6 +172,7 @@ pub fn builtin_env(s: &mut Subst) -> (TypeEnv, VariantEnv) {
     let mk_scheme = |vars: Vec<TyVar>, ty: Ty| Scheme {
         vars,
         row_vars: vec![],
+        constraints: vec![],
         ty,
     };
 
@@ -572,6 +573,8 @@ pub struct Checker {
     pub trait_env: HashMap<String, TraitDef>,
     /// Maps each expression's NodeId to its inferred type (with type vars, resolved at end).
     pub node_types: HashMap<NodeId, Ty>,
+    /// Accumulated trait constraints: `(trait_name, fresh_var)`.
+    pub constraint_map: Vec<(String, TyVar)>,
 }
 
 impl Checker {
@@ -581,6 +584,7 @@ impl Checker {
             variant_env,
             trait_env: HashMap::new(),
             node_types: HashMap::new(),
+            constraint_map: Vec::new(),
         }
     }
 
@@ -594,6 +598,7 @@ impl Checker {
             variant_env,
             trait_env: HashMap::new(),
             node_types: HashMap::new(),
+            constraint_map: Vec::new(),
         }
     }
 
@@ -649,6 +654,8 @@ impl Checker {
         for &v in &scheme.vars {
             local_tys.insert(v, self.fresh_ty());
         }
+        // Keep a snapshot of the var renaming for constraint propagation below.
+        let local_tys_snapshot = local_tys.clone();
         for &v in &scheme.row_vars {
             // Row vars are instantiated as fresh *open* rows (no known fields
             // yet); unification will fill them in as needed.
@@ -669,7 +676,17 @@ impl Checker {
             tys: local_tys,
             rows: local_rows,
         };
-        tmp.apply(&scheme.ty)
+        let result = tmp.apply(&scheme.ty);
+
+        // Propagate constraints from the scheme into the current context,
+        // renaming the quantified vars to their fresh counterparts.
+        for (trait_name, scheme_var) in &scheme.constraints {
+            if let Some(Ty::Var(fresh)) = local_tys_snapshot.get(scheme_var) {
+                self.constraint_map.push((trait_name.clone(), *fresh));
+            }
+        }
+
+        result
     }
 
     // Generalise a type into a scheme by quantifying the variables that are
@@ -695,6 +712,27 @@ impl Checker {
         Scheme {
             vars: ty_tvs.difference(&env_tvs).copied().collect(),
             row_vars: ty_rvs.difference(&env_rvs).copied().collect(),
+            constraints: {
+                let generalised: HashSet<TyVar> =
+                    ty_tvs.difference(&env_tvs).copied().collect();
+                let mut seen = std::collections::HashSet::new();
+                self.constraint_map
+                    .iter()
+                    .filter_map(|(trait_name, fresh_var)| {
+                        match self.subst.apply(&Ty::Var(*fresh_var)) {
+                            Ty::Var(v) if generalised.contains(&v) => {
+                                let pair = (trait_name.clone(), v);
+                                if seen.insert(pair.clone()) {
+                                    Some(pair)
+                                } else {
+                                    None
+                                }
+                            }
+                            _ => None,
+                        }
+                    })
+                    .collect()
+            },
             ty,
         }
     }
@@ -1013,8 +1051,14 @@ impl Checker {
                         match td.methods.iter().find(|m| m.name == *method_name) {
                             Some(method) => {
                                 let mut param_vars: HashMap<String, TyVar> = HashMap::new();
-                                self.lower_ty(&method.ty, &mut param_vars)
-                                    .map_err(|e| TypeErrorAt::new(e, span.clone()))
+                                let ty = self.lower_ty(&method.ty, &mut param_vars)
+                                    .map_err(|e| TypeErrorAt::new(e, span.clone()))?;
+                                // Record constraint: this trait call introduces a
+                                // constraint on the fresh var for the type param.
+                                if let Some(&v) = param_vars.get(&td.type_param) {
+                                    self.constraint_map.push((trait_name.clone(), v));
+                                }
+                                Ok(ty)
                             }
                             None => Err(TypeErrorAt::new(
                                 TypeError::UnboundVariable(format!(
@@ -1964,6 +2008,7 @@ fn synth_impl_binding(id: &ImplDef) -> Binding {
         .collect();
     Binding {
         pattern: Pattern::Ident(dict_name, crate::error::Span::default(), 0),
+        constraints: vec![],
         ty: None,
         value: Expr {
             id: 0,

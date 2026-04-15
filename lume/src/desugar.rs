@@ -19,8 +19,8 @@ use std::collections::HashMap;
 
 use crate::ast::*;
 use crate::error::Span;
-use crate::types::Ty;
-use crate::types::infer::VariantInfo;
+use crate::types::{Ty, TyVar};
+use crate::types::infer::{TypeEnv, VariantInfo};
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -56,9 +56,10 @@ pub struct GlobalCtx {
 pub fn desugar(
     program: Program,
     node_types: &HashMap<NodeId, Ty>,
+    type_env: &TypeEnv,
     global: &GlobalCtx,
 ) -> Program {
-    let cx = Cx { node_types, global };
+    let cx = Cx { node_types, type_env, global, dict_params: HashMap::new() };
 
     // Collect all impl dict names before consuming the program items.
     // These dicts must be included in the module export so cross-module
@@ -83,20 +84,12 @@ pub fn desugar(
                 new_items.push(impl_def_to_binding(id));
             }
             TopItem::Binding(b) => {
-                new_items.push(TopItem::Binding(Binding {
-                    pattern: b.pattern,
-                    ty: b.ty,
-                    value: cx.expr(b.value),
-                }));
+                new_items.push(TopItem::Binding(cx.desugar_binding(b)));
             }
             TopItem::BindingGroup(bs) => {
                 let new_bs = bs
                     .into_iter()
-                    .map(|b| Binding {
-                        pattern: b.pattern,
-                        ty: b.ty,
-                        value: cx.expr(b.value),
-                    })
+                    .map(|b| cx.desugar_binding(b))
                     .collect();
                 new_items.push(TopItem::BindingGroup(new_bs));
             }
@@ -135,15 +128,96 @@ pub fn desugar(
 
 struct Cx<'a> {
     node_types: &'a HashMap<NodeId, Ty>,
+    type_env: &'a TypeEnv,
     global: &'a GlobalCtx,
+    /// When inside a constrained binding body, maps each constrained TyVar
+    /// to the dict parameter name (e.g., `__dict_ToText_0`).
+    dict_params: HashMap<TyVar, (String, String)>,  // var -> (dict_param_name, trait_name)
 }
 
 impl<'a> Cx<'a> {
+    /// Create a child context with dict_params for a constrained binding body.
+    fn with_dict_params(&self, dict_params: HashMap<TyVar, (String, String)>) -> Cx<'a> {
+        Cx {
+            node_types: self.node_types,
+            type_env: self.type_env,
+            global: self.global,
+            dict_params,
+        }
+    }
+
+    /// Desugar a binding, wrapping in dict-lambdas if its scheme has constraints.
+    fn desugar_binding(&self, b: Binding) -> Binding {
+        let binding_name = match &b.pattern {
+            Pattern::Ident(name, _, _) => Some(name.clone()),
+            _ => None,
+        };
+
+        // Check if the binding's scheme has constraints.
+        let scheme = binding_name
+            .as_deref()
+            .and_then(|name| self.type_env.lookup(name));
+
+        if let Some(scheme) = scheme {
+            if !scheme.constraints.is_empty() {
+                // Generate dict param names for each constraint.
+                let mut dict_params: HashMap<TyVar, (String, String)> = HashMap::new();
+                let mut dict_param_list: Vec<(String, TyVar, String)> = Vec::new(); // (param_name, var, trait_name)
+                let mut counter: HashMap<String, usize> = HashMap::new();
+                for (trait_name, var) in &scheme.constraints {
+                    let idx = counter.entry(trait_name.clone()).or_insert(0);
+                    let param_name = format!("__dict_{}_{}", trait_name, idx);
+                    *idx += 1;
+                    dict_params.insert(*var, (param_name.clone(), trait_name.clone()));
+                    dict_param_list.push((param_name, *var, trait_name.clone()));
+                }
+
+                // Process body with the dict_params context.
+                let child_cx = self.with_dict_params(dict_params);
+                let mut body = child_cx.expr(b.value);
+
+                // Wrap in dict-lambdas (innermost constraint last).
+                for (param_name, _, _) in dict_param_list.iter().rev() {
+                    body = Expr {
+                        id: 0,
+                        kind: ExprKind::Lambda {
+                            param: Pattern::Ident(param_name.clone(), Span::default(), 0),
+                            body: Box::new(body),
+                        },
+                        span: Span::default(),
+                    };
+                }
+
+                return Binding {
+                    pattern: b.pattern,
+                    constraints: b.constraints,
+                    ty: b.ty,
+                    value: body,
+                };
+            }
+        }
+
+        // No constraints — desugar body normally.
+        Binding {
+            pattern: b.pattern,
+            constraints: b.constraints,
+            ty: b.ty,
+            value: self.expr(b.value),
+        }
+    }
+
     fn expr(&self, e: Expr) -> Expr {
         let id = e.id;
         let span = e.span.clone();
         match e.kind {
             ExprKind::TraitCall { trait_name, method_name } => {
+                // First try: resolve via dict_params (polymorphic context).
+                if let Some(desugared) =
+                    self.resolve_trait_call_via_dict(id, &trait_name, &method_name, span.clone())
+                {
+                    return desugared;
+                }
+                // Second try: resolve via concrete type (normal impl lookup).
                 if let Some(desugared) =
                     self.resolve_trait_call(id, &trait_name, &method_name, span.clone())
                 {
@@ -155,6 +229,15 @@ impl<'a> Cx<'a> {
                         span,
                     }
                 }
+            }
+
+            ExprKind::Ident(ref name) => {
+                // Check if this ident refers to a constrained binding.
+                // If so, insert dict arguments at the call site.
+                if let Some(desugared) = self.insert_dict_args(id, name, span.clone()) {
+                    return desugared;
+                }
+                Expr { id, kind: self.expr_inner(e.kind), span }
             }
 
             ExprKind::List(items) => Expr {
@@ -363,6 +446,131 @@ impl<'a> Cx<'a> {
         let method_decl = trait_def.methods.iter().find(|m| m.name == method_name)?;
         find_type_param_in_ast_type(&method_decl.ty, &trait_def.type_param, concrete)
     }
+
+    /// Resolve a TraitCall via dict_params (we're inside a constrained body).
+    /// The TraitCall's inferred type is still a Var, so we match that var against
+    /// our dict_params to produce `__dict_Trait_N.method`.
+    fn resolve_trait_call_via_dict(
+        &self,
+        node_id: NodeId,
+        trait_name: &str,
+        method_name: &str,
+        span: Span,
+    ) -> Option<Expr> {
+        let call_ty = self.node_types.get(&node_id)?;
+        // Walk the method's declared AST type to find the trait's type param position,
+        // then extract the corresponding Ty from the concrete (possibly still-Var) type.
+        let trait_def = self.global.traits.get(trait_name)?;
+        let method_decl = trait_def.methods.iter().find(|m| m.name == method_name)?;
+        let ty_at_param = find_ty_at_param(&method_decl.ty, &trait_def.type_param, call_ty)?;
+        if let Ty::Var(v) = ty_at_param {
+            if let Some((dict_name, _)) = self.dict_params.get(&v) {
+                return Some(Expr {
+                    id: node_id,
+                    kind: ExprKind::FieldAccess {
+                        record: Box::new(Expr {
+                            id: 0,
+                            kind: ExprKind::Ident(dict_name.clone()),
+                            span: span.clone(),
+                        }),
+                        field: method_name.to_string(),
+                    },
+                    span,
+                });
+            }
+        }
+        None
+    }
+
+    /// At a call site for a constrained ident, insert dict arguments.
+    ///
+    /// e.g., if `concatText` has scheme `(ToText a, ToText b) => a -> b -> Text`
+    /// and at this call site the instantiated type is `Shape -> Shape -> Text`,
+    /// we produce `concatText __totext_Shape __totext_Shape`.
+    fn insert_dict_args(
+        &self,
+        node_id: NodeId,
+        name: &str,
+        span: Span,
+    ) -> Option<Expr> {
+        let scheme = self.type_env.lookup(name)?;
+        if scheme.constraints.is_empty() {
+            return None;
+        }
+        let call_ty = self.node_types.get(&node_id)?;
+
+        // Structurally match scheme.ty against call_ty to recover the mapping
+        // from each quantified var to a concrete type.
+        let mut var_map: HashMap<TyVar, Ty> = HashMap::new();
+        match_types(&scheme.ty, call_ty, &mut var_map);
+
+        // For each constraint, find the concrete type and look up the impl dict.
+        let mut result = Expr {
+            id: node_id,
+            kind: ExprKind::Ident(name.to_string()),
+            span: span.clone(),
+        };
+
+        for (trait_name, var) in &scheme.constraints {
+            let dict_arg = if let Some(concrete_ty) = var_map.get(var) {
+                if let Ty::Var(v) = concrete_ty {
+                    // Still polymorphic — look up from our dict_params context.
+                    if let Some((dict_name, _)) = self.dict_params.get(v) {
+                        Expr {
+                            id: 0,
+                            kind: ExprKind::Ident(dict_name.clone()),
+                            span: span.clone(),
+                        }
+                    } else {
+                        continue;
+                    }
+                } else if let Some(type_name) = ty_head_name(concrete_ty) {
+                    if let Some(entry) = self.global.impls.get(&(trait_name.clone(), type_name)) {
+                        match &entry.module_var {
+                            None => Expr {
+                                id: 0,
+                                kind: ExprKind::Ident(entry.dict_ident.clone()),
+                                span: span.clone(),
+                            },
+                            Some(mod_var) => Expr {
+                                id: 0,
+                                kind: ExprKind::FieldAccess {
+                                    record: Box::new(Expr {
+                                        id: 0,
+                                        kind: ExprKind::Ident(mod_var.clone()),
+                                        span: span.clone(),
+                                    }),
+                                    field: entry.dict_ident.clone(),
+                                },
+                                span: span.clone(),
+                            },
+                        }
+                    } else {
+                        continue;
+                    }
+                } else {
+                    continue;
+                }
+            } else {
+                continue;
+            };
+
+            result = Expr {
+                id: 0,
+                kind: ExprKind::Apply {
+                    func: Box::new(result),
+                    arg: Box::new(dict_arg),
+                },
+                span: span.clone(),
+            };
+        }
+
+        Some(result)
+    }
+
+    fn expr_inner(&self, kind: ExprKind) -> ExprKind {
+        kind
+    }
 }
 
 fn find_type_param_in_ast_type(ast_ty: &Type, param_name: &str, concrete: &Ty) -> Option<String> {
@@ -402,6 +610,75 @@ fn find_type_param_in_ast_type(ast_ty: &Type, param_name: &str, concrete: &Ty) -
     }
 }
 
+/// Like `find_type_param_in_ast_type` but returns the actual `Ty` at the param
+/// position (which might be a `Ty::Var` if still polymorphic).
+fn find_ty_at_param<'t>(ast_ty: &Type, param_name: &str, concrete: &'t Ty) -> Option<Ty> {
+    match ast_ty {
+        Type::Var(v) if v == param_name => Some(concrete.clone()),
+        Type::Func { param, ret } => {
+            if let Ty::Func(cp, cr) = concrete {
+                find_ty_at_param(param, param_name, cp)
+                    .or_else(|| find_ty_at_param(ret, param_name, cr))
+            } else {
+                None
+            }
+        }
+        Type::Named { args, .. } => {
+            let concrete_args = match concrete {
+                Ty::Con(_, args) => args.as_slice(),
+                Ty::List(inner) => std::slice::from_ref(inner.as_ref()),
+                _ => return None,
+            };
+            args.iter()
+                .zip(concrete_args.iter())
+                .find_map(|(a, c)| find_ty_at_param(a, param_name, c))
+        }
+        Type::Record(rt) => {
+            if let Ty::Record(row) = concrete {
+                rt.fields.iter().find_map(|f| {
+                    row.fields
+                        .iter()
+                        .find(|(name, _)| name == &f.name)
+                        .and_then(|(_, ty)| find_ty_at_param(&f.ty, param_name, ty))
+                })
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Structurally match a scheme type against an instantiated type to recover
+/// the concrete type for each quantified variable.
+fn match_types(scheme_ty: &Ty, concrete_ty: &Ty, out: &mut HashMap<TyVar, Ty>) {
+    match (scheme_ty, concrete_ty) {
+        (Ty::Var(v), _) => {
+            out.insert(*v, concrete_ty.clone());
+        }
+        (Ty::Func(sp, sr), Ty::Func(cp, cr)) => {
+            match_types(sp, cp, out);
+            match_types(sr, cr, out);
+        }
+        (Ty::List(si), Ty::List(ci)) => {
+            match_types(si, ci, out);
+        }
+        (Ty::Con(sn, sa), Ty::Con(cn, ca)) if sn == cn && sa.len() == ca.len() => {
+            for (s, c) in sa.iter().zip(ca.iter()) {
+                match_types(s, c, out);
+            }
+        }
+        (Ty::Record(sr), Ty::Record(cr)) => {
+            for (sname, sty) in &sr.fields {
+                if let Some((_, cty)) = cr.fields.iter().find(|(n, _)| n == sname) {
+                    match_types(sty, cty, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 fn ty_head_name(ty: &Ty) -> Option<String> {
     match ty {
         Ty::Num => Some("Num".to_string()),
@@ -438,6 +715,7 @@ fn impl_def_to_binding(id: ImplDef) -> TopItem {
         .collect();
     TopItem::Binding(Binding {
         pattern: Pattern::Ident(dict, Span::default(), 0),
+        constraints: vec![],
         ty: None,
         value: Expr {
             id: 0,

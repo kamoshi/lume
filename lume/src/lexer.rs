@@ -31,6 +31,7 @@ pub enum Token {
 
     // Operators
     Arrow,      // ->
+    FatArrow,   // =>
     Pipe,       // |>
     ResultPipe, // ?>
     Concat,     // ++
@@ -224,12 +225,15 @@ impl<'src> Lexer<'src> {
                 }
             }
 
-            // = or ==
+            // = or == or =>
             b'=' => {
                 self.advance();
                 if self.peek() == Some(b'=') {
                     self.advance();
                     Token::EqEq
+                } else if self.peek() == Some(b'>') {
+                    self.advance();
+                    Token::FatArrow
                 } else {
                     Token::Equal
                 }

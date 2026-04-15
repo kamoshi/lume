@@ -275,7 +275,7 @@ impl Loader {
         var_env.merge(prog_vars.clone());
         let mut checker = Checker::with_subst(var_env, subst);
         let export_ty = checker.check_program(program, env, Some(path), self)?;
-        let scheme = generalise_toplevel(&checker.subst, &export_ty);
+        let scheme = generalise_toplevel(&checker.subst, &export_ty, &checker.constraint_map);
         // Collect locally-defined traits for export.
         let trait_env: HashMap<String, TraitDef> = program
             .items
@@ -295,12 +295,36 @@ impl Loader {
 /// Generalise a fully-applied type as a top-level definition: every remaining
 /// free variable becomes a quantified parameter (valid because the environment
 /// is empty at module boundary).
-pub fn generalise_toplevel(subst: &crate::types::Subst, ty: &crate::types::Ty) -> Scheme {
-    use crate::types::{free_row_vars, free_type_vars};
+pub fn generalise_toplevel(
+    subst: &crate::types::Subst,
+    ty: &crate::types::Ty,
+    constraint_map: &[(String, crate::types::TyVar)],
+) -> Scheme {
+    use crate::types::{free_row_vars, free_type_vars, Ty};
     let ty = subst.apply(ty);
+    let generalised: std::collections::HashSet<crate::types::TyVar> =
+        free_type_vars(&ty).into_iter().collect();
+    let mut seen = std::collections::HashSet::new();
+    let constraints: Vec<(String, crate::types::TyVar)> = constraint_map
+        .iter()
+        .filter_map(|(trait_name, fresh_var)| {
+            match subst.apply(&Ty::Var(*fresh_var)) {
+                Ty::Var(v) if generalised.contains(&v) => {
+                    let pair = (trait_name.clone(), v);
+                    if seen.insert(pair.clone()) {
+                        Some(pair)
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            }
+        })
+        .collect();
     Scheme {
         vars: free_type_vars(&ty).into_iter().collect(),
         row_vars: free_row_vars(&ty).into_iter().collect(),
+        constraints,
         ty,
     }
 }

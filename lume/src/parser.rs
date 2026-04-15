@@ -96,6 +96,48 @@ fn first_token(tokens: &[Spanned]) -> Option<&Token> {
     tokens.first().map(|t| &t.token)
 }
 
+/// Speculatively try to parse a constraint prefix: `(Trait a, Trait b) =>`
+/// Returns `Some((consumed, constraints))` on success, `None` on failure.
+fn try_parse_constraints(tokens: &[Spanned]) -> Option<(usize, Vec<(String, String)>)> {
+    // Must start with `(`
+    if !matches!(first_token(tokens), Some(Token::LParen)) {
+        return None;
+    }
+    let mut ptr = 1; // skip `(`
+    let mut constraints = Vec::new();
+    loop {
+        // Expect TypeIdent (trait name) then Ident (type param)
+        let trait_name = match tokens.get(ptr).map(|t| &t.token) {
+            Some(Token::TypeIdent(s)) => s.clone(),
+            _ => return None,
+        };
+        ptr += 1;
+        let param_name = match tokens.get(ptr).map(|t| &t.token) {
+            Some(Token::Ident(s)) => s.clone(),
+            _ => return None,
+        };
+        ptr += 1;
+        constraints.push((trait_name, param_name));
+        // Expect `,` or `)`
+        match tokens.get(ptr).map(|t| &t.token) {
+            Some(Token::Comma) => {
+                ptr += 1; // skip `,` and continue
+            }
+            Some(Token::RParen) => {
+                ptr += 1; // skip `)`
+                break;
+            }
+            _ => return None,
+        }
+    }
+    // Must be followed by `=>`
+    if !matches!(tokens.get(ptr).map(|t| &t.token), Some(Token::FatArrow)) {
+        return None;
+    }
+    ptr += 1; // skip `=>`
+    Some((ptr, constraints))
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 /// Parse a complete Lume program.
@@ -293,6 +335,7 @@ fn parse_impl_def(tokens: &[Spanned]) -> Result<(usize, ImplDef), ParseError> {
         ptr += n;
         methods.push(Binding {
             pattern: Pattern::Ident(method_name, name_span, 0),
+            constraints: vec![],
             ty: None,
             value,
         });
@@ -378,9 +421,16 @@ pub fn parse_binding(tokens: &[Spanned]) -> Result<(usize, Binding), ParseError>
     let (n, pattern) = parse_pattern(&tokens[ptr..])?;
     ptr += n;
 
-    // optional type annotation
+    // optional type annotation (possibly with constraints)
+    let mut constraints: Vec<(String, String)> = Vec::new();
     let ty = if matches!(first_token(&tokens[ptr..]), Some(Token::Colon)) {
         ptr += 1; // consume `:`
+        // Try to parse constraint prefix: `(Trait a, Trait b) =>`
+        // We detect this by speculatively scanning for `( TypeIdent ident , ... ) =>`
+        if let Some(parsed) = try_parse_constraints(&tokens[ptr..]) {
+            ptr += parsed.0;
+            constraints = parsed.1;
+        }
         let (n, t) = parse_type(&tokens[ptr..])?;
         ptr += n;
         Some(t)
@@ -393,7 +443,7 @@ pub fn parse_binding(tokens: &[Spanned]) -> Result<(usize, Binding), ParseError>
     let (n, value) = parse_expr(&tokens[ptr..])?;
     ptr += n;
 
-    Ok((ptr, Binding { pattern, ty, value }))
+    Ok((ptr, Binding { pattern, constraints, ty, value }))
 }
 
 // ── Expressions ───────────────────────────────────────────────────────────────

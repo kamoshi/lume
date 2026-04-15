@@ -83,10 +83,12 @@ pub struct Variant {
     pub payload: Option<RecordType>,
 }
 
-/// `let x : T = expr`
+/// `let x : (C a, C b) => T = expr`
 #[derive(Debug, Clone)]
 pub struct Binding {
     pub pattern: Pattern,
+    /// Parsed constraint annotations: `(ToText a, ToText b) =>`.
+    pub constraints: Vec<(String, String)>,
     pub ty: Option<Type>,
     pub value: Expr,
 }
