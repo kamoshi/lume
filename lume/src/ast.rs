@@ -143,6 +143,13 @@ pub enum ExprKind {
 
     /// `| pattern guard? -> expr` arms
     Match(Vec<MatchArm>),
+
+    /// `let pattern = value in body`
+    LetIn {
+        pattern: Pattern,
+        value: Box<Expr>,
+        body: Box<Expr>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -402,6 +409,11 @@ fn assign_ids_expr(expr: &mut Expr, counter: &mut NodeId) {
                 }
                 assign_ids_expr(&mut arm.body, counter);
             }
+        }
+        ExprKind::LetIn { pattern, value, body } => {
+            assign_ids_pattern(pattern, counter);
+            assign_ids_expr(value, counter);
+            assign_ids_expr(body, counter);
         }
         // Leaves: Number, Text, Bool, Ident, Variant { payload: None }
         _ => {}

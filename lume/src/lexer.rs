@@ -25,6 +25,7 @@ pub enum Token {
     And,
     Or,
     Not,
+    In,
 
     // Operators
     Arrow,      // ->
@@ -399,6 +400,7 @@ impl<'src> Lexer<'src> {
             "and" => Token::And,
             "or" => Token::Or,
             "not" => Token::Not,
+            "in" => Token::In,
             _ => Token::Ident(word.to_string()),
         }
     }

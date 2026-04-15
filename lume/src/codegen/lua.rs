@@ -706,6 +706,14 @@ impl Emitter {
                 self.out.push_str(" end end)()");
             }
             ExprKind::Match(arms) => self.emit_match_fn(arms),
+            ExprKind::LetIn { pattern, value, body } => {
+                // Emit as IIFE: (function(param) return body end)(value)
+                self.out.push('(');
+                self.emit_lambda(pattern, body);
+                self.out.push_str(")(");
+                self.emit_expr(value);
+                self.out.push(')');
+            }
         }
     }
 
@@ -760,10 +768,10 @@ impl Emitter {
 
     /// Emit an expression that is in return position.
     ///
-    /// When the expression is an `if`, emit the Lua statement form directly
-    /// (`if … then return … else return … end`) instead of wrapping it in an
-    /// immediately-invoked closure.  This keeps tail calls visible to LuaJIT so
-    /// that recursive functions over large lists do not blow the call stack.
+    /// When the expression is an `if` or `let-in`, emit the Lua statement form
+    /// directly instead of wrapping it in an immediately-invoked closure.  This
+    /// keeps tail calls visible to LuaJIT so that recursive functions over large
+    /// lists do not blow the call stack.
     ///
     /// For every other expression kind, this is identical to `return <emit_expr>`.
     fn emit_tail_expr(&mut self, expr: &Expr, indent: &str) {
@@ -782,6 +790,54 @@ impl Emitter {
                 self.out.push_str(&format!("{}  ", indent));
                 self.emit_tail_expr(else_branch, &format!("{}  ", indent));
                 self.out.push_str(&format!("\n{}end", indent));
+            }
+            ExprKind::LetIn { pattern, value, body } => {
+                // Emit as local bindings + tail body — no IIFE, so LuaJIT can
+                // see the tail call in `body` as a proper tail call.
+                match pattern {
+                    Pattern::Ident(name, _, _) => {
+                        self.out.push_str(&format!("local {} = ", lua_ident(name)));
+                        self.emit_expr(value);
+                        self.out.push_str(&format!("\n{}", indent));
+                        self.emit_tail_expr(body, indent);
+                    }
+                    Pattern::Wildcard => {
+                        self.emit_expr(value);
+                        self.out.push_str(&format!("\n{}", indent));
+                        self.emit_tail_expr(body, indent);
+                    }
+                    Pattern::Record(rp) => {
+                        // Collect bindings first (immutable borrow), then emit.
+                        let mut all_binds: Vec<(String, String)> = Vec::new();
+                        for f in &rp.fields {
+                            if let Some(p) = &f.pattern {
+                                let b = self.collect_binds_pure(&format!("_lv.{}", f.name), p);
+                                all_binds.extend(b);
+                            } else {
+                                all_binds.push((
+                                    lua_ident(&f.name).to_string(),
+                                    format!("_lv.{}", f.name),
+                                ));
+                            }
+                        }
+                        self.out.push_str("local _lv = ");
+                        self.emit_expr(value);
+                        self.out.push('\n');
+                        for (lhs, rhs) in &all_binds {
+                            self.out.push_str(&format!("{}local {} = {}\n", indent, lhs, rhs));
+                        }
+                        self.out.push_str(indent);
+                        self.emit_tail_expr(body, indent);
+                    }
+                    _ => {
+                        // Refutable pattern: fall back to IIFE (rare in let-in).
+                        self.out.push_str("return (");
+                        self.emit_lambda(pattern, body);
+                        self.out.push_str(")(");
+                        self.emit_expr(value);
+                        self.out.push(')');
+                    }
+                }
             }
             _ => {
                 self.out.push_str("return ");

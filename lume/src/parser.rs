@@ -286,6 +286,13 @@ pub fn parse_binding(tokens: &[Spanned]) -> Result<(usize, Binding), ParseError>
 /// look like a pattern followed by `->` we commit to that branch.
 /// Otherwise we fall through to the Pratt parser.
 pub fn parse_expr(tokens: &[Spanned]) -> Result<(usize, Expr), ParseError> {
+    // `let pattern = value in body`
+    if matches!(first_token(tokens), Some(Token::Let)) {
+        if let Ok((n, expr)) = try_parse_let_in(tokens) {
+            return Ok((n, expr));
+        }
+    }
+
     // Attempt lambda parse speculatively:
     //   - record destructure lambda:  `{ .. } ->`  or tuple: `(a, b) ->`
     //   - simple ident lambda:        `n ->`
@@ -295,6 +302,48 @@ pub fn parse_expr(tokens: &[Spanned]) -> Result<(usize, Expr), ParseError> {
 
     // fall through to Pratt for binary / pipe / apply expressions
     parse_pratt(tokens, 0)
+}
+
+/// Try to parse `let pattern (: type)? = value in body` without committing on failure.
+fn try_parse_let_in(tokens: &[Spanned]) -> Result<(usize, Expr), ParseError> {
+    let let_span = span(tokens);
+    let mut ptr = 0;
+    ptr += consume(&tokens[ptr..], &Token::Let)?;
+
+    let (n, pattern) = parse_pattern(&tokens[ptr..])?;
+    ptr += n;
+
+    // optional type annotation (ignored at runtime, but parsed)
+    if matches!(first_token(&tokens[ptr..]), Some(Token::Colon)) {
+        ptr += 1;
+        let (n, _) = parse_type(&tokens[ptr..])?;
+        ptr += n;
+    }
+
+    ptr += consume(&tokens[ptr..], &Token::Equal)?;
+
+    let (n, value) = parse_expr(&tokens[ptr..])?;
+    ptr += n;
+
+    // Require `in` — if absent, this is a top-level binding, not a let-in expr.
+    consume(&tokens[ptr..], &Token::In)?;
+    ptr += 1;
+
+    let (n, body) = parse_expr(&tokens[ptr..])?;
+    ptr += n;
+
+    Ok((
+        ptr,
+        Expr {
+            id: 0,
+            kind: ExprKind::LetIn {
+                pattern,
+                value: Box::new(value),
+                body: Box::new(body),
+            },
+            span: let_span,
+        },
+    ))
 }
 
 /// Try to parse `pattern -> body` without committing on failure.

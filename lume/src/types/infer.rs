@@ -835,6 +835,15 @@ impl Checker {
             },
 
             ExprKind::Match(arms) => self.infer_match(env, arms, span),
+
+            ExprKind::LetIn { pattern, value, body } => {
+                let val_ty = self.infer(env, value)?;
+                let bindings = self
+                    .infer_pattern(pattern, val_ty)
+                    .map_err(|e| TypeErrorAt::new(e, span.clone()))?;
+                let new_env = env.extend_many(bindings);
+                self.infer(&new_env, body)
+            }
         }
     }
 

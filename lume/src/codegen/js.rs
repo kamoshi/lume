@@ -378,6 +378,19 @@ impl Emitter {
                 self.out.push(')');
             }
             ExprKind::Match(arms) => self.emit_match_fn(arms),
+            ExprKind::LetIn { pattern, value, body } => {
+                // Emit as IIFE: (param => body)(value)
+                self.out.push('(');
+                self.emit_lambda_param(pattern);
+                self.out.push_str(" => ");
+                let needs_parens = matches!(body.kind, ExprKind::Record { .. });
+                if needs_parens { self.out.push('('); }
+                self.emit_expr(body);
+                if needs_parens { self.out.push(')'); }
+                self.out.push_str(")(");
+                self.emit_expr(value);
+                self.out.push(')');
+            }
         }
     }
 
