@@ -3,16 +3,17 @@
 "type" @keyword
 "use" @keyword
 "pub" @keyword
+"and" @keyword
 "if" @keyword.control
 "then" @keyword.control
 "else" @keyword.control
-"and" @keyword.operator
-"or" @keyword.operator
 
 ; Operators
 "->" @operator
 "|>" @operator
 "?>" @operator
+"&&" @operator
+"||" @operator
 "|" @operator
 "=" @operator
 "++" @operator
