@@ -198,14 +198,16 @@ static STDLIB: &[(&str, &str, &str)] = &[
     )),
     ("sort", "sort", concat!(
         "local sort = function(xs)\n",
-        "  local r = {table.unpack(xs)}\n",
+        "  local r = {}\n",
+        "  for i = 1, #xs do r[i] = xs[i] end\n",
         "  table.sort(r)\n",
         "  return r\n",
         "end\n\n",
     )),
     ("sortBy", "sortBy", concat!(
         "local sortBy = function(f) return function(xs)\n",
-        "  local r = {table.unpack(xs)}\n",
+        "  local r = {}\n",
+        "  for i = 1, #xs do r[i] = xs[i] end\n",
         "  table.sort(r, function(a, b) return f(a) < f(b) end)\n",
         "  return r\n",
         "end end\n\n",
@@ -920,6 +922,15 @@ impl Emitter {
                     }
                 }
             }
+            ExprKind::MatchExpr { scrutinee, arms } => {
+                // Emit directly (no IIFE) so the Lua tail-call in each arm is
+                // visible to LuaJIT, enabling O(1) stack for recursive fns.
+                let tmp = self.fresh();
+                self.out.push_str(&format!("local {} = ", tmp));
+                self.emit_expr(scrutinee);
+                self.out.push_str(&format!("\n{}", indent));
+                self.emit_match_arms(&tmp, arms, indent);
+            }
             _ => {
                 self.out.push_str("return ");
                 self.emit_expr(expr);
@@ -1080,25 +1091,37 @@ impl Emitter {
     }
 
     fn emit_match_expr(&mut self, scrutinee: &Expr, arms: &[MatchArm]) {
-        self.out.push_str("(function()\nlocal _v = ");
+        let tmp = self.fresh();
+        self.out.push_str("(function()\n");
+        self.out.push_str(&format!("local {} = ", tmp));
         self.emit_expr(scrutinee);
         self.out.push('\n');
+        self.emit_match_arms(&tmp, arms, "");
+        self.out.push_str("\nend)()");
+    }
+
+    /// Emit match arms as an if/elseif chain with `return` in each branch.
+    /// Used both by the IIFE wrapper (`emit_match_expr`) and the direct TCO
+    /// path (`emit_tail_expr`).
+    fn emit_match_arms(&mut self, var: &str, arms: &[MatchArm], indent: &str) {
+        let ind2 = format!("{}  ", indent);
+        let ind3 = format!("{}    ", indent);
         for arm in arms {
-            let cond = Self::pattern_cond("_v", &arm.pattern);
-            let binds = self.collect_binds_pure("_v", &arm.pattern);
+            let cond = Self::pattern_cond(var, &arm.pattern);
+            let binds = self.collect_binds_pure(var, &arm.pattern);
             let always_matches = cond == "true";
             let has_guard = arm.guard.is_some();
 
-            self.out.push_str("  do\n");
+            self.out.push_str(&format!("{}do\n", indent));
             for (lhs, rhs) in &binds {
-                self.out.push_str(&format!("    local {} = {}\n", lhs, rhs));
+                self.out.push_str(&format!("{}  local {} = {}\n", indent, lhs, rhs));
             }
             if always_matches && !has_guard {
-                self.out.push_str("    ");
-                self.emit_tail_expr(&arm.body, "    ");
+                self.out.push_str(&format!("{}  ", indent));
+                self.emit_tail_expr(&arm.body, &ind2);
                 self.out.push('\n');
             } else {
-                self.out.push_str("    if ");
+                self.out.push_str(&format!("{}  if ", indent));
                 if !always_matches {
                     self.out.push_str(&cond);
                 }
@@ -1108,13 +1131,14 @@ impl Emitter {
                     }
                     self.emit_expr(guard);
                 }
-                self.out.push_str(" then\n      ");
-                self.emit_tail_expr(&arm.body, "      ");
-                self.out.push_str("\n    end\n");
+                self.out.push_str(" then\n");
+                self.out.push_str(&format!("{}    ", indent));
+                self.emit_tail_expr(&arm.body, &ind3);
+                self.out.push_str(&format!("\n{}  end\n", indent));
             }
-            self.out.push_str("  end\n");
+            self.out.push_str(&format!("{}end\n", indent));
         }
-        self.out.push_str("  error(\"incomplete match\")\nend)()");
+        self.out.push_str(&format!("{}error(\"incomplete match\")", indent));
     }
 
     // ── Pattern helpers ───────────────────────────────────────────────────────
