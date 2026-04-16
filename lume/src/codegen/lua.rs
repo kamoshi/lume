@@ -749,6 +749,7 @@ impl Emitter {
                 self.out.push_str(" end end)()");
             }
             ExprKind::Match(arms) => self.emit_match_fn(arms),
+            ExprKind::MatchExpr { scrutinee, arms } => self.emit_match_expr(scrutinee, arms),
             ExprKind::TraitCall { trait_name, method_name } => {
                 // A TraitCall with an ambiguous (polymorphic) type survives desugaring.
                 // Emit a function that errors when called; the fix is a type annotation.
@@ -1056,6 +1057,44 @@ impl Emitter {
             self.out.push_str("  end\n");
         }
         self.out.push_str("  error(\"incomplete match\")\nend");
+    }
+
+    fn emit_match_expr(&mut self, scrutinee: &Expr, arms: &[MatchArm]) {
+        self.out.push_str("(function()\nlocal _v = ");
+        self.emit_expr(scrutinee);
+        self.out.push('\n');
+        for arm in arms {
+            let cond = Self::pattern_cond("_v", &arm.pattern);
+            let binds = self.collect_binds_pure("_v", &arm.pattern);
+            let always_matches = cond == "true";
+            let has_guard = arm.guard.is_some();
+
+            self.out.push_str("  do\n");
+            for (lhs, rhs) in &binds {
+                self.out.push_str(&format!("    local {} = {}\n", lhs, rhs));
+            }
+            if always_matches && !has_guard {
+                self.out.push_str("    ");
+                self.emit_tail_expr(&arm.body, "    ");
+                self.out.push('\n');
+            } else {
+                self.out.push_str("    if ");
+                if !always_matches {
+                    self.out.push_str(&cond);
+                }
+                if let Some(guard) = &arm.guard {
+                    if !always_matches {
+                        self.out.push_str(" and ");
+                    }
+                    self.emit_expr(guard);
+                }
+                self.out.push_str(" then\n      ");
+                self.emit_tail_expr(&arm.body, "      ");
+                self.out.push_str("\n    end\n");
+            }
+            self.out.push_str("  end\n");
+        }
+        self.out.push_str("  error(\"incomplete match\")\nend)()");
     }
 
     // ── Pattern helpers ───────────────────────────────────────────────────────

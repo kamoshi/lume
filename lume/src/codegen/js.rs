@@ -384,6 +384,7 @@ impl Emitter {
                 self.out.push(')');
             }
             ExprKind::Match(arms) => self.emit_match_fn(arms),
+            ExprKind::MatchExpr { scrutinee, arms } => self.emit_match_expr(scrutinee, arms),
             ExprKind::TraitCall { trait_name, method_name } => {
                 // A TraitCall with an ambiguous (polymorphic) type survives desugaring.
                 // Emit a function that throws when called; the fix is a type annotation.
@@ -632,6 +633,47 @@ impl Emitter {
         }
         self.out
             .push_str("  throw new Error(\"incomplete match\");\n}");
+    }
+
+    fn emit_match_expr(&mut self, scrutinee: &Expr, arms: &[MatchArm]) {
+        self.out.push_str("(($v) => {\n");
+        // (We pass the scrutinee as the IIFE argument below.)
+        for arm in arms {
+            let cond = Self::pattern_cond("$v", &arm.pattern);
+            let binds = Self::pattern_binds("$v", &arm.pattern);
+            let always_matches = cond == "true";
+            let has_guard = arm.guard.is_some();
+
+            self.out.push_str("  {\n");
+            for (lhs, rhs) in &binds {
+                self.out
+                    .push_str(&format!("    const {} = {};\n", lhs, rhs));
+            }
+            if always_matches && !has_guard {
+                self.out.push_str("    return ");
+                self.emit_expr(&arm.body);
+                self.out.push_str(";\n");
+            } else {
+                self.out.push_str("    if (");
+                if !always_matches {
+                    self.out.push_str(&cond);
+                }
+                if let Some(guard) = &arm.guard {
+                    if !always_matches {
+                        self.out.push_str(" && ");
+                    }
+                    self.emit_expr(guard);
+                }
+                self.out.push_str(") {\n      return ");
+                self.emit_expr(&arm.body);
+                self.out.push_str(";\n    }\n");
+            }
+            self.out.push_str("  }\n");
+        }
+        self.out
+            .push_str("  throw new Error(\"incomplete match\");\n})(");
+        self.emit_expr(scrutinee);
+        self.out.push(')');
     }
 
     // ── Pattern helpers (pure string computation, no `self.out` mutation) ────────

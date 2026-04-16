@@ -110,6 +110,14 @@ impl VariantEnv {
             self.0.insert(k, v);
         }
     }
+    /// Return all variant names that belong to the given type name.
+    pub fn variants_of_type(&self, type_name: &str) -> Vec<String> {
+        self.0
+            .iter()
+            .filter(|(_, info)| info.type_name == type_name)
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
 }
 
 // ── Build variant environment from type definitions ───────────────────────────
@@ -1042,6 +1050,10 @@ impl Checker {
 
             ExprKind::Match(arms) => self.infer_match(env, arms, span),
 
+            ExprKind::MatchExpr { scrutinee, arms } => {
+                self.infer_match_expr(env, scrutinee, arms, span)
+            }
+
             ExprKind::TraitCall { trait_name, method_name } => {
                 // Look up the trait and find the method's declared type.
                 // The type parameter is treated as a fresh unification variable.
@@ -1426,6 +1438,98 @@ impl Checker {
         let t_in = self.subst.apply(&t_in);
         let t_out = self.subst.apply(&t_out);
         Ok(Ty::Func(Box::new(t_in), Box::new(t_out)))
+    }
+
+    /// `match expr in | pat -> body ...`  — has an explicit scrutinee.
+    /// Returns the body type directly (not a function type).
+    fn infer_match_expr(
+        &mut self,
+        env: &TypeEnv,
+        scrutinee: &Expr,
+        arms: &[MatchArm],
+        span: &Span,
+    ) -> Result<Ty, TypeErrorAt> {
+        let t_scrut = self.infer(env, scrutinee)?;
+        let t_scrut = self.subst.apply(&t_scrut);
+        let t_out = self.fresh_ty();
+
+        for arm in arms {
+            let t_in_c = self.subst.apply(&t_scrut);
+            let bindings = self
+                .infer_pattern(&arm.pattern, t_in_c)
+                .map_err(|e| TypeErrorAt::new(e, span.clone()))?;
+            let arm_env = env.extend_many(bindings);
+
+            if let Some(guard) = &arm.guard {
+                let tg = self.infer(&arm_env, guard)?;
+                let tg = self.subst.apply(&tg);
+                let tg_c = tg.clone();
+                self.unify(tg, Ty::Bool).map_err(|_| {
+                    TypeErrorAt::new(TypeError::GuardNotBool(tg_c), guard.span.clone())
+                })?;
+            }
+
+            let t_body = self.infer(&arm_env, &arm.body)?;
+            let t_body = self.subst.apply(&t_body);
+            let t_out_c = self.subst.apply(&t_out);
+            self.unify_at(t_body, t_out_c, &arm.body.span)?;
+        }
+
+        // Check exhaustiveness after inferring all arms.
+        let t_scrut_resolved = self.subst.apply(&t_scrut);
+        self.check_exhaustiveness(&t_scrut_resolved, arms, span)?;
+
+        Ok(self.subst.apply(&t_out))
+    }
+
+    /// Check whether the match arms cover all constructors of a sum type.
+    ///
+    /// Only applies when the scrutinee type is a known `Con("TypeName", _)`.
+    /// A wildcard (`_`) or a bare ident pattern counts as a catch-all.
+    /// If no catch-all exists and some constructors are missing, report an error.
+    fn check_exhaustiveness(
+        &self,
+        scrutinee_ty: &Ty,
+        arms: &[MatchArm],
+        span: &Span,
+    ) -> Result<(), TypeErrorAt> {
+        let type_name = match scrutinee_ty {
+            Ty::Con(name, _) => name,
+            _ => return Ok(()),
+        };
+
+        let all_variants = self.variant_env.variants_of_type(type_name);
+        if all_variants.is_empty() {
+            return Ok(());
+        }
+
+        // Check if any arm is a catch-all (wildcard or bare ident).
+        let has_catch_all = arms.iter().any(|arm| {
+            matches!(arm.pattern, Pattern::Wildcard | Pattern::Ident(..))
+        });
+        if has_catch_all {
+            return Ok(());
+        }
+
+        // Collect variant names mentioned in pattern heads.
+        let mut covered: HashSet<String> = HashSet::new();
+        for arm in arms {
+            collect_variant_names(&arm.pattern, &mut covered);
+        }
+
+        let missing: Vec<String> = all_variants
+            .into_iter()
+            .filter(|v| !covered.contains(v))
+            .collect();
+
+        if missing.is_empty() {
+            Ok(())
+        } else {
+            Err(TypeErrorAt::new(
+                TypeError::NonExhaustiveMatch(missing),
+                span.clone(),
+            ))
+        }
     }
 
     // ── Check mode (⇐) ───────────────────────────────────────────────────────
@@ -1981,6 +2085,16 @@ pub struct BindingInfo {
 }
 
 // ── Shared helpers for elaborate* functions ───────────────────────────────────
+
+/// Collect the top-level variant names from a pattern.
+fn collect_variant_names(pat: &Pattern, out: &mut HashSet<String>) {
+    match pat {
+        Pattern::Variant { name, .. } => {
+            out.insert(name.clone());
+        }
+        _ => {}
+    }
+}
 
 /// Synthesize a dictionary-record `Binding` from an `ImplDef` so the type
 /// checker can add the dict name to the environment.

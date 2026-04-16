@@ -169,8 +169,14 @@ pub enum ExprKind {
         else_branch: Box<Expr>,
     },
 
-    /// `| pattern guard? -> expr` arms
+    /// `| pattern guard? -> expr` arms (anonymous match / lambda-match)
     Match(Vec<MatchArm>),
+
+    /// `match expr in | pattern -> expr ...` (explicit scrutinee match)
+    MatchExpr {
+        scrutinee: Box<Expr>,
+        arms: Vec<MatchArm>,
+    },
 
     /// `let pattern = value in body`
     LetIn {
@@ -484,6 +490,16 @@ fn assign_ids_expr(expr: &mut Expr, counter: &mut NodeId) {
             assign_ids_expr(else_branch, counter);
         }
         ExprKind::Match(arms) => {
+            for arm in arms {
+                assign_ids_pattern(&mut arm.pattern, counter);
+                if let Some(g) = &mut arm.guard {
+                    assign_ids_expr(g, counter);
+                }
+                assign_ids_expr(&mut arm.body, counter);
+            }
+        }
+        ExprKind::MatchExpr { scrutinee, arms } => {
+            assign_ids_expr(scrutinee, counter);
             for arm in arms {
                 assign_ids_pattern(&mut arm.pattern, counter);
                 if let Some(g) = &mut arm.guard {

@@ -294,6 +294,7 @@ fn parse_trait_def(tokens: &[Spanned]) -> Result<(usize, TraitDef), ParseError> 
 
     let mut methods = Vec::new();
     while !matches!(first_token(&tokens[ptr..]), Some(Token::RBrace) | None) {
+        ptr += consume(&tokens[ptr..], &Token::Let)?;
         let (n, method_name) = consume_ident(&tokens[ptr..])?;
         ptr += n;
         ptr += consume(&tokens[ptr..], &Token::Colon)?;
@@ -310,7 +311,8 @@ fn parse_trait_def(tokens: &[Spanned]) -> Result<(usize, TraitDef), ParseError> 
     Ok((ptr, TraitDef { name, type_param, methods }))
 }
 
-/// `use Show in Num { show = x -> show x }`
+/// `use Show in Num { let show = x -> show x }` or with type annotation
+/// `use Show in Num { let show : Num -> Text = x -> show x }`
 fn parse_impl_def(tokens: &[Spanned]) -> Result<(usize, ImplDef), ParseError> {
     let mut ptr = 0;
     ptr += consume(&tokens[ptr..], &Token::Use)?;
@@ -327,16 +329,28 @@ fn parse_impl_def(tokens: &[Spanned]) -> Result<(usize, ImplDef), ParseError> {
 
     let mut methods = Vec::new();
     while !matches!(first_token(&tokens[ptr..]), Some(Token::RBrace) | None) {
+        ptr += consume(&tokens[ptr..], &Token::Let)?;
         let name_span = span(&tokens[ptr..]);
         let (n, method_name) = consume_ident(&tokens[ptr..])?;
         ptr += n;
+
+        // optional type annotation
+        let ty = if matches!(first_token(&tokens[ptr..]), Some(Token::Colon)) {
+            ptr += 1; // consume `:`
+            let (n, t) = parse_type(&tokens[ptr..])?;
+            ptr += n;
+            Some(t)
+        } else {
+            None
+        };
+
         ptr += consume(&tokens[ptr..], &Token::Equal)?;
         let (n, value) = parse_expr(&tokens[ptr..])?;
         ptr += n;
         methods.push(Binding {
             pattern: Pattern::Ident(method_name, name_span, 0),
             constraints: vec![],
-            ty: None,
+            ty,
             value,
         });
         // optional comma between methods
@@ -368,13 +382,30 @@ fn parse_typedef(tokens: &[Spanned]) -> Result<(usize, TypeDef), ParseError> {
 
     ptr += consume(&tokens[ptr..], &Token::Equal)?;
 
-    // one or more `| VariantName payload?`
+    // one or more variants: `| Variant payload?` or `Variant payload? (| Variant payload?)*`
+    // The first `|` is optional.
     let mut variants = Vec::new();
-    while matches!(first_token(&tokens[ptr..]), Some(Token::Bar)) {
-        ptr += 1; // consume `|`
+
+    // Check if first variant starts with `|` (traditional) or directly with TypeIdent
+    if matches!(first_token(&tokens[ptr..]), Some(Token::Bar)) {
+        // Traditional: `| Variant ...`
+        while matches!(first_token(&tokens[ptr..]), Some(Token::Bar)) {
+            ptr += 1; // consume `|`
+            let (n, v) = parse_variant(&tokens[ptr..])?;
+            ptr += n;
+            variants.push(v);
+        }
+    } else if matches!(first_token(&tokens[ptr..]), Some(Token::TypeIdent(_))) {
+        // No leading pipe: `Variant ... | Variant ...`
         let (n, v) = parse_variant(&tokens[ptr..])?;
         ptr += n;
         variants.push(v);
+        while matches!(first_token(&tokens[ptr..]), Some(Token::Bar)) {
+            ptr += 1; // consume `|`
+            let (n, v) = parse_variant(&tokens[ptr..])?;
+            ptr += n;
+            variants.push(v);
+        }
     }
 
     if variants.is_empty() {
@@ -894,6 +925,12 @@ fn parse_atom(tokens: &[Spanned]) -> Result<(usize, Expr), ParseError> {
             Ok((n, expr))
         }
 
+        // ── Match-in expression: `match expr in | pat -> body ...` ───────────
+        Some(Token::Match) => {
+            let (n, expr) = parse_match_expr(tokens)?;
+            Ok((n, expr))
+        }
+
         // ── Error ─────────────────────────────────────────────────────────────
         Some(t) => Err(ParseError::unexpected(
             format!("{:?}", t),
@@ -1131,6 +1168,67 @@ fn parse_match(tokens: &[Spanned]) -> Result<(usize, Expr), ParseError> {
         Expr {
             id: 0,
             kind: ExprKind::Match(arms),
+            span: match_span,
+        },
+    ))
+}
+
+/// `match expr in | pattern -> body ...`
+fn parse_match_expr(tokens: &[Spanned]) -> Result<(usize, Expr), ParseError> {
+    let match_span = span(tokens);
+    let mut ptr = 0;
+    ptr += consume(&tokens[ptr..], &Token::Match)?;
+
+    // Parse the scrutinee — use the Pratt parser (no lambdas/let-in).
+    let (n, scrutinee) = parse_pratt(&tokens[ptr..], 0)?;
+    ptr += n;
+
+    ptr += consume(&tokens[ptr..], &Token::In)?;
+
+    // Parse `| pattern -> body` arms (same as parse_match)
+    let mut arms = Vec::new();
+    while matches!(first_token(&tokens[ptr..]), Some(Token::Bar)) {
+        ptr += 1; // consume `|`
+
+        let (n, pattern) = parse_pattern(&tokens[ptr..])?;
+        ptr += n;
+
+        let guard = if matches!(first_token(&tokens[ptr..]), Some(Token::If)) {
+            ptr += 1;
+            let (n, g) = parse_expr(&tokens[ptr..])?;
+            ptr += n;
+            Some(g)
+        } else {
+            None
+        };
+
+        ptr += consume(&tokens[ptr..], &Token::Arrow)?;
+
+        let (n, body) = parse_expr(&tokens[ptr..])?;
+        ptr += n;
+
+        arms.push(MatchArm {
+            pattern,
+            guard,
+            body,
+        });
+    }
+
+    if arms.is_empty() {
+        return Err(ParseError {
+            kind: crate::error::ParseErrorKind::EmptyMatch,
+            span: match_span.clone(),
+        });
+    }
+
+    Ok((
+        ptr,
+        Expr {
+            id: 0,
+            kind: ExprKind::MatchExpr {
+                scrutinee: Box::new(scrutinee),
+                arms,
+            },
             span: match_span,
         },
     ))

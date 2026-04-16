@@ -381,6 +381,20 @@ impl<'a> Cx<'a> {
                 ),
                 span,
             },
+            ExprKind::MatchExpr { scrutinee, arms } => Expr {
+                id,
+                kind: ExprKind::MatchExpr {
+                    scrutinee: Box::new(self.expr(*scrutinee)),
+                    arms: arms.into_iter()
+                        .map(|arm| MatchArm {
+                            pattern: arm.pattern,
+                            guard: arm.guard.map(|g| self.expr(g)),
+                            body: self.expr(arm.body),
+                        })
+                        .collect(),
+                },
+                span,
+            },
             ExprKind::LetIn { pattern, value, body } => Expr {
                 id,
                 kind: ExprKind::LetIn {

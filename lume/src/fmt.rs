@@ -155,6 +155,7 @@ fn expr_prec(expr: &Expr) -> u8 {
         ExprKind::LetIn { .. } => 1,
         ExprKind::If { .. } => 1,
         ExprKind::Match(_) => 1,
+        ExprKind::MatchExpr { .. } => 1,
         ExprKind::Binary { op, .. } => binop_prec(op),
         ExprKind::Unary { .. } => 70,
         ExprKind::Apply { .. } => 60,
@@ -317,6 +318,17 @@ fn fmt_expr_inner(expr: &Expr) -> Doc {
         ExprKind::Match(arms) => {
             let arms_doc: Vec<Doc> = arms.iter().map(fmt_match_arm).collect();
             concat_all(arms_doc)
+        }
+
+        ExprKind::MatchExpr { scrutinee, arms } => {
+            let scrut_doc = fmt_expr(scrutinee, 0);
+            let arms_doc: Vec<Doc> = arms.iter().map(fmt_match_arm).collect();
+            concat_all(vec![
+                text("match "),
+                scrut_doc,
+                text(" in"),
+                nest(INDENT, concat(line(), concat_all(arms_doc))),
+            ])
         }
 
         ExprKind::LetIn {

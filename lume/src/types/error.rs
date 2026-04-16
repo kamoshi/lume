@@ -18,6 +18,8 @@ pub enum TypeError {
     GuardNotBool(Ty),
     ResultPipeNonResult(Ty),
     ImportError(String),
+    /// Non-exhaustive match: missing variants listed.
+    NonExhaustiveMatch(Vec<String>),
 }
 
 impl fmt::Display for TypeError {
@@ -49,6 +51,9 @@ impl fmt::Display for TypeError {
                 write!(f, "?> requires a Result type on the left, got `{}`", ty)
             }
             TypeError::ImportError(msg) => write!(f, "import error: {}", msg),
+            TypeError::NonExhaustiveMatch(missing) => {
+                write!(f, "non-exhaustive match, missing: {}", missing.join(", "))
+            }
         }
     }
 }

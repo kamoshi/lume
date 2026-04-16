@@ -28,6 +28,7 @@ pub enum Token {
     Not,
     In,
     Trait,     // `trait`
+    Match,     // `match`
 
     // Operators
     Arrow,      // ->
@@ -424,6 +425,7 @@ impl<'src> Lexer<'src> {
             "not" => Token::Not,
             "in" => Token::In,
             "trait" => Token::Trait,
+            "match" => Token::Match,
             _ => Token::Ident(word.to_string()),
         }
     }

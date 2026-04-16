@@ -126,6 +126,13 @@ fn collect_trait_calls(program: &Program) -> HashMap<NodeId, (String, String)> {
                 if let Some(g) = &a.guard { walk(g, out); }
                 walk(&a.body, out);
             }),
+            ExprKind::MatchExpr { scrutinee, arms } => {
+                walk(scrutinee, out);
+                arms.iter().for_each(|a| {
+                    if let Some(g) = &a.guard { walk(g, out); }
+                    walk(&a.body, out);
+                });
+            }
             ExprKind::LetIn { value, body, .. } => { walk(value, out); walk(body, out); }
             _ => {}
         }
@@ -263,6 +270,16 @@ fn collect_expr_spans(expr: &Expr, out: &mut Vec<(Span, NodeId)>) {
             collect_expr_spans(else_branch, out);
         }
         ExprKind::Match(arms) => {
+            for arm in arms {
+                collect_pattern_spans(&arm.pattern, out);
+                if let Some(g) = &arm.guard {
+                    collect_expr_spans(g, out);
+                }
+                collect_expr_spans(&arm.body, out);
+            }
+        }
+        ExprKind::MatchExpr { scrutinee, arms } => {
+            collect_expr_spans(scrutinee, out);
             for arm in arms {
                 collect_pattern_spans(&arm.pattern, out);
                 if let Some(g) = &arm.guard {
