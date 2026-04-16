@@ -1,0 +1,18 @@
+-- Tests pattern matching on algebraic data types.
+
+type Shape =
+  | Circle { radius : Num }
+  | Rect { width : Num, height : Num }
+
+let area : Shape -> Num =
+  | Circle { radius } -> 3.14159 * radius * radius
+  | Rect { width, height } -> width * height
+
+let describe : Shape -> Text =
+  | Circle { radius } -> "circle r=" ++ showNum radius
+  | Rect { width, height } -> "rect " ++ showNum width ++ "x" ++ showNum height
+
+let _ = area (Circle { radius: 10 }) |> showNum |> print
+let _ = area (Rect { width: 3, height: 4 }) |> showNum |> print
+let _ = describe (Circle { radius: 5 }) |> print
+let _ = describe (Rect { width: 2, height: 7 }) |> print

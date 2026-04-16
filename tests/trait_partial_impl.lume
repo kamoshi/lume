@@ -1,0 +1,13 @@
+-- Tests that a trait impl missing some (but not all) methods is rejected.
+-- Expected: type error about missing method 'fromText'
+
+trait Codec a {
+  let toText : a -> Text
+  let fromText : Text -> a
+}
+
+type Wrapper a = Wrap { val: a }
+
+use Codec in Wrapper Num {
+  let toText = Wrap { val } -> showNum val
+}

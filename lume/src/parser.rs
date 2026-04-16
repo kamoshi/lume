@@ -97,16 +97,55 @@ fn first_token(tokens: &[Spanned]) -> Option<&Token> {
 }
 
 /// Speculatively try to parse a constraint prefix: `(Trait a, Trait b) =>`
+/// or unparenthesized: `Trait a =>` / `Trait a, Trait b =>`
 /// Returns `Some((consumed, constraints))` on success, `None` on failure.
 fn try_parse_constraints(tokens: &[Spanned]) -> Option<(usize, Vec<(String, String)>)> {
-    // Must start with `(`
-    if !matches!(first_token(tokens), Some(Token::LParen)) {
+    // Try parenthesized form first: `(Trait a, Trait b) =>`
+    if matches!(first_token(tokens), Some(Token::LParen)) {
+        let mut ptr = 1; // skip `(`
+        let mut constraints = Vec::new();
+        loop {
+            // Expect TypeIdent (trait name) then Ident (type param)
+            let trait_name = match tokens.get(ptr).map(|t| &t.token) {
+                Some(Token::TypeIdent(s)) => s.clone(),
+                _ => break,
+            };
+            ptr += 1;
+            let param_name = match tokens.get(ptr).map(|t| &t.token) {
+                Some(Token::Ident(s)) => s.clone(),
+                _ => break,
+            };
+            ptr += 1;
+            constraints.push((trait_name, param_name));
+            // Expect `,` or `)`
+            match tokens.get(ptr).map(|t| &t.token) {
+                Some(Token::Comma) => {
+                    ptr += 1; // skip `,` and continue
+                }
+                Some(Token::RParen) => {
+                    ptr += 1; // skip `)`
+                    // Must be followed by `=>`
+                    if matches!(tokens.get(ptr).map(|t| &t.token), Some(Token::FatArrow)) {
+                        ptr += 1; // skip `=>`
+                        return Some((ptr, constraints));
+                    }
+                    break;
+                }
+                _ => break,
+            }
+        }
+    }
+
+    // Try unparenthesized form: `Trait a =>` or `Trait a, Trait b =>`
+    // Look ahead for `=>` to avoid consuming non-constraint type expressions
+    let fat_arrow_pos = tokens.iter().take(20).position(|t| matches!(t.token, Token::FatArrow))?;
+    // Only try if `=>` is close enough to be constraints (at least 2 tokens per constraint)
+    if fat_arrow_pos < 2 {
         return None;
     }
-    let mut ptr = 1; // skip `(`
+    let mut ptr = 0;
     let mut constraints = Vec::new();
     loop {
-        // Expect TypeIdent (trait name) then Ident (type param)
         let trait_name = match tokens.get(ptr).map(|t| &t.token) {
             Some(Token::TypeIdent(s)) => s.clone(),
             _ => return None,
@@ -118,24 +157,15 @@ fn try_parse_constraints(tokens: &[Spanned]) -> Option<(usize, Vec<(String, Stri
         };
         ptr += 1;
         constraints.push((trait_name, param_name));
-        // Expect `,` or `)`
         match tokens.get(ptr).map(|t| &t.token) {
-            Some(Token::Comma) => {
-                ptr += 1; // skip `,` and continue
-            }
-            Some(Token::RParen) => {
-                ptr += 1; // skip `)`
-                break;
+            Some(Token::Comma) => ptr += 1,
+            Some(Token::FatArrow) => {
+                ptr += 1; // skip `=>`
+                return Some((ptr, constraints));
             }
             _ => return None,
         }
     }
-    // Must be followed by `=>`
-    if !matches!(tokens.get(ptr).map(|t| &t.token), Some(Token::FatArrow)) {
-        return None;
-    }
-    ptr += 1; // skip `=>`
-    Some((ptr, constraints))
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -311,6 +341,7 @@ fn parse_trait_def(tokens: &[Spanned]) -> Result<(usize, TraitDef), ParseError> 
     let mut ptr = 0;
     ptr += consume(&tokens[ptr..], &Token::Trait)?;
 
+    let name_span = span(&tokens[ptr..]);
     let (n, name) = consume_type_ident(&tokens[ptr..])?;
     ptr += n;
 
@@ -338,22 +369,44 @@ fn parse_trait_def(tokens: &[Spanned]) -> Result<(usize, TraitDef), ParseError> 
     }
 
     ptr += consume(&tokens[ptr..], &Token::RBrace)?;
-    Ok((ptr, TraitDef { name, type_param, methods, doc: None }))
+    Ok((ptr, TraitDef { name, type_param, methods, doc: None, name_span }))
 }
 
-/// `use Show in Num { let show = x -> show x }` or with type annotation
-/// `use Show in Num { let show : Num -> Text = x -> show x }`
+/// `use Show in Num { let show = x -> show x }`
+/// `use Show in Show a => List a { let show = xs -> ... }`
 fn parse_impl_def(tokens: &[Spanned]) -> Result<(usize, ImplDef), ParseError> {
     let mut ptr = 0;
     ptr += consume(&tokens[ptr..], &Token::Use)?;
 
+    let trait_name_span = span(&tokens[ptr..]);
     let (n, trait_name) = consume_type_ident(&tokens[ptr..])?;
     ptr += n;
 
     ptr += consume(&tokens[ptr..], &Token::In)?;
 
-    let (n, type_name) = consume_type_ident(&tokens[ptr..])?;
-    ptr += n;
+    // Try to parse constraints before `=>`.
+    // Constraints: `Show a, Eq a => ...`
+    // If no `=>` appears, fall back to just the target type.
+    let _type_name_start = ptr;
+    let (impl_constraints, type_name, target_type, type_name_span) = {
+        let saved = ptr;
+        match try_parse_impl_constraints(&tokens[ptr..]) {
+            Some((n, constraints)) => {
+                ptr += n;
+                let type_name_span = span(&tokens[ptr..]);
+                let (n, type_name, target_type) = parse_impl_target_type(&tokens[ptr..])?;
+                ptr += n;
+                (constraints, type_name, target_type, type_name_span)
+            }
+            None => {
+                ptr = saved;
+                let type_name_span = span(&tokens[ptr..]);
+                let (n, type_name, target_type) = parse_impl_target_type(&tokens[ptr..])?;
+                ptr += n;
+                (vec![], type_name, target_type, type_name_span)
+            }
+        }
+    };
 
     ptr += consume(&tokens[ptr..], &Token::LBrace)?;
 
@@ -393,7 +446,112 @@ fn parse_impl_def(tokens: &[Spanned]) -> Result<(usize, ImplDef), ParseError> {
     }
 
     ptr += consume(&tokens[ptr..], &Token::RBrace)?;
-    Ok((ptr, ImplDef { trait_name, type_name, methods, doc: None }))
+    Ok((ptr, ImplDef { trait_name, type_name, target_type, impl_constraints, methods, doc: None, trait_name_span, type_name_span }))
+}
+
+/// Try to parse `Show a, Eq a =>` constraint list.  Returns `None` if `=>`
+/// is not found (meaning this is a plain, unconstrained impl).
+fn try_parse_impl_constraints(tokens: &[Spanned]) -> Option<(usize, Vec<(String, String)>)> {
+    // Scan ahead to see if `=>` appears before `{`.
+    let fat_arrow_pos = tokens.iter().position(|t| matches!(t.token, Token::FatArrow))?;
+    // Make sure `{` doesn't appear before `=>`
+    let lbrace_pos = tokens.iter().position(|t| matches!(t.token, Token::LBrace));
+    if lbrace_pos.map_or(false, |p| p < fat_arrow_pos) {
+        return None;
+    }
+
+    // Parse constraints: `TypeIdent ident [, TypeIdent ident]*`
+    let mut ptr = 0;
+    let mut constraints = Vec::new();
+    loop {
+        let trait_name = match first_token(&tokens[ptr..])? {
+            Token::TypeIdent(s) => s.clone(),
+            _ => return None,
+        };
+        ptr += 1;
+        let type_var = match first_token(&tokens[ptr..])? {
+            Token::Ident(s) => s.clone(),
+            _ => return None,
+        };
+        ptr += 1;
+        constraints.push((trait_name, type_var));
+
+        match first_token(&tokens[ptr..])? {
+            Token::Comma => ptr += 1,      // more constraints
+            Token::FatArrow => {
+                ptr += 1; // consume `=>`
+                break;
+            }
+            _ => return None,
+        }
+    }
+    Some((ptr, constraints))
+}
+
+/// Parse the target type in `use Trait in <target> { ... }`.
+///
+/// Accepts a type constructor optionally followed by type arguments.
+/// Stops before `{` so that the opening brace of the impl body is not
+/// consumed as a record type argument.
+///
+/// Examples: `Num`, `Box Num`, `Result Num Text`, `Box (List Num)`
+fn parse_impl_target_type(tokens: &[Spanned]) -> Result<(usize, String, Type), ParseError> {
+    let (n, head) = consume_type_ident(tokens)?;
+    let mut ptr = n;
+    let mut args: Vec<Type> = Vec::new();
+
+    // Collect type arguments: TypeIdent, Ident (type var), or parenthesised.
+    // LBrace is intentionally excluded so the impl body opener isn't consumed.
+    loop {
+        match first_token(&tokens[ptr..]) {
+            Some(Token::TypeIdent(s)) => {
+                args.push(Type::Named { name: s.clone(), args: vec![] });
+                ptr += 1;
+            }
+            Some(Token::Ident(s)) => {
+                args.push(Type::Var(s.clone()));
+                ptr += 1;
+            }
+            Some(Token::LParen) => {
+                ptr += 1; // consume `(`
+                let (n, inner_ty) = parse_type(&tokens[ptr..])?;
+                ptr += n;
+                ptr += consume(&tokens[ptr..], &Token::RParen)?;
+                args.push(inner_ty);
+            }
+            _ => break,
+        }
+    }
+
+    let target_type = Type::Named { name: head, args };
+    let type_name = type_to_canonical_string(&target_type);
+    Ok((ptr, type_name, target_type))
+}
+
+/// Convert an AST `Type` to a canonical string for use in impl keys.
+fn type_to_canonical_string(ty: &Type) -> String {
+    match ty {
+        Type::Named { name, args } if args.is_empty() => name.clone(),
+        Type::Named { name, args } => {
+            let arg_strs: Vec<String> = args.iter().map(|a| {
+                let s = type_to_canonical_string(a);
+                // Parenthesise applied types when they appear as arguments
+                if matches!(a, Type::Named { args, .. } if !args.is_empty())
+                    || matches!(a, Type::Func { .. })
+                {
+                    format!("({})", s)
+                } else {
+                    s
+                }
+            }).collect();
+            format!("{} {}", name, arg_strs.join(" "))
+        }
+        Type::Var(v) => v.clone(),
+        Type::Func { param, ret } => {
+            format!("{} -> {}", type_to_canonical_string(param), type_to_canonical_string(ret))
+        }
+        Type::Record(_) => "{ .. }".to_string(),
+    }
 }
 
 // ── Type definitions ──────────────────────────────────────────────────────────

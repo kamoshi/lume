@@ -1,0 +1,21 @@
+-- Helper module: ADT types with constructors and functions
+
+type Shape =
+  | Circle { radius: Num }
+  | Rect { width: Num, height: Num }
+
+let pi = 3.14159
+
+let area : Shape -> Num =
+  | Circle { radius } -> pi * radius * radius
+  | Rect { width, height } -> width * height
+
+let describe : Shape -> Text =
+  | Circle { radius } -> "circle r=" ++ showNum radius
+  | Rect { width, height } -> showNum width ++ "x" ++ showNum height
+
+pub {
+  pi,
+  area,
+  describe,
+}

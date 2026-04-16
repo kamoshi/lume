@@ -1,0 +1,19 @@
+-- Diamond base: defines a trait with impls for Num and Text
+
+trait Printable a {
+  let render : a -> Text
+}
+
+use Printable in Num {
+  let render = x -> showNum x
+}
+
+use Printable in Text {
+  let render = x -> "\"" ++ x ++ "\""
+}
+
+let renderBoth : (Printable a) => a -> Text = x -> "[" ++ Printable.render x ++ "]"
+
+pub {
+  renderBoth,
+}

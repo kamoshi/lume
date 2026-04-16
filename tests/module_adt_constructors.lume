@@ -1,0 +1,23 @@
+-- Test: ADT constructors available across module boundary
+-- Constructors from imported module should be usable for both
+-- construction and pattern matching
+
+use shapes = "./mod_shapes"
+
+-- Construct values using imported ADT constructors
+let myCircle = Circle { radius: 3 }
+let myRect = Rect { width: 5, height: 2 }
+
+-- Pattern match on imported constructors
+let kindOf : Shape -> Text =
+  | Circle { radius } -> "circle"
+  | Rect { width, height } -> "rect"
+
+let _ = print (kindOf myCircle)
+let _ = print (kindOf myRect)
+
+-- Use imported functions on locally-constructed values
+let _ = print (showNum (shapes.area myCircle))
+let _ = print (shapes.describe myRect)
+
+pub {}

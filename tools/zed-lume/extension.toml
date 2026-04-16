@@ -13,5 +13,5 @@ language = "lume"
 
 [grammars.lume]
 repository = "file:///Users/kamov/Desktop/tree-sitter-lume"
-rev = "4da4997c0a5fa909c3d6e33925b2e7ecb46aee0c"
+rev = "6f9319e60f2f8d87227be5018421cbd2788ba982"
 path = ""

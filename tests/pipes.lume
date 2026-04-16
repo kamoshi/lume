@@ -1,0 +1,21 @@
+-- Tests pipe operator and function composition.
+
+let double = x -> x * 2
+let add1 = x -> x + 1
+let square = x -> x * x
+
+-- Pipe chains
+let result1 = 5 |> double |> add1 |> showNum
+let _ = print result1
+
+-- Nested pipes
+let result2 = [1, 2, 3] |> map double |> map showNum |> join ", "
+let _ = print result2
+
+-- Complex pipe chain
+let result3 = [10, 20, 30]
+  |> map (x -> x + 1)
+  |> filter (x -> x > 15)
+  |> map showNum
+  |> join " "
+let _ = print result3

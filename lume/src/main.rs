@@ -60,6 +60,7 @@ fn desugar_bundle(b: &mut [bundle::BundleModule]) -> bool {
     let mut global = desugar::GlobalCtx {
         traits: std::collections::HashMap::new(),
         impls: std::collections::HashMap::new(),
+        param_impls: Vec::new(),
         variants: std::collections::HashMap::new(),
     };
     for m in b.iter() {
@@ -70,15 +71,23 @@ fn desugar_bundle(b: &mut [bundle::BundleModule]) -> bool {
                 }
                 TopItem::ImplDef(id) => {
                     let dict = desugar::dict_name(&id.trait_name, &id.type_name);
-                    global.impls.insert(
-                        (id.trait_name.clone(), id.type_name.clone()),
-                        desugar::ImplEntry {
-                            // We don't know yet which module is "local"; we'll
-                            // patch that per-module below.
+                    if id.impl_constraints.is_empty() {
+                        global.impls.insert(
+                            (id.trait_name.clone(), id.type_name.clone()),
+                            desugar::ImplEntry {
+                                module_var: Some(m.var.clone()),
+                                dict_ident: dict,
+                            },
+                        );
+                    } else {
+                        global.param_impls.push(desugar::ParamImplEntry {
+                            trait_name: id.trait_name.clone(),
+                            target_type: id.target_type.clone(),
+                            constraints: id.impl_constraints.clone(),
                             module_var: Some(m.var.clone()),
                             dict_ident: dict,
-                        },
-                    );
+                        });
+                    }
                 }
                 TopItem::TypeDef(td) => {
                     for variant in &td.variants {
@@ -119,6 +128,20 @@ fn desugar_bundle(b: &mut [bundle::BundleModule]) -> bool {
                         dict_ident: e.dict_ident.clone(),
                     };
                     (k.clone(), entry)
+                })
+                .collect(),
+            param_impls: global.param_impls
+                .iter()
+                .map(|pi| desugar::ParamImplEntry {
+                    trait_name: pi.trait_name.clone(),
+                    target_type: pi.target_type.clone(),
+                    constraints: pi.constraints.clone(),
+                    module_var: if pi.module_var.as_deref() == Some(&m.var) {
+                        None
+                    } else {
+                        pi.module_var.clone()
+                    },
+                    dict_ident: pi.dict_ident.clone(),
                 })
                 .collect(),
             variants: global.variants.clone(),

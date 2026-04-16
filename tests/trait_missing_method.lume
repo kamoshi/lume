@@ -1,0 +1,13 @@
+-- Tests that an empty trait impl correctly errors with missing methods.
+-- Expected: type error about missing method 'toText'
+
+trait ToText a {
+  let toText : a -> Text
+}
+
+type Box a = MyBox { inner: a }
+
+use ToText in Box Num {
+}
+
+let box = MyBox { inner: 2 }

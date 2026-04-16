@@ -34,13 +34,25 @@ pub struct ImplEntry {
     pub dict_ident: String,
 }
 
+/// One entry in the parameterized impl table for constrained impls like
+/// `use Show in Show a => List a { ... }`.
+pub struct ParamImplEntry {
+    pub trait_name: String,
+    pub target_type: Type,
+    pub constraints: Vec<(String, String)>,
+    pub module_var: Option<String>,
+    pub dict_ident: String,
+}
+
 /// Global trait/impl context built once from the full bundle and threaded into
 /// every per-module `desugar` call.
 pub struct GlobalCtx {
     /// trait_name → TraitDef (collected from all modules)
     pub traits: HashMap<String, TraitDef>,
-    /// (trait_name, type_name) → ImplEntry
+    /// (trait_name, type_name) → ImplEntry (concrete impls only)
     pub impls: HashMap<(String, String), ImplEntry>,
+    /// Parameterized impls (those with constraints/type variables)
+    pub param_impls: Vec<ParamImplEntry>,
     /// constructor_name → VariantInfo (all payload variants from all modules)
     pub variants: HashMap<String, VariantInfo>,
 }
@@ -81,7 +93,8 @@ pub fn desugar(
         match item {
             TopItem::TraitDef(_) => {}
             TopItem::ImplDef(id) => {
-                new_items.push(impl_def_to_binding(id));
+                let raw_binding = cx.impl_def_to_raw_binding(id);
+                new_items.push(TopItem::Binding(cx.desugar_binding(raw_binding)));
             }
             TopItem::Binding(b) => {
                 new_items.push(TopItem::Binding(cx.desugar_binding(b)));
@@ -442,13 +455,73 @@ impl<'a> Cx<'a> {
     ) -> Option<Expr> {
         let call_ty = self.node_types.get(&node_id)?;
         let type_name = self.extract_type_param(trait_name, method_name, call_ty)?;
-        let entry = self.global.impls.get(&(trait_name.to_string(), type_name))?;
 
-        // Build the dict reference: either bare `__trait_Type` or `_mod_foo.__trait_Type`
-        let dict_expr = match &entry.module_var {
+        // Try exact match in concrete impls.
+        if let Some(entry) = self.global.impls.get(&(trait_name.to_string(), type_name.clone())) {
+            let dict_expr = self.make_dict_ref(&entry.dict_ident, &entry.module_var, &span);
+            return Some(Expr {
+                id: node_id,
+                kind: ExprKind::FieldAccess {
+                    record: Box::new(dict_expr),
+                    field: method_name.to_string(),
+                },
+                span,
+            });
+        }
+
+        // Fallback: try parameterized impls.
+        let trait_def = self.global.traits.get(trait_name)?;
+        let method_decl = trait_def.methods.iter().find(|m| m.name == method_name)?;
+        let type_at_param = find_ty_at_param(&method_decl.ty, &trait_def.type_param, call_ty)?;
+
+        for pi in &self.global.param_impls {
+            if pi.trait_name != trait_name {
+                continue;
+            }
+            let bindings = match match_ast_type_against_ty_desugar(&pi.target_type, &type_at_param) {
+                Some(b) => b,
+                None => continue,
+            };
+
+            // Build dict reference for the parameterized impl.
+            let mut dict_expr = self.make_dict_ref(&pi.dict_ident, &pi.module_var, &span);
+
+            // Apply dict args for each constraint.
+            for (c_trait, c_var) in &pi.constraints {
+                let bound_ty = match bindings.get(c_var) {
+                    Some(t) => t,
+                    None => continue,
+                };
+                let dict_arg = self.resolve_dict_arg(c_trait, bound_ty, &span)?;
+                dict_expr = Expr {
+                    id: 0,
+                    kind: ExprKind::Apply {
+                        func: Box::new(dict_expr),
+                        arg: Box::new(dict_arg),
+                    },
+                    span: span.clone(),
+                };
+            }
+
+            return Some(Expr {
+                id: node_id,
+                kind: ExprKind::FieldAccess {
+                    record: Box::new(dict_expr),
+                    field: method_name.to_string(),
+                },
+                span,
+            });
+        }
+
+        None
+    }
+
+    /// Build an expression referencing a dict: bare ident or module field access.
+    fn make_dict_ref(&self, dict_ident: &str, module_var: &Option<String>, span: &Span) -> Expr {
+        match module_var {
             None => Expr {
                 id: 0,
-                kind: ExprKind::Ident(entry.dict_ident.clone()),
+                kind: ExprKind::Ident(dict_ident.to_string()),
                 span: span.clone(),
             },
             Some(mod_var) => Expr {
@@ -459,20 +532,46 @@ impl<'a> Cx<'a> {
                         kind: ExprKind::Ident(mod_var.clone()),
                         span: span.clone(),
                     }),
-                    field: entry.dict_ident.clone(),
+                    field: dict_ident.to_string(),
                 },
                 span: span.clone(),
             },
-        };
+        }
+    }
 
-        Some(Expr {
-            id: node_id,
-            kind: ExprKind::FieldAccess {
-                record: Box::new(dict_expr),
-                field: method_name.to_string(),
-            },
-            span,
-        })
+    /// Resolve a dict argument for a given trait + concrete Ty.
+    /// Supports both concrete and parameterized impls (recursive).
+    fn resolve_dict_arg(&self, trait_name: &str, concrete_ty: &Ty, span: &Span) -> Option<Expr> {
+        let type_name = ty_canonical_name(concrete_ty)?;
+        // First try concrete impls.
+        if let Some(entry) = self.global.impls.get(&(trait_name.to_string(), type_name)) {
+            return Some(self.make_dict_ref(&entry.dict_ident, &entry.module_var, span));
+        }
+        // Try parameterized impls.
+        for pi in &self.global.param_impls {
+            if pi.trait_name != trait_name {
+                continue;
+            }
+            let bindings = match match_ast_type_against_ty_desugar(&pi.target_type, concrete_ty) {
+                Some(b) => b,
+                None => continue,
+            };
+            let mut dict_expr = self.make_dict_ref(&pi.dict_ident, &pi.module_var, span);
+            for (c_trait, c_var) in &pi.constraints {
+                let bound_ty = bindings.get(c_var)?;
+                let dict_arg = self.resolve_dict_arg(c_trait, bound_ty, span)?;
+                dict_expr = Expr {
+                    id: 0,
+                    kind: ExprKind::Apply {
+                        func: Box::new(dict_expr),
+                        arg: Box::new(dict_arg),
+                    },
+                    span: span.clone(),
+                };
+            }
+            return Some(dict_expr);
+        }
+        None
     }
 
     fn extract_type_param(
@@ -563,32 +662,12 @@ impl<'a> Cx<'a> {
                     } else {
                         continue;
                     }
-                } else if let Some(type_name) = ty_head_name(concrete_ty) {
-                    if let Some(entry) = self.global.impls.get(&(trait_name.clone(), type_name)) {
-                        match &entry.module_var {
-                            None => Expr {
-                                id: 0,
-                                kind: ExprKind::Ident(entry.dict_ident.clone()),
-                                span: span.clone(),
-                            },
-                            Some(mod_var) => Expr {
-                                id: 0,
-                                kind: ExprKind::FieldAccess {
-                                    record: Box::new(Expr {
-                                        id: 0,
-                                        kind: ExprKind::Ident(mod_var.clone()),
-                                        span: span.clone(),
-                                    }),
-                                    field: entry.dict_ident.clone(),
-                                },
-                                span: span.clone(),
-                            },
-                        }
+                } else {
+                    if let Some(arg) = self.resolve_dict_arg(trait_name, concrete_ty, &span) {
+                        arg
                     } else {
                         continue;
                     }
-                } else {
-                    continue;
                 }
             } else {
                 continue;
@@ -610,11 +689,45 @@ impl<'a> Cx<'a> {
     fn expr_inner(&self, kind: ExprKind) -> ExprKind {
         kind
     }
+
+    /// Convert an ImplDef to a raw Binding (no desugaring of the body).
+    /// The result is then passed through `desugar_binding` which handles
+    /// dict-lambda wrapping for constrained impls.
+    fn impl_def_to_raw_binding(&self, id: ImplDef) -> Binding {
+        let dict = dict_name(&id.trait_name, &id.type_name);
+        let fields: Vec<RecordField> = id
+            .methods
+            .into_iter()
+            .map(|b| {
+                let name = match &b.pattern {
+                    Pattern::Ident(n, _, _) => n.clone(),
+                    _ => panic!("impl method patterns must be simple identifiers"),
+                };
+                RecordField {
+                    name,
+                    name_span: Span::default(),
+                    name_node_id: 0,
+                    value: Some(b.value),
+                }
+            })
+            .collect();
+        Binding {
+            pattern: Pattern::Ident(dict, Span::default(), 0),
+            constraints: vec![],
+            ty: None,
+            value: Expr {
+                id: 0,
+                kind: ExprKind::Record { base: None, fields, spread: false },
+                span: Span::default(),
+            },
+            doc: None,
+        }
+    }
 }
 
 fn find_type_param_in_ast_type(ast_ty: &Type, param_name: &str, concrete: &Ty) -> Option<String> {
     match ast_ty {
-        Type::Var(v) if v == param_name => ty_head_name(concrete),
+        Type::Var(v) if v == param_name => ty_canonical_name(concrete),
         Type::Func { param, ret } => {
             if let Ty::Func(cp, cr) = concrete {
                 find_type_param_in_ast_type(param, param_name, cp)
@@ -718,49 +831,76 @@ fn match_types(scheme_ty: &Ty, concrete_ty: &Ty, out: &mut HashMap<TyVar, Ty>) {
     }
 }
 
-fn ty_head_name(ty: &Ty) -> Option<String> {
+/// Convert a concrete `Ty` to a canonical string matching the key format
+/// used in impl registrations.  Returns `None` for type variables.
+fn ty_canonical_name(ty: &Ty) -> Option<String> {
     match ty {
         Ty::Num => Some("Num".to_string()),
         Ty::Text => Some("Text".to_string()),
         Ty::Bool => Some("Bool".to_string()),
-        Ty::Con(name, _) => Some(name.clone()),
-        Ty::List(_) => Some("List".to_string()),
+        Ty::Con(name, args) if args.is_empty() => Some(name.clone()),
+        Ty::Con(name, args) => {
+            let arg_strs: Option<Vec<String>> = args.iter().map(|a| ty_canonical_name(a)).collect();
+            Some(format!("{} {}", name, arg_strs?.join(" ")))
+        }
+        Ty::List(inner) => {
+            let inner_name = ty_canonical_name(inner)?;
+            Some(format!("List {}", inner_name))
+        }
         _ => None,
     }
 }
 
-/// Canonical dict binding name: `Show` + `Num` → `__show_Num`
+/// Canonical dict binding name: `Show` + `Num` → `__show_Num`.
+/// Spaces in applied types are replaced with `_`: `ToText` + `Box Num` → `__totext_Box_Num`.
 pub fn dict_name(trait_name: &str, type_name: &str) -> String {
-    format!("__{}_{}", trait_name.to_ascii_lowercase(), type_name)
+    let sanitized = type_name.replace(' ', "_");
+    format!("__{}_{}", trait_name.to_ascii_lowercase(), sanitized)
 }
 
-fn impl_def_to_binding(id: ImplDef) -> TopItem {
-    let dict = dict_name(&id.trait_name, &id.type_name);
-    let fields: Vec<RecordField> = id
-        .methods
-        .into_iter()
-        .map(|b| {
-            let name = match &b.pattern {
-                Pattern::Ident(n, _, _) => n.clone(),
-                _ => panic!("impl method patterns must be simple identifiers"),
-            };
-            RecordField {
-                name,
-                name_span: Span::default(),
-                name_node_id: 0,
-                value: Some(b.value),
+/// Match an AST `Type` pattern (possibly containing `Type::Var` wildcards)
+/// against a concrete `Ty`, returning a mapping from type variable names to
+/// concrete `Ty` values.
+fn match_ast_type_against_ty_desugar(pattern: &Type, concrete: &Ty) -> Option<HashMap<String, Ty>> {
+    let mut bindings = HashMap::new();
+    if match_ast_inner_desugar(pattern, concrete, &mut bindings) {
+        Some(bindings)
+    } else {
+        None
+    }
+}
+
+fn match_ast_inner_desugar(
+    pattern: &Type,
+    concrete: &Ty,
+    bindings: &mut HashMap<String, Ty>,
+) -> bool {
+    match (pattern, concrete) {
+        (Type::Var(name), _) => {
+            if let Some(existing) = bindings.get(name) {
+                existing == concrete
+            } else {
+                bindings.insert(name.clone(), concrete.clone());
+                true
             }
-        })
-        .collect();
-    TopItem::Binding(Binding {
-        pattern: Pattern::Ident(dict, Span::default(), 0),
-        constraints: vec![],
-        ty: None,
-        value: Expr {
-            id: 0,
-            kind: ExprKind::Record { base: None, fields, spread: false },
-            span: Span::default(),
+        }
+        (Type::Named { name, args }, _) => match (name.as_str(), concrete) {
+            ("Num", Ty::Num) if args.is_empty() => true,
+            ("Text", Ty::Text) if args.is_empty() => true,
+            ("Bool", Ty::Bool) if args.is_empty() => true,
+            ("List", Ty::List(inner)) if args.len() == 1 => {
+                match_ast_inner_desugar(&args[0], inner, bindings)
+            }
+            (_, Ty::Con(c_name, c_args)) if name == c_name && args.len() == c_args.len() => {
+                args.iter()
+                    .zip(c_args.iter())
+                    .all(|(p, c)| match_ast_inner_desugar(p, c, bindings))
+            }
+            _ => false,
         },
-        doc: None,
-    })
+        (Type::Func { param, ret }, Ty::Func(cp, cr)) => {
+            match_ast_inner_desugar(param, cp, bindings) && match_ast_inner_desugar(ret, cr, bindings)
+        }
+        _ => false,
+    }
 }

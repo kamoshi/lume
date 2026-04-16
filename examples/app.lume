@@ -18,7 +18,7 @@ let safe    = boundedArea 1 10 radius
 let test =
   let x = Some { value: 10 } |> maybe.withDefault 100 in
   let y = Some { value: "" } |> maybe.withDefault "a" in
-  show y ++ show x
+  showText y ++ showNum x
 
 pub {
   area,

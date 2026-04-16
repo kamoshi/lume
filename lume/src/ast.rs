@@ -37,6 +37,8 @@ pub struct TraitDef {
     pub type_param: String,
     pub methods: Vec<TraitMethod>,
     pub doc: Option<String>,
+    /// Span of the trait name token (for hover).
+    pub name_span: Span,
 }
 
 #[derive(Debug, Clone)]
@@ -52,9 +54,20 @@ pub struct TraitMethod {
 #[derive(Debug, Clone)]
 pub struct ImplDef {
     pub trait_name: String,
+    /// Canonical string key for dict naming, e.g. `"Box Num"` or `"List a"`.
     pub type_name: String,
+    /// Structured AST type for the impl target.  Used by the type checker to
+    /// constrain method bodies against the trait's declared signatures.
+    pub target_type: Type,
+    /// Constraints on type variables: `where Show a` → `[("Show", "a")]`.
+    /// Non-empty only for parameterized impls like `use Show in List a where Show a`.
+    pub impl_constraints: Vec<(String, String)>,
     pub methods: Vec<Binding>,
     pub doc: Option<String>,
+    /// Span of the trait name token in the impl header (for hover).
+    pub trait_name_span: Span,
+    /// Span of the type name in the impl header (for hover).
+    pub type_name_span: Span,
 }
 
 /// `use math = "./math"`  or  `use { area, pi } = "./math"`

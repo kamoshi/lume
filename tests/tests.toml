@@ -1,0 +1,253 @@
+[tests.trait_simple_impl]
+path = "tests/trait_simple_impl.lume"
+expect = "typecheck"
+output = """
+hello
+42
+"""
+
+[tests.trait_applied_type]
+path = "tests/trait_applied_type.lume"
+expect = "typecheck"
+output = """
+MyBox(42)
+10
+"""
+
+[tests.trait_constrained_fn]
+path = "tests/trait_constrained_fn.lume"
+expect = "typecheck"
+output = """
+42
+"""
+
+[tests.trait_list_impl]
+path = "tests/trait_list_impl.lume"
+expect = "typecheck"
+output = """
+[1, 2, 3]
+"""
+
+[tests.trait_missing_method]
+path = "tests/trait_missing_method.lume"
+expect = "error"
+error_contains = "missing method(s): toText"
+
+[tests.trait_no_impl]
+path = "tests/trait_no_impl.lume"
+expect = "error"
+error_contains = "no impl of trait 'ToText' for type 'Num'"
+
+[tests.trait_partial_impl]
+path = "tests/trait_partial_impl.lume"
+expect = "error"
+error_contains = "missing method(s): fromText"
+
+[tests.trait_missing_impl_at_callsite]
+path = "tests/trait_missing_impl_at_callsite.lume"
+expect = "error"
+error_contains = "no impl of trait 'Show' for type 'Bool'"
+
+[tests.trait_constrained_nested]
+path = "tests/trait_constrained_nested.lume"
+expect = "typecheck"
+output = """
+[[1, 2], [3]]
+"""
+
+[tests.trait_multiple_constrained]
+path = "tests/trait_multiple_constrained.lume"
+expect = "typecheck"
+output = """
+[1, 2, 3]
+["hello", "world"]
+"""
+
+[tests.trait_constrained_impl_missing]
+path = "tests/trait_constrained_impl_missing.lume"
+expect = "error"
+error_contains = "no impl of trait 'Show' for type 'List Num'"
+
+[tests.trait_extra_method]
+path = "tests/trait_extra_method.lume"
+expect = "error"
+error_contains = "unknown method(s) not in trait: goodbye"
+
+[tests.adt_pattern_match]
+path = "tests/adt_pattern_match.lume"
+expect = "typecheck"
+output = """
+314.159
+12
+circle r=5
+rect 2x7
+"""
+
+[tests.records_row_poly]
+path = "tests/records_row_poly.lume"
+expect = "typecheck"
+output = """
+Alice
+Bob
+95
+88
+100
+"""
+
+[tests.list_operations]
+path = "tests/list_operations.lume"
+expect = "typecheck"
+output = """
+2, 4, 6, 8, 10
+2, 4
+15
+1, 2, 3, 4, 5
+1 + 2 + 3 + 4 + 5
+"""
+
+[tests.pipes]
+path = "tests/pipes.lume"
+expect = "typecheck"
+output = """
+11
+2, 4, 6
+21 31
+"""
+
+[tests.conditionals]
+path = "tests/conditionals.lume"
+expect = "typecheck"
+output = """
+42
+10
+100
+50
+0
+20
+yes
+equal
+"""
+
+[tests.strings]
+path = "tests/strings.lume"
+expect = "typecheck"
+output = """
+Hello, world!
+The answer is 42
+It is true
+one - two - three
+3.14
+"""
+
+[tests.maybe_type]
+path = "tests/maybe_type.lume"
+expect = "typecheck"
+output = """
+10
+0
+50
+"""
+
+[tests.recursion]
+path = "tests/recursion.lume"
+expect = "typecheck"
+output = """
+120
+55
+5
+"""
+
+[tests.lambdas_hof]
+path = "tests/lambdas_hof.lume"
+expect = "typecheck"
+output = """
+42
+49
+21
+15
+101, 102, 103
+"""
+
+[tests.list_patterns]
+path = "tests/list_patterns.lume"
+expect = "typecheck"
+output = """
+empty
+one: 42
+two: 1, 2
+many, starting with 10
+15
+"""
+
+# ── Module tests ───────────────────────────────────────────────
+
+[tests.module_whole_import]
+path = "tests/module_whole_import.lume"
+expect = "typecheck"
+output = """
+78.53975
+12
+circle r=5
+3x4
+"""
+
+[tests.module_destructured]
+path = "tests/module_destructured.lume"
+expect = "typecheck"
+output = """
+314.159
+6x7
+"""
+
+[tests.module_adt_constructors]
+path = "tests/module_adt_constructors.lume"
+expect = "typecheck"
+output = """
+circle
+rect
+28.27431
+5x2
+"""
+
+[tests.module_reexport]
+path = "tests/module_reexport.lume"
+expect = "typecheck"
+output = """
+42
+49
+20
+25
+"""
+
+[tests.module_pipes_compose]
+path = "tests/module_pipes_compose.lume"
+expect = "typecheck"
+output = """
+10
+18
+2, 4, 6, 8, 10
+42
+"""
+
+[tests.module_trait_import]
+path = "tests/module_trait_import.lume"
+expect = "typecheck"
+output = """
+<<num:42>>
+<<num:99>>
+"""
+
+[tests.module_diamond]
+path = "tests/module_diamond.lume"
+expect = "typecheck"
+output = """
+[1] and [2]
+["hello"] and ["world"]
+[42]
+["hi"]
+"""
+
+[tests.module_duplicate_impl]
+path = "tests/module_duplicate_impl.lume"
+expect = "error"
+error_contains = "duplicate impl of trait 'Showable' for type 'Num'"

@@ -1,0 +1,13 @@
+-- Helper: also defines Showable impl for Num (duplicate!)
+
+use { } = "./mod_dup_trait"
+
+use Showable in Num {
+  let show = x -> "num: " ++ showNum x
+}
+
+let renderNum2 = Showable.show 99
+
+pub {
+  renderNum2,
+}

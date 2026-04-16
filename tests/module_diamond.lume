@@ -1,0 +1,16 @@
+-- Test: diamond dependency — A uses B and C, both B and C use D
+-- Trait and impls defined in D should be available in A
+
+use { showNums } = "./mod_diamond_left"
+use { showTexts } = "./mod_diamond_right"
+use { renderBoth } = "./mod_diamond_base"
+
+-- Use functions from left and right (which both use base)
+let _ = print (showNums 1 2)
+let _ = print (showTexts "hello" "world")
+
+-- Also use the base trait directly
+let _ = print (renderBoth 42)
+let _ = print (renderBoth "hi")
+
+pub {}

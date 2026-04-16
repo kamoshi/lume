@@ -1,0 +1,19 @@
+-- Tests lambda expressions and higher-order functions.
+
+let apply = f -> x -> f x
+let compose = f -> g -> x -> f (g x)
+
+let double = x -> x * 2
+let add1 = x -> x + 1
+
+let _ = apply double 21 |> showNum |> print
+let _ = apply (x -> x * x) 7 |> showNum |> print
+
+let doubleAdd1 = compose add1 double
+let _ = doubleAdd1 10 |> showNum |> print
+
+-- Partial application
+let addN = n -> x -> n + x
+let add10 = addN 10
+let _ = add10 5 |> showNum |> print
+let _ = map (addN 100) [1, 2, 3] |> map showNum |> join ", " |> print

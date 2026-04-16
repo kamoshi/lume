@@ -1,0 +1,21 @@
+-- Tests that constrained impls work when multiple concrete types are used.
+-- Show.show for List Num and List Text via Show a => List a.
+
+trait Show a {
+  let show : a -> Text
+}
+
+use Show in Num {
+  let show = n -> showNum n
+}
+
+use Show in Text {
+  let show = t -> "\"" ++ t ++ "\""
+}
+
+use Show in Show a => List a {
+  let show = xs -> "[" ++ join ", " (map (x -> Show.show x) xs) ++ "]"
+}
+
+let _ = Show.show [1, 2, 3] |> print
+let _ = Show.show ["hello", "world"] |> print

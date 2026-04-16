@@ -1,0 +1,10 @@
+-- Test: importing two modules that both define impl for same trait+type
+-- Should error with duplicate impl
+
+use { renderNum } = "./mod_dup_left"
+use { renderNum2 } = "./mod_dup_right"
+
+let _ = print renderNum
+let _ = print renderNum2
+
+pub {}

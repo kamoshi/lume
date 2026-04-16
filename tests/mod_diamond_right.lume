@@ -1,0 +1,10 @@
+-- Diamond right: imports from base and uses the trait
+
+use { renderBoth } = "./mod_diamond_base"
+
+let showTexts : Text -> Text -> Text =
+  a -> b -> renderBoth a ++ " and " ++ renderBoth b
+
+pub {
+  showTexts,
+}

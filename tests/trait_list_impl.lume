@@ -1,0 +1,17 @@
+-- Tests that trait impls for parameterized types work (constrained impls).
+-- Expected output:
+--   [1, 2, 3]
+
+trait Render a {
+  let render : a -> Text
+}
+
+use Render in Num {
+  let render = n -> showNum n
+}
+
+use Render in Render a => List a {
+  let render = xs -> "[" ++ join ", " (map (x -> Render.render x) xs) ++ "]"
+}
+
+let _ = Render.render [1, 2, 3] |> print

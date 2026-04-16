@@ -1,0 +1,19 @@
+-- Tests that a simple (non-applied) trait impl works correctly.
+-- Expected output:
+--   hello
+--   42
+
+trait Stringify a {
+  let stringify : a -> Text
+}
+
+use Stringify in Text {
+  let stringify = x -> x
+}
+
+use Stringify in Num {
+  let stringify = x -> showNum x
+}
+
+let _ = Stringify.stringify "hello" |> print
+let _ = Stringify.stringify 42 |> print

@@ -1,0 +1,14 @@
+-- Test: impl has methods not declared in the trait
+
+trait Greet a {
+  let hello : a -> Text
+}
+
+use Greet in Num {
+  let hello = x -> "hi " ++ showNum x
+  let goodbye = x -> "bye " ++ showNum x
+}
+
+let _ = print (Greet.hello 42)
+
+pub {}

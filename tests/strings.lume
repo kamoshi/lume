@@ -1,0 +1,16 @@
+-- Tests string concatenation and built-in converters.
+
+let greeting = "Hello" ++ ", " ++ "world!"
+let _ = print greeting
+
+let n = 42
+let _ = print ("The answer is " ++ showNum n)
+
+let b = true
+let _ = print ("It is " ++ showBool b)
+
+-- String operations
+let parts = ["one", "two", "three"]
+let _ = join " - " parts |> print
+
+let _ = print (showNum 3.14)

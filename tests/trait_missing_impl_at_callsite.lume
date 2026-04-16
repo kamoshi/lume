@@ -1,0 +1,18 @@
+-- Tests that calling a constrained function with a type that has no impl errors.
+-- Expected: type error about missing impl of 'Show' for 'Bool'
+
+trait Show a {
+  let show : a -> Text
+}
+
+use Show in Num {
+  let show = x -> showNum x
+}
+
+let display : (Show a) => a -> Text = x -> Show.show x
+
+-- Num works
+let _ = display 42 |> print
+
+-- Bool has no Show impl → should error
+let _ = display true |> print

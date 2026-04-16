@@ -1,0 +1,19 @@
+-- Tests list pattern matching: empty, head, head+tail, specific lengths.
+
+let describe : List Num -> Text =
+  | [] -> "empty"
+  | [x] -> "one: " ++ showNum x
+  | [x, y] -> "two: " ++ showNum x ++ ", " ++ showNum y
+  | [x, ..] -> "many, starting with " ++ showNum x
+
+let _ = describe [] |> print
+let _ = describe [42] |> print
+let _ = describe [1, 2] |> print
+let _ = describe [10, 20, 30, 40] |> print
+
+-- Head and tail destructuring
+let safeSum : List Num -> Num =
+  | [] -> 0
+  | [x, ..rest] -> x + safeSum rest
+
+let _ = safeSum [1, 2, 3, 4, 5] |> showNum |> print

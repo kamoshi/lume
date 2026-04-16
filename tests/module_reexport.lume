@@ -1,0 +1,13 @@
+-- Test: importing from module that re-exports from another module
+
+use ext = "./mod_reexport"
+
+-- double and square are re-exported from mod_math
+let _ = print (showNum (ext.double 21))
+let _ = print (showNum (ext.square 7))
+
+-- quadruple and sumSquares are defined in mod_reexport
+let _ = print (showNum (ext.quadruple 5))
+let _ = print (showNum (ext.sumSquares 3 4))
+
+pub {}

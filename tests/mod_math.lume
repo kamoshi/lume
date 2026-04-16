@@ -1,0 +1,20 @@
+-- Helper module: basic math utilities
+
+let double : Num -> Num = x -> x * 2
+
+let square : Num -> Num = x -> x * x
+
+let add : Num -> Num -> Num = a -> b -> a + b
+
+let clamp : Num -> Num -> Num -> Num =
+  lo -> hi -> x ->
+    if x < lo then lo
+    else if x > hi then hi
+    else x
+
+pub {
+  double,
+  square,
+  add,
+  clamp,
+}

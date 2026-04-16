@@ -1,0 +1,16 @@
+-- Tests if-then-else conditionals and boolean operations.
+
+let abs = x -> if x < 0 then 0 - x else x
+let clamp = lo -> hi -> x -> if x < lo then lo else if x > hi then hi else x
+let max = a -> b -> if a > b then a else b
+
+let _ = abs (0 - 42) |> showNum |> print
+let _ = abs 10 |> showNum |> print
+let _ = clamp 0 100 150 |> showNum |> print
+let _ = clamp 0 100 50 |> showNum |> print
+let _ = clamp 0 100 (0 - 5) |> showNum |> print
+let _ = max 10 20 |> showNum |> print
+
+-- Boolean comparisons
+let _ = (if 3 > 2 then "yes" else "no") |> print
+let _ = (if 1 == 1 then "equal" else "nope") |> print

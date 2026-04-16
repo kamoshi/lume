@@ -28,6 +28,11 @@
 !std/
 !std/**.lume
 
+!tests/
+!tests/tests.toml
+!tests/run.py
+!tests/**.lume
+
 !tools/
 !tools/zed-lume/
 !tools/zed-lume/Cargo.toml

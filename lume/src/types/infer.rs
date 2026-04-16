@@ -1,6 +1,7 @@
 use crate::ast::{
-    self, BinOp, Binding, Expr, ExprKind, ImplDef, ListPattern, Literal, MatchArm, NodeId,
-    Pattern, Program, RecordField, RecordPattern, TopItem, TraitDef, UnOp, UseBinding, UseDecl,
+    self, BinOp, Binding, Expr, ExprKind, FieldType, ImplDef, ListPattern, Literal, MatchArm,
+    NodeId, Pattern, Program, RecordField, RecordPattern, RecordType, TopItem, TraitDef, Type,
+    UnOp, UseBinding, UseDecl,
 };
 use crate::error::Span;
 use crate::types::{
@@ -163,6 +164,56 @@ pub fn build_variant_env(items: &[TopItem]) -> VariantEnv {
 
 // ── Built-in environment ──────────────────────────────────────────────────────
 
+macro_rules! ty {
+    // 1. Function arrow (Right-Associative)
+    // The left-hand side ($lhs) MUST be a single token tree (an ident, or enclosed in (), [], or {}).
+    ($lhs:tt -> $($rhs:tt)+) => {
+        Ty::Func(Box::new(ty!($lhs)), Box::new(ty!($($rhs)+)))
+    };
+
+    // 2. Parentheses (strips them and evaluates the inside)
+    (( $($inner:tt)+ )) => { ty!($($inner)+) };
+
+    // 3. Base primitives
+    (Num) => { Ty::Num };
+    (Bool) => { Ty::Bool };
+    (Text) => { Ty::Text };
+
+    // 4. Unit / Empty Record
+    ({}) => { Ty::Record(Row { fields: vec![], tail: RowTail::Closed }) };
+
+    // 5. List Sugar
+    // Write [Num] instead of List Num so it groups as a single token tree
+    ([$($inner:tt)+]) => { Ty::List(Box::new(ty!($($inner)+))) };
+
+    // 6. Generic Constructors (e.g., Maybe[a], Result[a, e])
+    // Using brackets makes the arguments a single token tree.
+    ($con:ident [ $($arg:tt),* ]) => {
+        Ty::Con(stringify!($con).into(), vec![ $( ty!($arg) ),* ])
+    };
+
+    // 7. Variables (Fallback)
+    // Any remaining single identifier is assumed to be a Rust variable holding a TyVar.
+    ($v:ident) => { Ty::Var($v) };
+}
+
+macro_rules! forall {
+    // 1. Polymorphic: Has variables and a dot
+    ($($v:ident)+ . $($body:tt)+) => {
+        Scheme {
+            vars: vec![$($v),*],
+            row_vars: vec![],
+            constraints: vec![],
+            ty: ty!($($body)+),
+        }
+    };
+
+    // 2. Monomorphic: No variables, no dot. Just wraps a type in a Scheme.
+    ($($body:tt)+) => {
+        Scheme::mono(ty!($($body)+))
+    };
+}
+
 // Produce the initial TypeEnv and VariantEnv containing all language-level
 // built-ins (arithmetic, list ops, Maybe/Result constructors, etc.).
 //
@@ -192,14 +243,38 @@ pub fn builtin_env(s: &mut Subst) -> (TypeEnv, VariantEnv) {
     let v0 = s.fresh_var();
     let v1 = s.fresh_var();
 
-    // Basic functions
+    // Typed show primitives (building blocks for ToText trait impls)
     env.insert(
-        "show".into(),
-        mk_scheme(
-            vec![v0],
-            Ty::Func(Box::new(Ty::Var(v0)), Box::new(Ty::Text)),
-        ),
+        "showNum".into(),
+        Scheme::mono(Ty::Func(Box::new(Ty::Num), Box::new(Ty::Text))),
     );
+    env.insert(
+        "showBool".into(),
+        Scheme::mono(Ty::Func(Box::new(Ty::Bool), Box::new(Ty::Text))),
+    );
+    env.insert(
+        "showText".into(),
+        Scheme::mono(Ty::Func(Box::new(Ty::Text), Box::new(Ty::Text))),
+    );
+    // showRecord : { .. } -> Text  (open row → accepts any record)
+    let rv = s.fresh_var();
+    env.insert(
+        "showRecord".into(),
+        Scheme {
+            vars: vec![],
+            row_vars: vec![rv],
+            constraints: vec![],
+            ty: Ty::Func(
+                Box::new(Ty::Record(Row {
+                    fields: vec![],
+                    tail: RowTail::Open(rv),
+                })),
+                Box::new(Ty::Text),
+            ),
+        },
+    );
+
+    // Basic functions
     env.insert(
         "not".into(),
         Scheme::mono(Ty::Func(Box::new(Ty::Bool), Box::new(Ty::Bool))),
@@ -595,6 +670,13 @@ pub struct Checker {
     /// Typed holes: `(NodeId, Span)` of each `_` expression encountered.
     /// The resolved type is read from `node_types` after substitution.
     pub holes: Vec<(NodeId, Span)>,
+    /// Available trait impls: `(trait_name, type_canonical_name) -> defining_module`.
+    pub impl_env: HashMap<(String, String), String>,
+    /// Parameterized trait impls: `(trait_name, target_type_pattern, constraints)`.
+    pub param_impl_env: Vec<(String, Type, Vec<(String, String)>)>,
+    /// Trait calls that need impl validation: `(trait_name, fresh_var, span)`.
+    /// Only populated by TraitCall inference (not by instantiate).
+    trait_call_constraints: Vec<(String, TyVar, Span)>,
 }
 
 impl Checker {
@@ -606,6 +688,9 @@ impl Checker {
             node_types: HashMap::new(),
             constraint_map: Vec::new(),
             holes: Vec::new(),
+            impl_env: HashMap::new(),
+            param_impl_env: Vec::new(),
+            trait_call_constraints: Vec::new(),
         }
     }
 
@@ -621,7 +706,39 @@ impl Checker {
             node_types: HashMap::new(),
             constraint_map: Vec::new(),
             holes: Vec::new(),
+            impl_env: HashMap::new(),
+            param_impl_env: Vec::new(),
+            trait_call_constraints: Vec::new(),
         }
+    }
+
+    /// Register an impl in either `impl_env` (concrete) or `param_impl_env`
+    /// (parameterized, when constraints are present).
+    /// Returns an error if a duplicate concrete impl is detected.
+    fn register_impl(&mut self, id: &ImplDef) -> Result<(), TypeErrorAt> {
+        if id.impl_constraints.is_empty() {
+            let key = (id.trait_name.clone(), id.type_name.clone());
+            if let Some(existing) = self.impl_env.get(&key) {
+                if existing != "<local>" {
+                    // Local module redefines an impl from an imported module
+                    return Err(TypeErrorAt::new(
+                        TypeError::DuplicateImpl {
+                            trait_name: id.trait_name.clone(),
+                            type_name: id.type_name.clone(),
+                        },
+                        id.trait_name_span.clone(),
+                    ));
+                }
+            }
+            self.impl_env.insert(key, "<local>".to_string());
+        } else {
+            self.param_impl_env.push((
+                id.trait_name.clone(),
+                id.target_type.clone(),
+                id.impl_constraints.clone(),
+            ));
+        }
+        Ok(())
     }
 
     fn fresh_var(&mut self) -> TyVar {
@@ -735,8 +852,7 @@ impl Checker {
             vars: ty_tvs.difference(&env_tvs).copied().collect(),
             row_vars: ty_rvs.difference(&env_rvs).copied().collect(),
             constraints: {
-                let generalised: HashSet<TyVar> =
-                    ty_tvs.difference(&env_tvs).copied().collect();
+                let generalised: HashSet<TyVar> = ty_tvs.difference(&env_tvs).copied().collect();
                 let mut seen = std::collections::HashSet::new();
                 self.constraint_map
                     .iter()
@@ -1084,7 +1200,10 @@ impl Checker {
                 self.infer_match_expr(env, scrutinee, arms, span)
             }
 
-            ExprKind::TraitCall { trait_name, method_name } => {
+            ExprKind::TraitCall {
+                trait_name,
+                method_name,
+            } => {
                 // Look up the trait and find the method's declared type.
                 // The type parameter is treated as a fresh unification variable.
                 let trait_def = self.trait_env.get(trait_name).cloned();
@@ -1093,18 +1212,25 @@ impl Checker {
                         match td.methods.iter().find(|m| m.name == *method_name) {
                             Some(method) => {
                                 let mut param_vars: HashMap<String, TyVar> = HashMap::new();
-                                let ty = self.lower_ty(&method.ty, &mut param_vars)
+                                let ty = self
+                                    .lower_ty(&method.ty, &mut param_vars)
                                     .map_err(|e| TypeErrorAt::new(e, span.clone()))?;
                                 // Record constraint: this trait call introduces a
                                 // constraint on the fresh var for the type param.
                                 if let Some(&v) = param_vars.get(&td.type_param) {
                                     self.constraint_map.push((trait_name.clone(), v));
+                                    self.trait_call_constraints.push((
+                                        trait_name.clone(),
+                                        v,
+                                        span.clone(),
+                                    ));
                                 }
                                 Ok(ty)
                             }
                             None => Err(TypeErrorAt::new(
                                 TypeError::UnboundVariable(format!(
-                                    "{}.{}", trait_name, method_name
+                                    "{}.{}",
+                                    trait_name, method_name
                                 )),
                                 span.clone(),
                             )),
@@ -1534,9 +1660,9 @@ impl Checker {
         }
 
         // Check if any arm is a catch-all (wildcard or bare ident).
-        let has_catch_all = arms.iter().any(|arm| {
-            matches!(arm.pattern, Pattern::Wildcard | Pattern::Ident(..))
-        });
+        let has_catch_all = arms
+            .iter()
+            .any(|arm| matches!(arm.pattern, Pattern::Wildcard | Pattern::Ident(..)));
         if has_catch_all {
             return Ok(());
         }
@@ -1678,15 +1804,13 @@ impl Checker {
                 });
                 self.infer_pattern(p, payload_ty)
             }
-            (None, Some(p)) => {
-                self.infer_pattern(
-                    p,
-                    Ty::Record(Row {
-                        fields: vec![],
-                        tail: RowTail::Closed,
-                    }),
-                )
-            }
+            (None, Some(p)) => self.infer_pattern(
+                p,
+                Ty::Record(Row {
+                    fields: vec![],
+                    tail: RowTail::Closed,
+                }),
+            ),
         }
     }
 
@@ -1824,6 +1948,10 @@ impl Checker {
             let scheme = exports.scheme;
             self.variant_env.merge(exports.variant_env);
             self.trait_env.extend(exports.trait_env);
+            for (key, source) in exports.impl_env {
+                self.impl_env.entry(key).or_insert(source);
+            }
+            self.param_impl_env.extend(exports.param_impl_env);
             match &u.binding {
                 UseBinding::Ident(name, _, node_id) => {
                     let ty = self.instantiate(&scheme);
@@ -1878,6 +2006,24 @@ impl Checker {
             let scheme = exports.scheme;
             self.variant_env.merge(exports.variant_env);
             self.trait_env.extend(exports.trait_env);
+            // Merge impl_env with duplicate detection: allow diamond imports
+            // (same source module) but reject independent duplicates.
+            for (key, source) in exports.impl_env {
+                if let Some(existing) = self.impl_env.get(&key) {
+                    if existing != &source {
+                        return Err(TypeErrorAt::new(
+                            TypeError::DuplicateImpl {
+                                trait_name: key.0,
+                                type_name: key.1,
+                            },
+                            crate::error::Span::default(),
+                        ));
+                    }
+                } else {
+                    self.impl_env.insert(key, source);
+                }
+            }
+            self.param_impl_env.extend(exports.param_impl_env);
 
             match &u.binding {
                 UseBinding::Ident(name, _, node_id) => {
@@ -1940,7 +2086,9 @@ impl Checker {
                 TopItem::BindingGroup(bs) => self.check_binding_group(bs, env)?,
                 TopItem::ImplDef(id) => {
                     self.check_impl_completeness(id)?;
-                    let b = synth_impl_binding(id);
+                    self.register_impl(id)?;
+                    let td = self.trait_env.get(&id.trait_name).cloned();
+                    let b = synth_impl_binding(id, td.as_ref());
                     let new_env = self.check_binding(&b, env)?;
                     backfill_impl_method_types(id, &new_env, &mut self.node_types, &self.subst);
                     new_env
@@ -1948,6 +2096,8 @@ impl Checker {
                 TopItem::TypeDef(_) | TopItem::TraitDef(_) => env,
             };
         }
+
+        self.check_trait_constraints()?;
 
         let export_ty = self.infer(&env, &program.exports)?;
         Ok(self.subst.apply(&export_ty))
@@ -1959,21 +2109,149 @@ impl Checker {
             Some(td) => td,
             None => return Ok(()), // unknown trait (cross-module); skip
         };
+        let mut missing = Vec::new();
         for method in &trait_def.methods {
-            let provided = id.methods.iter().any(|m| {
-                matches!(&m.pattern, crate::ast::Pattern::Ident(n, _, _) if n == &method.name)
-            });
+            let provided = id.methods.iter().any(
+                |m| matches!(&m.pattern, crate::ast::Pattern::Ident(n, _, _) if n == &method.name),
+            );
             if !provided {
+                missing.push(method.name.clone());
+            }
+        }
+        if !missing.is_empty() {
+            return Err(TypeErrorAt::new(
+                TypeError::IncompleteImpl {
+                    trait_name: id.trait_name.clone(),
+                    type_name: id.type_name.clone(),
+                    missing,
+                },
+                id.trait_name_span.clone(),
+            ));
+        }
+        // Check for extra methods not declared in the trait
+        let mut extra = Vec::new();
+        for m in &id.methods {
+            let name = match &m.pattern {
+                crate::ast::Pattern::Ident(n, _, _) => n.clone(),
+                _ => continue,
+            };
+            if !trait_def.methods.iter().any(|tm| tm.name == name) {
+                extra.push(name);
+            }
+        }
+        if !extra.is_empty() {
+            return Err(TypeErrorAt::new(
+                TypeError::ExtraImplMethods {
+                    trait_name: id.trait_name.clone(),
+                    type_name: id.type_name.clone(),
+                    extra,
+                },
+                id.trait_name_span.clone(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// After all items are processed, verify that every concrete trait call
+    /// has a matching impl in scope.
+    fn check_trait_constraints(&self) -> Result<(), TypeErrorAt> {
+        // Check both direct TraitCall constraints (with spans) and propagated
+        // instantiation constraints from constraint_map.
+        let mut checked: HashSet<(String, String)> = HashSet::new();
+
+        // First check TraitCall constraints (these have real spans).
+        for (trait_name, var, span) in &self.trait_call_constraints {
+            let resolved = self.subst.apply(&Ty::Var(*var));
+            if matches!(resolved, Ty::Var(_)) {
+                continue;
+            }
+            if let Some(type_name) = ty_canonical_name(&resolved) {
+                checked.insert((trait_name.clone(), type_name.clone()));
+                if self
+                    .impl_env
+                    .contains_key(&(trait_name.clone(), type_name.clone()))
+                {
+                    continue;
+                }
+                if self.has_param_impl(trait_name, &resolved) {
+                    continue;
+                }
                 return Err(TypeErrorAt::new(
-                    TypeError::UnboundVariable(format!(
-                        "impl {} in {}: missing method '{}'",
-                        id.trait_name, id.type_name, method.name
-                    )),
-                    crate::error::Span::default(),
+                    TypeError::MissingImpl {
+                        trait_name: trait_name.clone(),
+                        type_name,
+                    },
+                    span.clone(),
                 ));
             }
         }
+
+        // Then check instantiation-propagated constraints (no precise span).
+        for (trait_name, var) in &self.constraint_map {
+            let resolved = self.subst.apply(&Ty::Var(*var));
+            if matches!(resolved, Ty::Var(_)) {
+                continue;
+            }
+            if let Some(type_name) = ty_canonical_name(&resolved) {
+                if checked.contains(&(trait_name.clone(), type_name.clone())) {
+                    continue;
+                }
+                if self
+                    .impl_env
+                    .contains_key(&(trait_name.clone(), type_name.clone()))
+                {
+                    continue;
+                }
+                if self.has_param_impl(trait_name, &resolved) {
+                    continue;
+                }
+                return Err(TypeErrorAt::new(
+                    TypeError::MissingImpl {
+                        trait_name: trait_name.clone(),
+                        type_name,
+                    },
+                    Span::default(),
+                ));
+            }
+        }
+
         Ok(())
+    }
+
+    /// Check if a parameterized impl can satisfy `trait_name` for `concrete_ty`.
+    /// Recursively checks sub-constraints against both concrete and parameterized impls.
+    fn has_param_impl(&self, trait_name: &str, concrete_ty: &Ty) -> bool {
+        for (p_trait, p_target, p_constraints) in &self.param_impl_env {
+            if p_trait != trait_name {
+                continue;
+            }
+            if let Some(bindings) = match_ast_type_against_ty_tc(p_target, concrete_ty) {
+                let all_satisfied = p_constraints.iter().all(|(c_trait, c_var)| {
+                    if let Some(bound_ty) = bindings.get(c_var) {
+                        self.has_impl(c_trait, bound_ty)
+                    } else {
+                        false
+                    }
+                });
+                if all_satisfied {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Check if any impl (concrete or parameterized) satisfies `trait_name` for `ty`.
+    fn has_impl(&self, trait_name: &str, ty: &Ty) -> bool {
+        if let Some(type_name) = ty_canonical_name(ty) {
+            if self
+                .impl_env
+                .contains_key(&(trait_name.to_string(), type_name))
+            {
+                return true;
+            }
+        }
+        self.has_param_impl(trait_name, ty)
     }
 
     fn check_binding(&mut self, binding: &Binding, env: TypeEnv) -> Result<TypeEnv, TypeErrorAt> {
@@ -2152,14 +2430,44 @@ fn drain_holes_to_errors(checker: &Checker) -> Vec<TypeErrorAt> {
         .collect()
 }
 
+/// Canonical dict binding name: `Show` + `Num` → `__show_Num`.
+/// Spaces in applied types are replaced with `_` so the name is a valid
+/// identifier in generated code: `ToText` + `Box Num` → `__totext_Box_Num`.
+pub fn impl_dict_name(trait_name: &str, type_name: &str) -> String {
+    let sanitized = type_name.replace(' ', "_");
+    format!("__{}_{}", trait_name.to_ascii_lowercase(), sanitized)
+}
+
+/// Convert a concrete `Ty` to a canonical string matching the key format
+/// used in impl registrations.  Returns `None` for type variables.
+pub fn ty_canonical_name(ty: &Ty) -> Option<String> {
+    match ty {
+        Ty::Num => Some("Num".to_string()),
+        Ty::Text => Some("Text".to_string()),
+        Ty::Bool => Some("Bool".to_string()),
+        Ty::Con(name, args) if args.is_empty() => Some(name.clone()),
+        Ty::Con(name, args) => {
+            let arg_strs: Option<Vec<String>> = args.iter().map(|a| ty_canonical_name(a)).collect();
+            Some(format!("{} {}", name, arg_strs?.join(" ")))
+        }
+        Ty::List(inner) => {
+            let inner_name = ty_canonical_name(inner)?;
+            Some(format!("List {}", inner_name))
+        }
+        _ => None,
+    }
+}
+
 /// Synthesize a dictionary-record `Binding` from an `ImplDef` so the type
 /// checker can add the dict name to the environment.
 ///
 /// `use Show in Num { show = expr }` → `let __show_Num = { show = expr }`
-fn synth_impl_binding(id: &ImplDef) -> Binding {
-    let dict_name = format!(
-        "__{}_{}", id.trait_name.to_ascii_lowercase(), id.type_name
-    );
+///
+/// When `trait_def` is provided, the binding gets a type annotation that
+/// constrains method bodies against the trait's declared signatures with
+/// the type parameter substituted for the impl's concrete target type.
+fn synth_impl_binding(id: &ImplDef, trait_def: Option<&TraitDef>) -> Binding {
+    let dict_name = impl_dict_name(&id.trait_name, &id.type_name);
     let fields: Vec<RecordField> = id
         .methods
         .iter()
@@ -2176,10 +2484,28 @@ fn synth_impl_binding(id: &ImplDef) -> Binding {
             }
         })
         .collect();
+
+    // Build a type annotation from the trait def: substitute the trait's type
+    // parameter with the impl's concrete target type in every method signature.
+    let ty = trait_def.map(|td| {
+        let ann_fields: Vec<FieldType> = td
+            .methods
+            .iter()
+            .map(|m| FieldType {
+                name: m.name.clone(),
+                ty: subst_type_var(&m.ty, &td.type_param, &id.target_type),
+            })
+            .collect();
+        Type::Record(RecordType {
+            fields: ann_fields,
+            open: false,
+        })
+    });
+
     Binding {
         pattern: Pattern::Ident(dict_name, crate::error::Span::default(), 0),
-        constraints: vec![],
-        ty: None,
+        constraints: id.impl_constraints.clone(),
+        ty,
         value: Expr {
             id: 0,
             kind: ExprKind::Record {
@@ -2193,6 +2519,77 @@ fn synth_impl_binding(id: &ImplDef) -> Binding {
     }
 }
 
+/// Substitute all occurrences of `Type::Var(var_name)` with `replacement` in `ty`.
+fn subst_type_var(ty: &Type, var_name: &str, replacement: &Type) -> Type {
+    match ty {
+        Type::Var(v) if v == var_name => replacement.clone(),
+        Type::Var(_) => ty.clone(),
+        Type::Named { name, args } => Type::Named {
+            name: name.clone(),
+            args: args
+                .iter()
+                .map(|a| subst_type_var(a, var_name, replacement))
+                .collect(),
+        },
+        Type::Func { param, ret } => Type::Func {
+            param: Box::new(subst_type_var(param, var_name, replacement)),
+            ret: Box::new(subst_type_var(ret, var_name, replacement)),
+        },
+        Type::Record(rt) => Type::Record(RecordType {
+            fields: rt
+                .fields
+                .iter()
+                .map(|f| FieldType {
+                    name: f.name.clone(),
+                    ty: subst_type_var(&f.ty, var_name, replacement),
+                })
+                .collect(),
+            open: rt.open,
+        }),
+    }
+}
+
+/// Match an AST `Type` pattern (with `Type::Var` wildcards) against a concrete
+/// `Ty`, returning bindings from variable names to concrete `Ty` values.
+fn match_ast_type_against_ty_tc(pattern: &Type, concrete: &Ty) -> Option<HashMap<String, Ty>> {
+    let mut bindings = HashMap::new();
+    if match_ast_inner_tc(pattern, concrete, &mut bindings) {
+        Some(bindings)
+    } else {
+        None
+    }
+}
+
+fn match_ast_inner_tc(pattern: &Type, concrete: &Ty, bindings: &mut HashMap<String, Ty>) -> bool {
+    match (pattern, concrete) {
+        (Type::Var(name), _) => {
+            if let Some(existing) = bindings.get(name) {
+                existing == concrete
+            } else {
+                bindings.insert(name.clone(), concrete.clone());
+                true
+            }
+        }
+        (Type::Named { name, args }, _) => match (name.as_str(), concrete) {
+            ("Num", Ty::Num) if args.is_empty() => true,
+            ("Text", Ty::Text) if args.is_empty() => true,
+            ("Bool", Ty::Bool) if args.is_empty() => true,
+            ("List", Ty::List(inner)) if args.len() == 1 => {
+                match_ast_inner_tc(&args[0], inner, bindings)
+            }
+            (_, Ty::Con(c_name, c_args)) if name == c_name && args.len() == c_args.len() => args
+                .iter()
+                .zip(c_args.iter())
+                .all(|(p, c)| match_ast_inner_tc(p, c, bindings)),
+            _ => false,
+        },
+        (Type::Func { param, ret }, Ty::Func(cp, cr)) => {
+            match_ast_inner_tc(param, cp, bindings) && match_ast_inner_tc(ret, cr, bindings)
+        }
+        _ => false,
+    }
+}
+
 /// After checking an impl def's synthesized binding, backfill the type of each
 /// original method pattern so hover works on impl method names.
 fn backfill_impl_method_types(
@@ -2201,7 +2598,7 @@ fn backfill_impl_method_types(
     node_types: &mut HashMap<u32, Ty>,
     subst: &crate::types::Subst,
 ) {
-    let dict_name = format!("__{}_{}", id.trait_name.to_ascii_lowercase(), id.type_name);
+    let dict_name = impl_dict_name(&id.trait_name, &id.type_name);
     if let Some(scheme) = env.lookup(&dict_name) {
         let ty = subst.apply(&scheme.ty);
         if let Ty::Record(row) = &ty {
@@ -2296,13 +2693,17 @@ pub fn elaborate_bindings(
             }
             TopItem::ImplDef(id) => {
                 checker.check_impl_completeness(id)?;
-                let b = synth_impl_binding(id);
+                checker.register_impl(id)?;
+                let td = checker.trait_env.get(&id.trait_name).cloned();
+                let b = synth_impl_binding(id, td.as_ref());
                 env = checker.check_binding(&b, env)?;
                 backfill_impl_method_types(id, &env, &mut checker.node_types, &checker.subst);
             }
             TopItem::TypeDef(_) | TopItem::TraitDef(_) => {}
         }
     }
+
+    checker.check_trait_constraints()?;
 
     let export_ty = checker.infer(&env, &program.exports)?;
     let export_ty = checker.subst.apply(&export_ty);
@@ -2399,13 +2800,17 @@ pub fn elaborate(
             }
             TopItem::ImplDef(id) => {
                 checker.check_impl_completeness(id)?;
-                let b = synth_impl_binding(id);
+                checker.register_impl(id)?;
+                let td = checker.trait_env.get(&id.trait_name).cloned();
+                let b = synth_impl_binding(id, td.as_ref());
                 env = checker.check_binding(&b, env)?;
                 backfill_impl_method_types(id, &env, &mut checker.node_types, &checker.subst);
             }
             TopItem::TypeDef(_) | TopItem::TraitDef(_) => {}
         }
     }
+
+    checker.check_trait_constraints()?;
 
     let export_ty = checker.infer(&env, &program.exports)?;
     let export_ty = checker.subst.apply(&export_ty);
@@ -2457,13 +2862,17 @@ pub fn elaborate_with_env(
             }
             TopItem::ImplDef(id) => {
                 checker.check_impl_completeness(id)?;
-                let b = synth_impl_binding(id);
+                checker.register_impl(id)?;
+                let td = checker.trait_env.get(&id.trait_name).cloned();
+                let b = synth_impl_binding(id, td.as_ref());
                 env = checker.check_binding(&b, env)?;
                 backfill_impl_method_types(id, &env, &mut checker.node_types, &checker.subst);
             }
             TopItem::TypeDef(_) | TopItem::TraitDef(_) => {}
         }
     }
+
+    checker.check_trait_constraints()?;
 
     let export_ty = checker.infer(&env, &program.exports)?;
     let export_ty = checker.subst.apply(&export_ty);
@@ -2502,7 +2911,12 @@ pub fn elaborate_with_env(
 pub fn elaborate_with_env_partial(
     program: &Program,
     path: Option<&Path>,
-) -> (HashMap<NodeId, Ty>, TypeEnv, HashMap<String, TraitDef>, Vec<TypeErrorAt>) {
+) -> (
+    HashMap<NodeId, Ty>,
+    TypeEnv,
+    HashMap<String, TraitDef>,
+    Vec<TypeErrorAt>,
+) {
     let mut subst = Subst::new();
     let (base_env, mut var_env) = builtin_env(&mut subst);
     let prog_vars = build_variant_env(&program.items);
@@ -2549,17 +2963,31 @@ pub fn elaborate_with_env_partial(
                 if let Err(e) = checker.check_impl_completeness(id) {
                     errors.push(e);
                 }
-                let b = synth_impl_binding(id);
+                if let Err(e) = checker.register_impl(id) {
+                    errors.push(e);
+                }
+                let td = checker.trait_env.get(&id.trait_name).cloned();
+                let b = synth_impl_binding(id, td.as_ref());
                 match checker.check_binding(&b, env.clone()) {
                     Ok(new_env) => {
                         env = new_env;
-                        backfill_impl_method_types(id, &env, &mut checker.node_types, &checker.subst);
+                        backfill_impl_method_types(
+                            id,
+                            &env,
+                            &mut checker.node_types,
+                            &checker.subst,
+                        );
                     }
                     Err(e) => errors.push(e),
                 }
             }
             TopItem::TypeDef(_) | TopItem::TraitDef(_) => {}
         }
+    }
+
+    // Collect missing-impl errors (non-fatal for LSP).
+    if let Err(e) = checker.check_trait_constraints() {
+        errors.push(e);
     }
 
     // Best-effort export type inference - ignore errors.

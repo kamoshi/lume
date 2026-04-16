@@ -1,0 +1,11 @@
+-- Test: destructured import
+
+use { area, describe } = "./mod_shapes"
+
+let c = Circle { radius: 10 }
+let r = Rect { width: 6, height: 7 }
+
+let _ = print (showNum (area c))
+let _ = print (describe r)
+
+pub {}

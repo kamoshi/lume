@@ -1,0 +1,9 @@
+-- Test: using traits defined and implemented in another module
+
+use { showIt } = "./mod_trait"
+
+-- Use the imported constrained function (Displayable Num impl is in mod_trait)
+let _ = print (showIt 42)
+let _ = print (showIt 99)
+
+pub {}

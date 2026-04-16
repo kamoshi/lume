@@ -1,0 +1,27 @@
+-- Tests that a trait impl for an applied type (Box Num) works end-to-end.
+-- Both the Box Num impl and a simple Num impl are used in the same file.
+-- Expected output:
+--   MyBox(42)
+--   10
+
+trait Show a {
+  let show : a -> Text
+}
+
+type Box a = MyBox { inner: a }
+
+use Show in Num {
+  let show = x -> showNum x
+}
+
+use Show in Box Num {
+  let show = MyBox { inner } -> "MyBox(" ++ Show.show inner ++ ")"
+}
+
+let box = MyBox { inner: 42 }
+
+-- Uses Box Num impl
+let _ = Show.show box |> print
+
+-- Uses Num impl
+let _ = Show.show 10 |> print

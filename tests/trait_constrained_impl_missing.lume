@@ -1,0 +1,12 @@
+-- Tests that a constrained impl correctly rejects when the constraint's
+-- concrete impl is missing. Here Show Num is required but not provided.
+
+trait Show a {
+  let show : a -> Text
+}
+
+use Show in Show a => List a {
+  let show = xs -> "[" ++ join ", " (map (x -> Show.show x) xs) ++ "]"
+}
+
+let _ = Show.show [1, 2, 3] |> print

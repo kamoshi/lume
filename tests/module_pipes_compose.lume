@@ -1,0 +1,22 @@
+-- Test: use imported functions in pipes and compositions
+
+use { double, square, add } = "./mod_math"
+
+-- Pipe with imported function
+let result1 = 5 |> double
+let _ = print (showNum result1)
+
+-- Chain pipes with imported functions
+let result2 = 3 |> square |> double
+let _ = print (showNum result2)
+
+-- Use imported function in map
+let nums = [1, 2, 3, 4, 5]
+let doubled = map double nums
+let _ = print (join ", " (map showNum doubled))
+
+-- Compose imported functions with local ones
+let addTen = add 10
+let _ = print (showNum (addTen 32))
+
+pub {}

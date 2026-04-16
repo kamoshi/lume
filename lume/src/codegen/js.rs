@@ -6,27 +6,45 @@ use std::path::{Path, PathBuf};
 
 /// All JS builtins emitted on demand.
 /// Each entry: (lume_name, js_name, js_implementation).
-/// `show` must appear before anything that uses it (e.g. `unwrap`).
+/// `_show_internal` must appear before anything that uses it (e.g. `unwrap`, `showRecord`).
 static JS_STDLIB: &[(&str, &str, &str)] = &[
-    // ── Reflection ─────────────────────────────────────────────────────────
-    ("show", "show", concat!(
-        "function show(x) {\n",
+    // ── Internal _show (not user-facing; used by unwrap / showRecord) ─────
+    ("_show_internal", "_show", concat!(
+        "function _show(x) {\n",
         "  if (x === null || x === undefined) return \"{}\";\n",
         "  if (typeof x === \"string\") return x;\n",
         "  if (typeof x === \"number\") return String(x);\n",
         "  if (typeof x === \"boolean\") return x ? \"true\" : \"false\";\n",
-        "  if (Array.isArray(x)) return \"[\" + x.map(show).join(\", \") + \"]\";\n",
+        "  if (Array.isArray(x)) return \"[\" + x.map(_show).join(\", \") + \"]\";\n",
         "  if (typeof x === \"object\") {\n",
         "    if (\"$tag\" in x) {\n",
         "      const rest = Object.entries(x).filter(([k]) => k !== \"$tag\");\n",
         "      if (rest.length === 0) return x.$tag;\n",
-        "      return x.$tag + \" { \" + rest.map(([k, v]) => k + \": \" + show(v)).join(\", \") + \" }\";\n",
+        "      return x.$tag + \" { \" + rest.map(([k, v]) => k + \": \" + _show(v)).join(\", \") + \" }\";\n",
         "    }\n",
         "    const entries = Object.entries(x);\n",
         "    if (entries.length === 0) return \"{}\";\n",
-        "    return \"{ \" + entries.map(([k, v]) => k + \": \" + show(v)).join(\", \") + \" }\";\n",
+        "    return \"{ \" + entries.map(([k, v]) => k + \": \" + _show(v)).join(\", \") + \" }\";\n",
         "  }\n",
         "  return String(x);\n",
+        "}\n\n",
+    )),
+
+    // ── Typed show primitives ─────────────────────────────────────────────
+    ("showNum", "showNum", "const showNum = (x) => String(x);\n\n"),
+    ("showBool", "showBool", "const showBool = (x) => x ? \"true\" : \"false\";\n\n"),
+    ("showText", "showText", "const showText = (x) => x;\n\n"),
+    ("showRecord", "showRecord", concat!(
+        "function showRecord(x) {\n",
+        "  if (x === null || x === undefined) return \"{}\";\n",
+        "  if (\"$tag\" in x) {\n",
+        "    const rest = Object.entries(x).filter(([k]) => k !== \"$tag\");\n",
+        "    if (rest.length === 0) return x.$tag;\n",
+        "    return x.$tag + \" { \" + rest.map(([k, v]) => k + \": \" + _show(v)).join(\", \") + \" }\";\n",
+        "  }\n",
+        "  const entries = Object.entries(x);\n",
+        "  if (entries.length === 0) return \"{}\";\n",
+        "  return \"{ \" + entries.map(([k, v]) => k + \": \" + _show(v)).join(\", \") + \" }\";\n",
         "}\n\n",
     )),
 
@@ -125,6 +143,10 @@ pub fn emit(bundle: &[BundleModule]) -> String {
         );
     }
     // Emit stdlib entries in declaration order so dependencies are satisfied.
+    // `showRecord` depends on `_show` for nested values.
+    if e.needed_stdlib.contains("showRecord") {
+        e.needed_stdlib.insert("_show_internal".to_string());
+    }
     for (lume_name, _, impl_str) in JS_STDLIB {
         if e.needed_stdlib.contains(*lume_name) {
             preamble.push_str(impl_str);

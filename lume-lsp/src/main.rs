@@ -316,21 +316,85 @@ fn collect_expr_spans(expr: &Expr, out: &mut Vec<(Span, NodeId)>) {
 // ── Extra hovers (trait declarations, type defs, etc.) ─────────────────────
 
 /// Build span-based hover entries for nodes that the type checker doesn't track
-/// in `node_types` — e.g. trait method declarations.
+/// in `node_types` — e.g. trait method declarations, trait names, impl headers.
 fn collect_extra_hovers(
     program: &Program,
     _trait_env: &HashMap<String, TraitDef>,
 ) -> Vec<(Span, String)> {
     let mut out = Vec::new();
+    // Collect all impls for richer trait name hovers
+    let mut impls_by_trait: HashMap<String, Vec<String>> = HashMap::new();
     for item in &program.items {
-        if let TopItem::TraitDef(td) = item {
-            for m in &td.methods {
-                let label = format!(
-                    "{} : {} {} => {}",
-                    m.name, td.name, td.type_param, m.ty
-                );
-                out.push((m.name_span.clone(), label));
+        if let TopItem::ImplDef(id) = item {
+            impls_by_trait
+                .entry(id.trait_name.clone())
+                .or_default()
+                .push(id.type_name.clone());
+        }
+    }
+
+    for item in &program.items {
+        match item {
+            TopItem::TraitDef(td) => {
+                // Hover on trait name → show full trait signature with methods
+                let methods_str: Vec<String> = td
+                    .methods
+                    .iter()
+                    .map(|m| format!("  let {} : {}", m.name, m.ty))
+                    .collect();
+                let mut label = format!("trait {} {}", td.name, td.type_param);
+                if !methods_str.is_empty() {
+                    label.push_str(" {\n");
+                    label.push_str(&methods_str.join("\n"));
+                    label.push_str("\n}");
+                }
+                // Append known impls
+                if let Some(types) = impls_by_trait.get(&td.name) {
+                    label.push_str("\n\n-- impls:\n");
+                    for t in types {
+                        label.push_str(&format!("--   {} {}\n", td.name, t));
+                    }
+                }
+                out.push((td.name_span.clone(), label));
+
+                // Hover on each method name → show constrained signature
+                for m in &td.methods {
+                    let label = format!(
+                        "{} : ({} {}) => {}",
+                        m.name, td.name, td.type_param, m.ty
+                    );
+                    out.push((m.name_span.clone(), label));
+                }
             }
+            TopItem::ImplDef(id) => {
+                // Hover on trait name in impl header
+                let mut label = format!("impl {} for {}", id.trait_name, id.type_name);
+                if !id.impl_constraints.is_empty() {
+                    let constraints: Vec<String> = id
+                        .impl_constraints
+                        .iter()
+                        .map(|(t, p)| format!("{} {}", t, p))
+                        .collect();
+                    label = format!("impl {} for {} where {}", id.trait_name, id.type_name, constraints.join(", "));
+                }
+                // List methods in the impl
+                let method_names: Vec<String> = id
+                    .methods
+                    .iter()
+                    .filter_map(|m| match &m.pattern {
+                        ast::Pattern::Ident(name, _, _) => Some(name.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                if !method_names.is_empty() {
+                    label.push_str(&format!("\n-- methods: {}", method_names.join(", ")));
+                }
+                out.push((id.trait_name_span.clone(), label.clone()));
+
+                // Hover on type name in impl header
+                out.push((id.type_name_span.clone(), label));
+            }
+            _ => {}
         }
     }
     out

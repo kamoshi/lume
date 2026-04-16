@@ -1,0 +1,15 @@
+-- Helper module: defines a trait and provides an impl for Num
+
+trait Displayable a {
+  let display : a -> Text
+}
+
+use Displayable in Num {
+  let display = x -> "num:" ++ showNum x
+}
+
+let showIt : Displayable a => a -> Text = x -> "<<" ++ Displayable.display x ++ ">>"
+
+pub {
+  showIt,
+}

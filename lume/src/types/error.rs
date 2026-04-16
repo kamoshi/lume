@@ -22,6 +22,28 @@ pub enum TypeError {
     NonExhaustiveMatch(Vec<String>),
     /// Typed hole `_`: the inferred expected type is shown to the user.
     TypedHole(Ty),
+    /// A trait method was used but no matching impl exists.
+    MissingImpl {
+        trait_name: String,
+        type_name: String,
+    },
+    /// An impl block is missing required trait methods.
+    IncompleteImpl {
+        trait_name: String,
+        type_name: String,
+        missing: Vec<String>,
+    },
+    /// Duplicate impl for the same trait+type across modules.
+    DuplicateImpl {
+        trait_name: String,
+        type_name: String,
+    },
+    /// An impl block has methods not declared in the trait.
+    ExtraImplMethods {
+        trait_name: String,
+        type_name: String,
+        extra: Vec<String>,
+    },
 }
 
 impl fmt::Display for TypeError {
@@ -58,6 +80,30 @@ impl fmt::Display for TypeError {
             }
             TypeError::TypedHole(ty) => {
                 write!(f, "typed hole: found type `{}`", ty)
+            }
+            TypeError::MissingImpl { trait_name, type_name } => {
+                write!(f, "no impl of trait '{}' for type '{}'", trait_name, type_name)
+            }
+            TypeError::IncompleteImpl { trait_name, type_name, missing } => {
+                write!(
+                    f,
+                    "impl {} for {}: missing method(s): {}",
+                    trait_name, type_name, missing.join(", ")
+                )
+            }
+            TypeError::DuplicateImpl { trait_name, type_name } => {
+                write!(
+                    f,
+                    "duplicate impl of trait '{}' for type '{}'",
+                    trait_name, type_name
+                )
+            }
+            TypeError::ExtraImplMethods { trait_name, type_name, extra } => {
+                write!(
+                    f,
+                    "impl {} for {}: unknown method(s) not in trait: {}",
+                    trait_name, type_name, extra.join(", ")
+                )
             }
         }
     }

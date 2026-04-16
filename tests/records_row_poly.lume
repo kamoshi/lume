@@ -1,0 +1,16 @@
+-- Tests record types and row polymorphism.
+
+let getName = { name, .. } -> name
+let getScore = { score, .. } -> score
+
+let alice = { name: "Alice", age: 25, score: 95 }
+let bob = { name: "Bob", score: 88 }
+
+let _ = getName alice |> print
+let _ = getName bob |> print
+let _ = getScore alice |> showNum |> print
+let _ = getScore bob |> showNum |> print
+
+-- Record update syntax
+let alice2 = { alice | score: 100 }
+let _ = getScore alice2 |> showNum |> print

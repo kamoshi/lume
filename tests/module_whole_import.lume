@@ -1,0 +1,13 @@
+-- Test: whole module import and field access
+
+use shapes = "./mod_shapes"
+
+let c = Circle { radius: 5 }
+let r = Rect { width: 3, height: 4 }
+
+let _ = print (showNum (shapes.area c))
+let _ = print (showNum (shapes.area r))
+let _ = print (shapes.describe c)
+let _ = print (shapes.describe r)
+
+pub {}

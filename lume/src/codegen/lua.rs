@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 ///
 /// Each entry is `(lume_name, lua_name, lua_implementation)`.
 static STDLIB: &[(&str, &str, &str)] = &[
-    // ── Reflection (must come first; used by `unwrap`) ─────────────────────
-    ("show", "_show", concat!(
+    // ── Internal _show (not user-facing; used by unwrap) ──────────────────
+    ("_show_internal", "_show", concat!(
         "local function _show(x)\n",
         "  local t = type(x)\n",
         "  if t == \"string\" then return x end\n",
@@ -41,6 +41,32 @@ static STDLIB: &[(&str, &str, &str)] = &[
         "    return \"{ \" .. table.concat(parts, \", \") .. \" }\"\n",
         "  end\n",
         "  return tostring(x)\n",
+        "end\n\n",
+    )),
+
+    // ── Typed show primitives ─────────────────────────────────────────────
+    ("showNum", "_showNum", concat!(
+        "local function _showNum(x)\n",
+        "  if x == math.floor(x) then return tostring(math.floor(x)) else return tostring(x) end\n",
+        "end\n\n",
+    )),
+    ("showBool", "_showBool", "local function _showBool(x) return x and \"true\" or \"false\" end\n\n"),
+    ("showText", "_showText", "local function _showText(x) return x end\n\n"),
+    ("showRecord", "_showRecord", concat!(
+        "local function _showRecord(x)\n",
+        "  if type(x) ~= \"table\" then return tostring(x) end\n",
+        "  if x._tag ~= nil then\n",
+        "    local parts = {}\n",
+        "    for k, v in pairs(x) do\n",
+        "      if k ~= \"_tag\" then parts[#parts+1] = k .. \": \" .. _show(v) end\n",
+        "    end\n",
+        "    if #parts == 0 then return x._tag end\n",
+        "    return x._tag .. \" { \" .. table.concat(parts, \", \") .. \" }\"\n",
+        "  end\n",
+        "  local parts = {}\n",
+        "  for k, v in pairs(x) do parts[#parts+1] = k .. \": \" .. _show(v) end\n",
+        "  if #parts == 0 then return \"{}\" end\n",
+        "  return \"{ \" .. table.concat(parts, \", \") .. \" }\"\n",
         "end\n\n",
     )),
 
@@ -379,9 +405,13 @@ pub fn emit(bundle: &[BundleModule]) -> String {
         );
     }
 
-    // `unwrap` calls `_show`, so ensure show is emitted whenever unwrap is used.
+    // `unwrap` calls `_show`, so ensure internal show is emitted whenever unwrap is used.
     if e.needed_stdlib.contains("unwrap") {
-        e.needed_stdlib.insert("show".to_string());
+        e.needed_stdlib.insert("_show_internal".to_string());
+    }
+    // `showRecord` also depends on `_show` for nested values.
+    if e.needed_stdlib.contains("showRecord") {
+        e.needed_stdlib.insert("_show_internal".to_string());
     }
 
     for (lume_name, _lua_name, impl_str) in STDLIB {

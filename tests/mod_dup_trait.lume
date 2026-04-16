@@ -1,0 +1,7 @@
+-- Helper: defines a trait (no impls)
+
+trait Showable a {
+  let show : a -> Text
+}
+
+pub {}

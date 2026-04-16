@@ -23,7 +23,7 @@ Lume draws from Lua (small core, files as values), Elm and PureScript (row polym
 -- single-line comment (no multi-line comments)
 ```
 
-**Keywords:** `let` `pub` `type` `use` `if` `then` `else` `true` `false` `and` `or` `not`
+**Keywords:** `let` `pub` `type` `use` `trait` `in` `if` `then` `else` `match` `true` `false` `and` `or` `not`
 
 **Identifiers:** `[a-z][a-zA-Z0-9_]*` for values and fields  
 **Type names / variant names:** `[A-Z][a-zA-Z0-9]*`  
@@ -275,7 +275,21 @@ let describe =
 
 Pattern matching supports guards and destructuring. Exhaustiveness checking is not currently guaranteed by this implementation.
 
-### 8.2 The `..` rest pattern
+### 8.2 Explicit match
+
+The `match ... in` form matches an expression inline:
+
+```lume
+let label = match direction in
+  | North -> "up"
+  | South -> "down"
+  | East  -> "right"
+  | West  -> "left"
+```
+
+This is useful when the value being matched is not a function parameter.
+
+### 8.3 The `..` rest pattern
 
 `..` in a pattern means "and any other fields I don't care about":
 
@@ -290,7 +304,7 @@ let classify =
 
 Without `..`, the pattern matches exactly those fields and no others.
 
-### 8.3 Guards
+### 8.4 Guards
 
 ```lume
 let classify =
@@ -302,7 +316,7 @@ let classify =
 
 `Variant _` matches any payload without binding it.
 
-### 8.4 List patterns
+### 8.5 List patterns
 
 ```lume
 let first =
@@ -319,7 +333,7 @@ let headTail =
   | []           -> Err { reason: "empty" }
 ```
 
-### 8.5 Destructuring in let bindings
+### 8.6 Destructuring in let bindings
 
 The same patterns work in `let`:
 
@@ -373,7 +387,8 @@ let safeDivide = a -> b ->
 
 - **Inferred** - the compiler infers all types. Annotations are optional and serve as documentation.
 - **Sound** - if the program compiles, it is type-correct. No runtime type errors.
-- **Row polymorphic** - functions can be polymorphic over the "rest" of a record's fields (see §6.5).
+- **Row polymorphic** - functions can be polymorphic over the "rest" of a record's fields (see §6.4).
+- **Trait-constrained** - type annotations can require trait implementations (see §13).
 - **No implicit coercions** - `Num` never becomes `Text` silently.
 - **No `null` or `undefined`** - absence is represented by `Maybe`.
 
@@ -539,7 +554,104 @@ The following are available globally - no import needed:
 
 ---
 
-## 13. Error handling
+## 13. Traits
+
+Traits provide ad-hoc polymorphism — a way to define a shared interface that different types can implement independently. They are Lume's mechanism for overloading: the same function name (e.g. `show`) can behave differently depending on the type it is called with.
+
+### 13.1 Defining a trait
+
+A trait declares one or more method signatures parameterised over a type variable:
+
+```lume
+trait Show a {
+  let show : a -> Text
+}
+
+trait Eq a {
+  let eq : a -> a -> Bool
+}
+```
+
+### 13.2 Implementing a trait
+
+The `use ... in` form provides an implementation for a concrete type:
+
+```lume
+use Show in Num {
+  let show = n -> showNum n
+}
+
+use Show in Bool {
+  let show = | true  -> "true"
+             | false -> "false"
+}
+```
+
+Implementations can target applied types (type constructors applied to arguments):
+
+```lume
+type Box a = | MyBox { inner: a }
+
+use Show in Box Num {
+  let show = MyBox { inner } -> "MyBox(" ++ Show.show inner ++ ")"
+}
+```
+
+### 13.3 Constrained implementations
+
+An impl can require that its type parameter already implements another trait. Constraints appear before `=>`:
+
+```lume
+use Show in Show a => List a {
+  let show = xs -> "[" ++ join ", " (map (x -> Show.show x) xs) ++ "]"
+}
+```
+
+This says: "List a implements Show, provided a already implements Show." Multiple constraints are comma-separated:
+
+```lume
+use Printable in (Show a, Eq a) => Pair a {
+  let display = p -> Show.show p
+}
+```
+
+### 13.4 Calling trait methods
+
+Use `Trait.method` syntax to call a trait method. The compiler resolves which implementation to use based on the argument type:
+
+```lume
+Show.show 42          -- uses Show in Num
+Show.show [1, 2, 3]   -- uses Show in List a (which requires Show in Num)
+```
+
+### 13.5 Constrained functions
+
+Functions can require trait implementations on their type parameters using constraint annotations:
+
+```lume
+let showBoth : (Show a) => a -> a -> Text
+let showBoth = x -> y -> Show.show x ++ " and " ++ Show.show y
+```
+
+The constraint `(Show a) =>` means "this function works for any type `a` that has a `Show` implementation." Unparenthesized single constraints are also allowed:
+
+```lume
+let display : Show a => a -> Text
+let display = x -> Show.show x
+```
+
+### 13.6 Soundness guarantees
+
+The compiler enforces several rules at type-check time:
+
+- **Missing impl:** calling `Show.show x` where `x` has a type with no `Show` impl is a compile error.
+- **Incomplete impl:** an impl must provide all methods declared in the trait.
+- **Extra methods:** an impl must not define methods not declared in the trait.
+- **Duplicate impl:** two implementations for the same (trait, type) pair from different modules is a compile error. Diamond imports (same impl reaching a module via two paths) are allowed.
+
+---
+
+## 14. Error handling
 
 Errors are values. There are no exceptions.
 
@@ -567,7 +679,7 @@ safeDivide 10 2
 
 ---
 
-## 14. Complete example
+## 15. Complete example
 
 A small program that reads a list of quiz scores, filters and grades them, and summarises the results:
 
@@ -627,15 +739,14 @@ students
 
 ---
 
-## 15. What Lume intentionally omits
+## 16. What Lume intentionally omits
 
 | Feature               | Reason omitted                                              |
 |-----------------------|-------------------------------------------------------------|
 | Mutation / `var`      | Immutability eliminates a class of bugs; use update syntax |
 | `null` / `undefined`  | Use `Maybe` - absence is explicit and handled              |
 | Exceptions            | Use `Result` - errors are values                           |
-| Classes / inheritance | Row polymorphism covers the use cases more simply          |
-| Interfaces / traits   | Row types are structural - no declaration needed           |
+| Classes / inheritance | Row polymorphism + traits cover the use cases more simply |
 | Macros / metaprogramming | Keeps the language predictable and tooling simple       |
 | Concurrency primitives | Single-threaded; use packages for async I/O               |
 | Operator overloading  | `++` for concat, `+` for numbers - unambiguous             |
@@ -643,16 +754,26 @@ students
 
 ---
 
-## 16. Grammar summary
+## 17. Grammar summary
 
 ```
-program     = use* (typedef | binding)* ("pub" expr)?
+program     = use* (typedef | traitdef | impldef | binding)* ("pub" expr)?
 
 use         = "use" (ident "=" | record_pattern "=") string
 typedef     = "type" TypeName typevars "=" ("|" variant)+
 variant     = VariantName record_type?
 
-binding     = "let" pattern (":" type)? "=" expr
+traitdef    = "trait" TypeName ident "{" trait_method* "}"
+trait_method = "let" ident ":" type
+
+impldef     = "use" TypeName "in" constraints? impl_type "{" impl_method* "}"
+impl_type   = TypeName type_primary*
+impl_method = "let" ident (":" type)? "=" expr
+constraints = constraint ("," constraint)* "=>"
+            | "(" constraint ("," constraint)* ")" "=>"
+constraint  = TypeName ident
+
+binding     = "let" pattern (":" constraints? type)? "=" expr
 
 expr        = lambda | pipe_expr
 
@@ -661,12 +782,15 @@ pipe_expr   = result_pipe ("|>" result_pipe)*
 result_pipe = apply ("?>" apply)*
 apply       = atom atom*
             | apply record_expr
-atom        = literal | ident | VariantName
-            | list_expr | "(" expr ")" | if_expr | match_expr
+atom        = literal | ident | VariantName | trait_call
+            | list_expr | "(" expr ")" | if_expr
+            | match_expr | match_in_expr
 
-if_expr     = "if" expr "then" expr "else" expr
-match_expr  = ("|" pattern guard? "->" expr)+
-guard       = "if" expr
+trait_call    = TypeName "." ident       -- e.g. Show.show
+if_expr       = "if" expr "then" expr "else" expr
+match_expr    = ("|" pattern guard? "->" expr)+
+match_in_expr = "match" expr "in" ("|" pattern guard? "->" expr)+
+guard         = "if" expr
 
 pattern     = "_"
             | literal

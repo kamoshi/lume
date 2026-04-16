@@ -1,0 +1,18 @@
+-- Tests list operations: map, filter, fold, sort, join.
+
+let nums = [1, 2, 3, 4, 5]
+
+let doubled = map (x -> x * 2) nums
+let _ = map showNum doubled |> join ", " |> print
+
+let evens = filter (x -> x == 2 || x == 4) nums
+let _ = map showNum evens |> join ", " |> print
+
+let total = fold 0 (acc -> x -> acc + x) nums
+let _ = showNum total |> print
+
+let sorted = sort [5, 1, 4, 2, 3]
+let _ = map showNum sorted |> join ", " |> print
+
+let joined = join " + " (map showNum nums)
+let _ = joined |> print

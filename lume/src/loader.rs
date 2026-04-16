@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::ast::{Program, TopItem, TraitDef};
+use crate::ast::{Program, TopItem, TraitDef, Type};
 use crate::error::Span;
 use crate::lexer::Lexer;
 use crate::parser;
@@ -171,6 +171,8 @@ pub struct ModuleExports {
     pub scheme: Scheme,
     pub variant_env: VariantEnv,
     pub trait_env: HashMap<String, TraitDef>,
+    pub impl_env: HashMap<(String, String), String>,
+    pub param_impl_env: Vec<(String, Type, Vec<(String, String)>)>,
 }
 
 /// Loads, parses, and type-checks Lume source files, caching the result of
@@ -288,7 +290,23 @@ impl Loader {
                 }
             })
             .collect();
-        Ok(ModuleExports { scheme, variant_env: prog_vars, trait_env })
+        // Replace "<local>" source markers with the actual module path so
+        // downstream duplicate-impl detection can distinguish diamond imports
+        // (same source) from independent duplicates (different sources).
+        let path_str = path.to_string_lossy().to_string();
+        let impl_env: HashMap<(String, String), String> = checker.impl_env
+            .into_iter()
+            .map(|(k, v)| {
+                if v == "<local>" { (k, path_str.clone()) } else { (k, v) }
+            })
+            .collect();
+        Ok(ModuleExports {
+            scheme,
+            variant_env: prog_vars,
+            trait_env,
+            impl_env,
+            param_impl_env: checker.param_impl_env,
+        })
     }
 }
 

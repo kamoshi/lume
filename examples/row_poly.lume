@@ -20,6 +20,6 @@ let getScore = { score, .. } -> score
 
 let aliceScore = getScore aliceWithScore
 
-let {} = aliceScore |> math.pow2 |> show |> print
+let {} = aliceScore |> math.pow2 |> showNum |> print
 
 pub { getName, aliceName, botName, getScore, aliceWithScore, aliceScore }

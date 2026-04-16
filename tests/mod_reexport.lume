@@ -1,0 +1,14 @@
+-- Helper module: re-exports and extends mod_math
+
+use { double, square } = "./mod_math"
+
+let quadruple : Num -> Num = x -> double (double x)
+
+let sumSquares : Num -> Num -> Num = a -> b -> square a + square b
+
+pub {
+  double,
+  square,
+  quadruple,
+  sumSquares,
+}
