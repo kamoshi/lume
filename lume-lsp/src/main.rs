@@ -31,6 +31,11 @@ struct DocInfo {
     trait_env: HashMap<String, TraitDef>,
     /// NodeId → (trait_name, method_name) for every TraitCall expression.
     trait_calls: HashMap<NodeId, (String, String)>,
+    /// Extra hover labels for nodes without entries in `node_types`
+    /// (trait method declarations, type definitions, etc.).
+    extra_hovers: Vec<(Span, String)>,
+    /// Name → doc comment string, built from AST `doc` fields.
+    doc_comments: HashMap<String, String>,
 }
 
 // ── LSP backend ───────────────────────────────────────────────────────────────
@@ -85,12 +90,16 @@ fn analyse(uri: &Url, src: &str) -> (Option<DocInfo>, Vec<Diagnostic>) {
         elaborate_with_env_partial(&program, path.as_deref());
     let span_index = collect_spans(&program);
     let trait_calls = collect_trait_calls(&program);
+    let extra_hovers = collect_extra_hovers(&program, &trait_env);
+    let doc_comments = collect_doc_comments(&program);
     let doc_info = Some(DocInfo {
         node_types,
         span_index,
         top_env,
         trait_env,
         trait_calls,
+        extra_hovers,
+        doc_comments,
     });
     let diagnostics = type_errors
         .into_iter()
@@ -180,7 +189,13 @@ fn collect_spans(program: &Program) -> Vec<(Span, NodeId)> {
                     collect_expr_spans(&b.value, &mut out);
                 }
             }
-            TopItem::TypeDef(_) | TopItem::TraitDef(_) | TopItem::ImplDef(_) => {}
+            TopItem::TypeDef(_) | TopItem::TraitDef(_) => {}
+            TopItem::ImplDef(id) => {
+                for m in &id.methods {
+                    collect_pattern_spans(&m.pattern, &mut out);
+                    collect_expr_spans(&m.value, &mut out);
+                }
+            }
         }
     }
     collect_expr_spans(&program.exports, &mut out);
@@ -296,6 +311,78 @@ fn collect_expr_spans(expr: &Expr, out: &mut Vec<(Span, NodeId)>) {
         // Leaves: Number, Text, Bool, Ident, Variant { payload: None }
         _ => {}
     }
+}
+
+// ── Extra hovers (trait declarations, type defs, etc.) ─────────────────────
+
+/// Build span-based hover entries for nodes that the type checker doesn't track
+/// in `node_types` — e.g. trait method declarations.
+fn collect_extra_hovers(
+    program: &Program,
+    _trait_env: &HashMap<String, TraitDef>,
+) -> Vec<(Span, String)> {
+    let mut out = Vec::new();
+    for item in &program.items {
+        if let TopItem::TraitDef(td) = item {
+            for m in &td.methods {
+                let label = format!(
+                    "{} : {} {} => {}",
+                    m.name, td.name, td.type_param, m.ty
+                );
+                out.push((m.name_span.clone(), label));
+            }
+        }
+    }
+    out
+}
+
+/// Build a name → doc-comment map from the AST `doc` fields on definitions.
+fn collect_doc_comments(program: &Program) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    for item in &program.items {
+        match item {
+            TopItem::Binding(b) => {
+                if let (ast::Pattern::Ident(name, _, _), Some(doc)) = (&b.pattern, &b.doc) {
+                    out.insert(name.clone(), doc.clone());
+                }
+            }
+            TopItem::BindingGroup(bs) => {
+                for b in bs {
+                    if let (ast::Pattern::Ident(name, _, _), Some(doc)) = (&b.pattern, &b.doc) {
+                        out.insert(name.clone(), doc.clone());
+                    }
+                }
+            }
+            TopItem::TraitDef(td) => {
+                if let Some(doc) = &td.doc {
+                    out.insert(td.name.clone(), doc.clone());
+                }
+                for m in &td.methods {
+                    if let Some(doc) = &m.doc {
+                        out.insert(m.name.clone(), doc.clone());
+                    }
+                }
+            }
+            TopItem::ImplDef(id) => {
+                if let Some(doc) = &id.doc {
+                    let key = format!("{}_{}", id.trait_name, id.type_name);
+                    out.insert(key, doc.clone());
+                }
+                for m in &id.methods {
+                    if let (ast::Pattern::Ident(name, _, _), Some(doc)) = (&m.pattern, &m.doc) {
+                        let key = format!("{}_{}.{}", id.trait_name, id.type_name, name);
+                        out.insert(key, doc.clone());
+                    }
+                }
+            }
+            TopItem::TypeDef(td) => {
+                if let Some(doc) = &td.doc {
+                    out.insert(td.name.clone(), doc.clone());
+                }
+            }
+        }
+    }
+    out
 }
 
 // ── Hover lookup ─────────────────────────────────────────────────────────────
@@ -473,7 +560,7 @@ fn trait_completions(
                 filter_text: Some(m.name.clone()),
                 insert_text: Some(m.name.clone()),
                 text_edit: Some(CompletionTextEdit::Edit(TextEdit {
-                    range: replace_range.clone(),
+                    range: replace_range,
                     new_text: m.name.clone(),
                 })),
                 detail: Some(detail),
@@ -505,7 +592,7 @@ fn field_completions(
                 filter_text: Some(name.clone()),
                 insert_text: Some(name.clone()),
                 text_edit: Some(CompletionTextEdit::Edit(TextEdit {
-                    range: replace_range.clone(),
+                    range: replace_range,
                     new_text: name.clone(),
                 })),
                 detail: Some(field_ty.to_string()),
@@ -543,7 +630,7 @@ fn ident_completions(doc: &DocInfo, prefix: &str, replace_range: Range) -> Vec<C
                 filter_text: Some(name.clone()),
                 insert_text: Some(name.clone()),
                 text_edit: Some(CompletionTextEdit::Edit(TextEdit {
-                    range: replace_range.clone(),
+                    range: replace_range,
                     new_text: name.clone(),
                 })),
                 detail: Some(detail),
@@ -831,45 +918,70 @@ impl LanguageServer for Backend {
             None => return Ok(None),
         };
 
-        let (node_id, ty) = match type_at_with_id(pos, &doc) {
-            Some(t) => t,
-            None => return Ok(None),
-        };
-
-        // Check if this node is a TraitCall — if so, show the constrained type.
-        let label = if let Some((trait_name, method_name)) = doc.trait_calls.get(&node_id) {
-            if let Some(trait_def) = doc.trait_env.get(trait_name) {
-                if let Some(method) = trait_def.methods.iter().find(|m| &m.name == method_name) {
-                    // Show: `methodName : TraitName param => method_type`
-                    let constrained = format_trait_method_ty(trait_def, &method.ty.to_string());
-                    format!("{method_name} : {constrained}")
+        let label = if let Some((node_id, ty)) = type_at_with_id(pos, &doc) {
+            // Check if this node is a TraitCall — if so, show the constrained type.
+            if let Some((trait_name, method_name)) = doc.trait_calls.get(&node_id) {
+                if let Some(trait_def) = doc.trait_env.get(trait_name) {
+                    if let Some(method) = trait_def.methods.iter().find(|m| &m.name == method_name) {
+                        let constrained = format_trait_method_ty(trait_def, &method.ty.to_string());
+                        format!("{method_name} : {constrained}")
+                    } else {
+                        format!("{method_name} : {ty}")
+                    }
                 } else {
                     format!("{method_name} : {ty}")
                 }
             } else {
-                format!("{method_name} : {ty}")
+                match word_at(&text, pos.line, pos.character) {
+                    Some(w) if w.starts_with(|c: char| c.is_alphabetic() || c == '_') => {
+                        if let Some(scheme) = doc.top_env.lookup(w) {
+                            format!("{w} : {scheme}")
+                        } else {
+                            format!("{w} : {ty}")
+                        }
+                    }
+                    _ => ty.to_string(),
+                }
             }
         } else {
-            // Use the identifier under the cursor as a label only when it is a
-            // genuine identifier (starts with a letter or `_`), not a number fragment.
-            match word_at(&text, pos.line, pos.character) {
-                Some(w) if w.starts_with(|c: char| c.is_alphabetic() || c == '_') => {
-                    // Prefer the Scheme from top_env (shows constraints) over the
-                    // raw Ty from node_types (which strips constraint information).
-                    if let Some(scheme) = doc.top_env.lookup(&w) {
-                        format!("{w} : {scheme}")
-                    } else {
-                        format!("{w} : {ty}")
+            // No type in node_types — try extra_hovers (trait methods, etc.)
+            let lsp_line = pos.line as usize + 1;
+            let lsp_col = pos.character as usize + 1;
+            if let Some((_, label)) = doc.extra_hovers.iter().find(|(span, _)| {
+                span.line == lsp_line && span.col <= lsp_col && lsp_col < span.col + span.len
+            }) {
+                label.clone()
+            } else {
+                // Last resort: try top_env by word under cursor
+                match word_at(&text, pos.line, pos.character) {
+                    Some(w) if w.starts_with(|c: char| c.is_alphabetic() || c == '_') => {
+                        if let Some(scheme) = doc.top_env.lookup(w) {
+                            format!("{w} : {scheme}")
+                        } else {
+                            return Ok(None);
+                        }
                     }
+                    _ => return Ok(None),
                 }
-                _ => ty.to_string(),
             }
         };
+
+        // Look up doc comment by name under cursor
+        let doc_comment = word_at(&text, pos.line, pos.character)
+            .and_then(|w| doc.doc_comments.get(w))
+            .cloned()
+            .unwrap_or_default();
+
+        let mut value = format!("```\n{label}\n```");
+        if !doc_comment.is_empty() {
+            value.push_str("\n\n---\n\n");
+            value.push_str(&doc_comment);
+        }
 
         Ok(Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::Markdown,
-                value: format!("```\n{label}\n```"),
+                value,
             }),
             range: None,
         }))

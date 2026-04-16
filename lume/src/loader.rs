@@ -97,10 +97,10 @@ pub fn use_path_context(line_up_to_cursor: &str) -> Option<UsePathContext> {
         return None;
     }
 
-    if string_content.starts_with("lume:") {
+    if let Some(stripped) = string_content.strip_prefix("lume:") {
         Some(UsePathContext {
             kind: UsePathKind::Stdlib,
-            prefix: string_content[5..].to_string(),
+            prefix: stripped.to_string(),
             prefix_col: quote_col + 1 + 5, // byte after `"lume:`
         })
     } else {

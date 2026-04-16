@@ -20,6 +20,8 @@ pub enum TypeError {
     ImportError(String),
     /// Non-exhaustive match: missing variants listed.
     NonExhaustiveMatch(Vec<String>),
+    /// Typed hole `_`: the inferred expected type is shown to the user.
+    TypedHole(Ty),
 }
 
 impl fmt::Display for TypeError {
@@ -53,6 +55,9 @@ impl fmt::Display for TypeError {
             TypeError::ImportError(msg) => write!(f, "import error: {}", msg),
             TypeError::NonExhaustiveMatch(missing) => {
                 write!(f, "non-exhaustive match, missing: {}", missing.join(", "))
+            }
+            TypeError::TypedHole(ty) => {
+                write!(f, "typed hole: found type `{}`", ty)
             }
         }
     }

@@ -93,6 +93,8 @@ pub struct VariantInfo {
     /// Payload fields in the AST representation (None for unit variants).
     /// Using AST types here so we can lower them fresh per instantiation.
     pub payload_fields: Option<Vec<(String, ast::Type)>>,
+    /// Single-value wrapper type (e.g., `a` in `type Box a = TestBox a`).
+    pub wraps: Option<ast::Type>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -118,9 +120,11 @@ impl VariantEnv {
             .map(|(name, _)| name.clone())
             .collect()
     }
+    /// Iterate over all entries.
+    pub fn all(&self) -> impl Iterator<Item = (&String, &VariantInfo)> {
+        self.0.iter()
+    }
 }
-
-// ── Build variant environment from type definitions ───────────────────────────
 
 // Scan the top-level items of a parsed program and register every variant
 // constructor into a VariantEnv.  This pre-pass runs before type inference so
@@ -148,6 +152,7 @@ pub fn build_variant_env(items: &[TopItem]) -> VariantEnv {
                         type_name: td.name.clone(),
                         type_params: td.params.clone(),
                         payload_fields: payload,
+                        wraps: variant.wraps.clone(),
                     },
                 );
             }
@@ -529,6 +534,7 @@ pub fn builtin_env(s: &mut Subst) -> (TypeEnv, VariantEnv) {
             type_name: "Maybe".into(),
             type_params: vec!["a".into()],
             payload_fields: Some(vec![("value".into(), ast::Type::Var("a".into()))]),
+            wraps: None,
         },
     );
     var_env.insert(
@@ -537,6 +543,7 @@ pub fn builtin_env(s: &mut Subst) -> (TypeEnv, VariantEnv) {
             type_name: "Maybe".into(),
             type_params: vec!["a".into()],
             payload_fields: None,
+            wraps: None,
         },
     );
 
@@ -547,6 +554,7 @@ pub fn builtin_env(s: &mut Subst) -> (TypeEnv, VariantEnv) {
             type_name: "Result".into(),
             type_params: vec!["a".into(), "b".into()],
             payload_fields: Some(vec![("value".into(), ast::Type::Var("a".into()))]),
+            wraps: None,
         },
     );
     var_env.insert(
@@ -555,14 +563,15 @@ pub fn builtin_env(s: &mut Subst) -> (TypeEnv, VariantEnv) {
             type_name: "Result".into(),
             type_params: vec!["a".into(), "b".into()],
             payload_fields: Some(vec![("reason".into(), ast::Type::Var("b".into()))]),
+            wraps: None,
         },
     );
 
     (env, var_env)
 }
 
-/// Return type of `instantiate_variant`: (result_type, optional payload fields).
-type VariantInstance = (Ty, Option<Vec<(String, Ty)>>);
+/// Return type of `instantiate_variant`: (result_type, optional payload fields, optional wraps type).
+type VariantInstance = (Ty, Option<Vec<(String, Ty)>>, Option<Ty>);
 
 // ── The typechecker ───────────────────────────────────────────────────────────
 
@@ -583,6 +592,9 @@ pub struct Checker {
     pub node_types: HashMap<NodeId, Ty>,
     /// Accumulated trait constraints: `(trait_name, fresh_var)`.
     pub constraint_map: Vec<(String, TyVar)>,
+    /// Typed holes: `(NodeId, Span)` of each `_` expression encountered.
+    /// The resolved type is read from `node_types` after substitution.
+    pub holes: Vec<(NodeId, Span)>,
 }
 
 impl Checker {
@@ -593,6 +605,7 @@ impl Checker {
             trait_env: HashMap::new(),
             node_types: HashMap::new(),
             constraint_map: Vec::new(),
+            holes: Vec::new(),
         }
     }
 
@@ -607,6 +620,7 @@ impl Checker {
             trait_env: HashMap::new(),
             node_types: HashMap::new(),
             constraint_map: Vec::new(),
+            holes: Vec::new(),
         }
     }
 
@@ -866,7 +880,13 @@ impl Checker {
             None
         };
 
-        Ok((result_ty, payload_ty))
+        let wraps_ty = if let Some(wt) = &info.wraps {
+            Some(self.lower_ty(wt, &mut param_vars)?)
+        } else {
+            None
+        };
+
+        Ok((result_ty, payload_ty, wraps_ty))
     }
 
     // ── Inference (⇒ mode) ───────────────────────────────────────────────────
@@ -902,6 +922,14 @@ impl Checker {
             ExprKind::Text(_) => Ok(Ty::Text),
             ExprKind::Bool(_) => Ok(Ty::Bool),
 
+            // Typed hole: allocate a fresh type variable and record this hole.
+            // The resolved type will be reported as a diagnostic after inference.
+            ExprKind::Hole => {
+                let ty = self.fresh_ty();
+                self.holes.push((expr.id, span.clone()));
+                Ok(ty)
+            }
+
             // List literal: all elements must share the same type.
             // We introduce a fresh element variable and unify each element's
             // type against it.  If the list is empty the element type stays
@@ -936,44 +964,46 @@ impl Checker {
                 name,
                 payload: None,
             } => {
-                let (result_ty, payload_ty) = self
+                let (result_ty, payload_ty, wraps_ty) = self
                     .instantiate_variant(name)
                     .map_err(|e| TypeErrorAt::new(e, span.clone()))?;
-                if let Some(fields) = payload_ty {
-                    // Has a payload but none was given; return as a constructor function.
+                if let Some(wt) = wraps_ty {
+                    Ok(Ty::Func(Box::new(wt), Box::new(result_ty)))
+                } else if let Some(fields) = payload_ty {
                     let row = Row {
                         fields,
                         tail: RowTail::Closed,
                     };
-                    let result_ty_c = result_ty.clone();
-                    Ok(Ty::Func(Box::new(Ty::Record(row)), Box::new(result_ty_c)))
+                    Ok(Ty::Func(Box::new(Ty::Record(row)), Box::new(result_ty)))
                 } else {
                     Ok(result_ty)
                 }
             }
 
-            // Variant applied to a payload expression (e.g. `Some { value: x }`).
-            // We check the payload expression against the expected record type
-            // (check mode, not infer) because we know the exact shape.
             ExprKind::Variant {
                 name,
                 payload: Some(payload_expr),
             } => {
-                let (result_ty, payload_fields) = self
+                let (result_ty, payload_fields, wraps_ty) = self
                     .instantiate_variant(name)
                     .map_err(|e| TypeErrorAt::new(e, span.clone()))?;
-                let fields = payload_fields.ok_or_else(|| {
-                    TypeErrorAt::new(
-                        TypeError::UnboundVariant(format!("{} is a unit variant", name)),
-                        span.clone(),
-                    )
-                })?;
-                let expected = Ty::Record(Row {
-                    fields,
-                    tail: RowTail::Closed,
-                });
-                self.check(env, payload_expr, expected)?;
-                Ok(result_ty)
+                if let Some(wt) = wraps_ty {
+                    self.check(env, payload_expr, wt)?;
+                    Ok(result_ty)
+                } else {
+                    let fields = payload_fields.ok_or_else(|| {
+                        TypeErrorAt::new(
+                            TypeError::UnboundVariant(format!("{} is a unit variant", name)),
+                            span.clone(),
+                        )
+                    })?;
+                    let expected = Ty::Record(Row {
+                        fields,
+                        tail: RowTail::Closed,
+                    });
+                    self.check(env, payload_expr, expected)?;
+                    Ok(result_ty)
+                }
             }
 
             ExprKind::Record {
@@ -1628,8 +1658,15 @@ impl Checker {
         payload: Option<&Pattern>,
         expected: Ty,
     ) -> Result<Vec<(String, Ty)>, TypeError> {
-        let (result_ty, payload_fields) = self.instantiate_variant(name)?;
+        let (result_ty, payload_fields, wraps_ty) = self.instantiate_variant(name)?;
         self.unify(expected, result_ty)?;
+
+        if let Some(wt) = wraps_ty {
+            match payload {
+                None | Some(Pattern::Wildcard) => return Ok(vec![]),
+                Some(p) => return self.infer_pattern(p, wt),
+            }
+        }
 
         match (payload_fields, payload) {
             (None, None) | (None, Some(Pattern::Wildcard)) => Ok(vec![]),
@@ -1642,7 +1679,6 @@ impl Checker {
                 self.infer_pattern(p, payload_ty)
             }
             (None, Some(p)) => {
-                // Unit variant but pattern given - wildcard fallback
                 self.infer_pattern(
                     p,
                     Ty::Record(Row {
@@ -1905,7 +1941,9 @@ impl Checker {
                 TopItem::ImplDef(id) => {
                     self.check_impl_completeness(id)?;
                     let b = synth_impl_binding(id);
-                    self.check_binding(&b, env)?
+                    let new_env = self.check_binding(&b, env)?;
+                    backfill_impl_method_types(id, &new_env, &mut self.node_types, &self.subst);
+                    new_env
                 }
                 TopItem::TypeDef(_) | TopItem::TraitDef(_) => env,
             };
@@ -2075,7 +2113,13 @@ pub fn check_program(program: &Program, path: Option<&Path>) -> Result<Ty, TypeE
     var_env.merge(prog_vars);
     let mut checker = Checker::with_subst(var_env, subst);
     let mut loader = crate::loader::Loader::new();
-    checker.check_program(program, env, path, &mut loader)
+    let ty = checker.check_program(program, env, path, &mut loader)?;
+    // Report the first typed hole as an error (holes are intentional placeholders).
+    let mut hole_errors = drain_holes_to_errors(&checker);
+    if !hole_errors.is_empty() {
+        return Err(hole_errors.remove(0));
+    }
+    Ok(ty)
 }
 
 /// A named type binding for CLI display.
@@ -2088,12 +2132,24 @@ pub struct BindingInfo {
 
 /// Collect the top-level variant names from a pattern.
 fn collect_variant_names(pat: &Pattern, out: &mut HashSet<String>) {
-    match pat {
-        Pattern::Variant { name, .. } => {
-            out.insert(name.clone());
-        }
-        _ => {}
+    if let Pattern::Variant { name, .. } = pat {
+        out.insert(name.clone());
     }
+}
+
+/// Convert recorded typed holes into `TypeErrorAt` diagnostics.
+/// Must be called after all substitutions are final so the type is resolved.
+fn drain_holes_to_errors(checker: &Checker) -> Vec<TypeErrorAt> {
+    checker
+        .holes
+        .iter()
+        .filter_map(|(id, span)| {
+            checker.node_types.get(id).map(|ty| {
+                let ty = checker.subst.apply(ty);
+                TypeErrorAt::new(TypeError::TypedHole(ty), span.clone())
+            })
+        })
+        .collect()
 }
 
 /// Synthesize a dictionary-record `Binding` from an `ImplDef` so the type
@@ -2133,6 +2189,32 @@ fn synth_impl_binding(id: &ImplDef) -> Binding {
             },
             span: crate::error::Span::default(),
         },
+        doc: None,
+    }
+}
+
+/// After checking an impl def's synthesized binding, backfill the type of each
+/// original method pattern so hover works on impl method names.
+fn backfill_impl_method_types(
+    id: &ImplDef,
+    env: &TypeEnv,
+    node_types: &mut HashMap<u32, Ty>,
+    subst: &crate::types::Subst,
+) {
+    let dict_name = format!("__{}_{}", id.trait_name.to_ascii_lowercase(), id.type_name);
+    if let Some(scheme) = env.lookup(&dict_name) {
+        let ty = subst.apply(&scheme.ty);
+        if let Ty::Record(row) = &ty {
+            for method in &id.methods {
+                if let Pattern::Ident(mname, _, nid) = &method.pattern {
+                    if *nid != 0 {
+                        if let Some((_, fty)) = row.fields.iter().find(|(n, _)| n == mname) {
+                            node_types.insert(*nid, fty.clone());
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -2216,6 +2298,7 @@ pub fn elaborate_bindings(
                 checker.check_impl_completeness(id)?;
                 let b = synth_impl_binding(id);
                 env = checker.check_binding(&b, env)?;
+                backfill_impl_method_types(id, &env, &mut checker.node_types, &checker.subst);
             }
             TopItem::TypeDef(_) | TopItem::TraitDef(_) => {}
         }
@@ -2318,6 +2401,7 @@ pub fn elaborate(
                 checker.check_impl_completeness(id)?;
                 let b = synth_impl_binding(id);
                 env = checker.check_binding(&b, env)?;
+                backfill_impl_method_types(id, &env, &mut checker.node_types, &checker.subst);
             }
             TopItem::TypeDef(_) | TopItem::TraitDef(_) => {}
         }
@@ -2375,6 +2459,7 @@ pub fn elaborate_with_env(
                 checker.check_impl_completeness(id)?;
                 let b = synth_impl_binding(id);
                 env = checker.check_binding(&b, env)?;
+                backfill_impl_method_types(id, &env, &mut checker.node_types, &checker.subst);
             }
             TopItem::TypeDef(_) | TopItem::TraitDef(_) => {}
         }
@@ -2391,11 +2476,18 @@ pub fn elaborate_with_env(
         }
         e
     };
+    // Report the first typed hole as an error (must happen before node_types is moved).
+    let mut hole_errors = drain_holes_to_errors(&checker);
+
     let node_types: HashMap<NodeId, Ty> = checker
         .node_types
         .into_iter()
         .map(|(id, ty)| (id, checker.subst.apply(&ty)))
         .collect();
+
+    if !hole_errors.is_empty() {
+        return Err(hole_errors.remove(0));
+    }
 
     Ok((node_types, resolved_env, export_ty))
 }
@@ -2459,7 +2551,10 @@ pub fn elaborate_with_env_partial(
                 }
                 let b = synth_impl_binding(id);
                 match checker.check_binding(&b, env.clone()) {
-                    Ok(new_env) => env = new_env,
+                    Ok(new_env) => {
+                        env = new_env;
+                        backfill_impl_method_types(id, &env, &mut checker.node_types, &checker.subst);
+                    }
                     Err(e) => errors.push(e),
                 }
             }
@@ -2480,9 +2575,13 @@ pub fn elaborate_with_env_partial(
     };
     let node_types: HashMap<NodeId, Ty> = checker
         .node_types
-        .into_iter()
-        .map(|(id, ty)| (id, checker.subst.apply(&ty)))
+        .iter()
+        .map(|(id, ty)| (*id, checker.subst.apply(ty)))
         .collect();
+
+    // Include typed holes as diagnostics so the LSP can report them.
+    let mut hole_errors = drain_holes_to_errors(&checker);
+    errors.append(&mut hole_errors);
 
     (node_types, resolved_env, checker.trait_env, errors)
 }

@@ -193,6 +193,7 @@ impl<'a> Cx<'a> {
                     constraints: b.constraints,
                     ty: b.ty,
                     value: body,
+                    doc: b.doc,
                 };
             }
         }
@@ -203,6 +204,7 @@ impl<'a> Cx<'a> {
             constraints: b.constraints,
             ty: b.ty,
             value: self.expr(b.value),
+            doc: b.doc,
         }
     }
 
@@ -306,6 +308,29 @@ impl<'a> Cx<'a> {
                                                 fields: payload_fields,
                                                 spread: false,
                                             },
+                                            span: span.clone(),
+                                        })),
+                                    },
+                                    span: span.clone(),
+                                }),
+                            },
+                            span,
+                        };
+                    }
+                    // Wrapper variant: desugar to `__v -> Variant(__v)`
+                    if info.wraps.is_some() {
+                        let param_name = "__v".to_string();
+                        return Expr {
+                            id,
+                            kind: ExprKind::Lambda {
+                                param: Pattern::Ident(param_name.clone(), span.clone(), 0),
+                                body: Box::new(Expr {
+                                    id: 0,
+                                    kind: ExprKind::Variant {
+                                        name,
+                                        payload: Some(Box::new(Expr {
+                                            id: 0,
+                                            kind: ExprKind::Ident(param_name),
                                             span: span.clone(),
                                         })),
                                     },
@@ -626,7 +651,7 @@ fn find_type_param_in_ast_type(ast_ty: &Type, param_name: &str, concrete: &Ty) -
 
 /// Like `find_type_param_in_ast_type` but returns the actual `Ty` at the param
 /// position (which might be a `Ty::Var` if still polymorphic).
-fn find_ty_at_param<'t>(ast_ty: &Type, param_name: &str, concrete: &'t Ty) -> Option<Ty> {
+fn find_ty_at_param(ast_ty: &Type, param_name: &str, concrete: &Ty) -> Option<Ty> {
     match ast_ty {
         Type::Var(v) if v == param_name => Some(concrete.clone()),
         Type::Func { param, ret } => {
@@ -736,5 +761,6 @@ fn impl_def_to_binding(id: ImplDef) -> TopItem {
             kind: ExprKind::Record { base: None, fields, spread: false },
             span: Span::default(),
         },
+        doc: None,
     })
 }

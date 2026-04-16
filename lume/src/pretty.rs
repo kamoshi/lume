@@ -155,13 +155,13 @@ pub fn render(doc: Doc, width: usize) -> String {
                 }
                 Mode::Break => {
                     out.push('\n');
-                    out.extend(std::iter::repeat(' ').take(ind));
+                    out.extend(std::iter::repeat_n(' ', ind));
                     col = ind;
                 }
             },
             Doc::Hardline => {
                 out.push('\n');
-                out.extend(std::iter::repeat(' ').take(ind));
+                out.extend(std::iter::repeat_n(' ', ind));
                 col = ind;
             }
             Doc::Concat(a, b) => {

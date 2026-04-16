@@ -64,6 +64,9 @@ pub enum Token {
     RBracket,
     Comma,
 
+    // Doc comment: --- text
+    DocComment(String),
+
     Eof,
 }
 
@@ -114,6 +117,10 @@ impl<'src> Lexer<'src> {
         self.src.get(self.pos + 1).copied()
     }
 
+    fn peek3(&self) -> Option<u8> {
+        self.src.get(self.pos + 2).copied()
+    }
+
     fn advance(&mut self) -> Option<u8> {
         let ch = self.src.get(self.pos).copied()?;
         self.pos += 1;
@@ -140,6 +147,31 @@ impl<'src> Lexer<'src> {
             // Whitespace
             while matches!(self.peek(), Some(b' ' | b'\t' | b'\r' | b'\n')) {
                 self.advance();
+            }
+            // Doc comment: --- (three dashes)
+            if self.peek() == Some(b'-') && self.peek2() == Some(b'-') && self.peek3() == Some(b'-') {
+                let doc_line = self.line;
+                let doc_col = self.col;
+                // skip the ---
+                self.advance();
+                self.advance();
+                self.advance();
+                // skip optional leading space
+                if self.peek() == Some(b' ') {
+                    self.advance();
+                }
+                let start = self.pos;
+                while !matches!(self.peek(), Some(b'\n') | None) {
+                    self.advance();
+                }
+                let text = std::str::from_utf8(&self.src[start..self.pos])
+                    .unwrap_or("")
+                    .to_string();
+                let len = self.pos - start + 3; // approximate span length
+                return Ok(Spanned {
+                    token: Token::DocComment(text),
+                    span: self.span_at(doc_line, doc_col, len),
+                });
             }
             // Single-line comment: --
             if self.peek() == Some(b'-') && self.peek2() == Some(b'-') {

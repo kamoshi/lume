@@ -36,12 +36,16 @@ pub struct TraitDef {
     pub name: String,
     pub type_param: String,
     pub methods: Vec<TraitMethod>,
+    pub doc: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct TraitMethod {
     pub name: String,
+    /// Span of the method name token (for hover on trait method declarations).
+    pub name_span: Span,
     pub ty: Type,
+    pub doc: Option<String>,
 }
 
 /// `use Show in Num { show = x -> show x }`
@@ -50,6 +54,7 @@ pub struct ImplDef {
     pub trait_name: String,
     pub type_name: String,
     pub methods: Vec<Binding>,
+    pub doc: Option<String>,
 }
 
 /// `use math = "./math"`  or  `use { area, pi } = "./math"`
@@ -74,6 +79,7 @@ pub struct TypeDef {
     /// Type parameters: `a`, `b`, etc.
     pub params: Vec<String>,
     pub variants: Vec<Variant>,
+    pub doc: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -81,6 +87,9 @@ pub struct Variant {
     pub name: String,
     /// Unit variants have no payload; others carry a record type.
     pub payload: Option<RecordType>,
+    /// Single-value wrapper: `type Box a = TestBox a`
+    /// The wrapped type (e.g., `a` in `TestBox a`).
+    pub wraps: Option<Type>,
 }
 
 /// `let x : (C a, C b) => T = expr`
@@ -91,6 +100,7 @@ pub struct Binding {
     pub constraints: Vec<(String, String)>,
     pub ty: Option<Type>,
     pub value: Expr,
+    pub doc: Option<String>,
 }
 
 // ── Expressions ───────────────────────────────────────────────────────────────
@@ -191,6 +201,10 @@ pub enum ExprKind {
         trait_name: String,
         method_name: String,
     },
+
+    /// A typed hole `_` in expression position.
+    /// The type checker infers the expected type and reports it as a diagnostic.
+    Hole,
 }
 
 #[derive(Debug, Clone)]

@@ -1,5 +1,6 @@
 use crate::ast::*;
 use crate::bundle::BundleModule;
+use crate::types::infer::VariantEnv;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -96,11 +97,20 @@ pub fn emit(bundle: &[BundleModule]) -> String {
         .map(|m| (m.canonical.clone(), m.var.clone()))
         .collect();
 
+    let mut variant_env = VariantEnv::default();
+    for m in bundle {
+        let local = crate::types::infer::build_variant_env(&m.program.items);
+        for (name, info) in local.all() {
+            variant_env.insert(name.clone(), info.clone());
+        }
+    }
+
     let mut e = Emitter {
         out: String::new(),
         needs_result_bind: false,
         needed_stdlib: HashSet::new(),
         module_vars,
+        variant_env,
     };
 
     let last = bundle.len().saturating_sub(1);
@@ -131,6 +141,7 @@ struct Emitter {
     needs_result_bind: bool,
     needed_stdlib: HashSet<String>,
     module_vars: HashMap<PathBuf, String>,
+    variant_env: VariantEnv,
 }
 
 impl Emitter {
@@ -348,6 +359,9 @@ impl Emitter {
                                 self.emit_expr(val);
                             }
                         }
+                    } else {
+                        self.out.push_str(", _0: ");
+                        self.emit_expr(payload_expr);
                     }
                     self.out.push_str(" }");
                 }
@@ -413,6 +427,9 @@ impl Emitter {
                 self.out.push_str(")(");
                 self.emit_expr(value);
                 self.out.push(')');
+            }
+            ExprKind::Hole => {
+                self.out.push_str("(() => { throw new Error(\"typed hole: program is incomplete\"); })()");
             }
         }
     }
@@ -486,7 +503,7 @@ impl Emitter {
         } else {
             // Refutable pattern: runtime check
             let cond = Self::pattern_cond("$arg", param);
-            let binds = Self::pattern_binds("$arg", param);
+            let binds = self.pattern_binds("$arg", param);
             self.out.push_str("($arg) => {\n  if (");
             self.out.push_str(&cond);
             self.out.push_str(") {\n");
@@ -598,7 +615,7 @@ impl Emitter {
         self.out.push_str("$v => {\n");
         for arm in arms {
             let cond = Self::pattern_cond("$v", &arm.pattern);
-            let binds = Self::pattern_binds("$v", &arm.pattern);
+            let binds = self.pattern_binds("$v", &arm.pattern);
             let always_matches = cond == "true";
             let has_guard = arm.guard.is_some();
 
@@ -640,7 +657,7 @@ impl Emitter {
         // (We pass the scrutinee as the IIFE argument below.)
         for arm in arms {
             let cond = Self::pattern_cond("$v", &arm.pattern);
-            let binds = Self::pattern_binds("$v", &arm.pattern);
+            let binds = self.pattern_binds("$v", &arm.pattern);
             let always_matches = cond == "true";
             let has_guard = arm.guard.is_some();
 
@@ -749,27 +766,30 @@ impl Emitter {
     }
 
     /// Returns `(lhs, rhs)` pairs for `const lhs = rhs` bindings from matching `var` via `pat`.
-    fn pattern_binds(var: &str, pat: &Pattern) -> Vec<(String, String)> {
+    fn pattern_binds(&self, var: &str, pat: &Pattern) -> Vec<(String, String)> {
         let mut out = Vec::new();
-        Self::collect_binds(var, pat, &mut out);
+        self.collect_binds(var, pat, &mut out);
         out
     }
 
-    fn collect_binds(var: &str, pat: &Pattern, out: &mut Vec<(String, String)>) {
+    fn collect_binds(&self, var: &str, pat: &Pattern, out: &mut Vec<(String, String)>) {
         match pat {
             Pattern::Wildcard | Pattern::Literal(_) => {}
             Pattern::Ident(name, _, _) => out.push((js_ident(name).into_owned(), var.to_string())),
-            Pattern::Variant { payload, .. } => {
+            Pattern::Variant { name, payload, .. } => {
                 if let Some(p) = payload {
-                    // Variant fields are merged into the tagged object, same var.
-                    Self::collect_binds(var, p, out);
+                    if self.variant_env.lookup(name).is_some_and(|i| i.wraps.is_some()) {
+                        self.collect_binds(&format!("{}._0", var), p, out);
+                    } else {
+                        self.collect_binds(var, p, out);
+                    }
                 }
             }
             Pattern::Record(rp) => {
                 for f in &rp.fields {
                     let field_expr = format!("{}.{}", var, f.name);
                     if let Some(p) = &f.pattern {
-                        Self::collect_binds(&field_expr, p, out);
+                        self.collect_binds(&field_expr, p, out);
                     } else {
                         out.push((js_ident(&f.name).into_owned(), field_expr));
                     }
@@ -793,7 +813,7 @@ impl Emitter {
             }
             Pattern::List(lp) => {
                 for (i, elem) in lp.elements.iter().enumerate() {
-                    Self::collect_binds(&format!("{}[{}]", var, i), elem, out);
+                    self.collect_binds(&format!("{}[{}]", var, i), elem, out);
                 }
                 if let Some(Some(rest_name)) = &lp.rest {
                     out.push((

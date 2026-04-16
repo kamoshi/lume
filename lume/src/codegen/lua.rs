@@ -1,5 +1,6 @@
 use crate::ast::*;
 use crate::bundle::BundleModule;
+use crate::types::infer::VariantEnv;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -294,6 +295,15 @@ pub fn emit(bundle: &[BundleModule]) -> String {
         .map(|m| (m.canonical.clone(), m.var.clone()))
         .collect();
 
+    // Build a combined VariantEnv from all modules in the bundle.
+    let mut variant_env = VariantEnv::default();
+    for m in bundle {
+        let local = crate::types::infer::build_variant_env(&m.program.items);
+        for (name, info) in local.all() {
+            variant_env.insert(name.clone(), info.clone());
+        }
+    }
+
     let mut e = Emitter {
         out: String::new(),
         tmp: 0,
@@ -304,6 +314,7 @@ pub fn emit(bundle: &[BundleModule]) -> String {
         needs_concat: false,
         needed_stdlib: HashSet::new(),
         module_vars,
+        variant_env,
     };
 
     let last = bundle.len().saturating_sub(1);
@@ -396,6 +407,8 @@ struct Emitter {
     needed_stdlib: HashSet<String>,
     /// Canonical path → local variable that holds the module's exports.
     module_vars: HashMap<PathBuf, String>,
+    /// Variant metadata for wrapper variant codegen.
+    variant_env: VariantEnv,
 }
 
 impl Emitter {
@@ -713,6 +726,10 @@ impl Emitter {
                                 self.out.push_str(&lua_ident(&f.name));
                             }
                         }
+                    } else {
+                        // Wrapper variant: store value as _0
+                        self.out.push_str(", _0 = ");
+                        self.emit_expr(payload_expr);
                     }
                     self.out.push('}');
                 }
@@ -769,6 +786,9 @@ impl Emitter {
                 self.out.push_str(")(");
                 self.emit_expr(value);
                 self.out.push(')');
+            }
+            ExprKind::Hole => {
+                self.out.push_str("(function() error(\"typed hole: program is incomplete\") end)()");
             }
         }
     }
@@ -1182,9 +1202,14 @@ impl Emitter {
         match pat {
             Pattern::Wildcard | Pattern::Literal(_) => {}
             Pattern::Ident(name, _, _) => out.push((lua_ident(name).into_owned(), var.to_string())),
-            Pattern::Variant { payload, .. } => {
+            Pattern::Variant { name, payload, .. } => {
                 if let Some(p) = payload {
-                    self.collect_binds(var, p, out);
+                    // For wrapper variants, the value is at var._0
+                    if self.variant_env.lookup(name).is_some_and(|i| i.wraps.is_some()) {
+                        self.collect_binds(&format!("{}._0", var), p, out);
+                    } else {
+                        self.collect_binds(var, p, out);
+                    }
                 }
             }
             Pattern::Record(rp) => {

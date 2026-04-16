@@ -145,6 +145,22 @@ fn try_parse_constraints(tokens: &[Spanned]) -> Option<(usize, Vec<(String, Stri
 /// ```text
 /// program = use* (typedef | binding)* ("pub" expr)?
 /// ```
+/// Collect consecutive `DocComment` tokens at `tokens[ptr..]` and return the
+/// number consumed and the merged doc string (or `None` if there are none).
+fn collect_doc_comments(tokens: &[Spanned]) -> (usize, Option<String>) {
+    let mut lines = Vec::new();
+    let mut n = 0;
+    while let Some(Token::DocComment(text)) = tokens.get(n).map(|t| &t.token) {
+        lines.push(text.clone());
+        n += 1;
+    }
+    if lines.is_empty() {
+        (0, None)
+    } else {
+        (n, Some(lines.join("\n")))
+    }
+}
+
 pub fn parse_program(tokens: &[Spanned]) -> Result<Program, ParseError> {
     let mut ptr = 0;
 
@@ -166,22 +182,31 @@ pub fn parse_program(tokens: &[Spanned]) -> Result<Program, ParseError> {
     // top-level type definitions, let bindings, trait defs, and impl defs
     let mut items = Vec::new();
     loop {
+        // Collect doc comments preceding this item
+        let (doc_n, pending_doc) = collect_doc_comments(&tokens[ptr..]);
+        ptr += doc_n;
+
         match first_token(&tokens[ptr..]) {
             Some(Token::Type) => {
-                let (n, td) = parse_typedef(&tokens[ptr..])?;
+                let (n, mut td) = parse_typedef(&tokens[ptr..])?;
                 ptr += n;
+                td.doc = pending_doc;
                 items.push(TopItem::TypeDef(td));
             }
             Some(Token::Let) => {
-                let (n, b) = parse_binding(&tokens[ptr..])?;
+                let (n, mut b) = parse_binding(&tokens[ptr..])?;
                 ptr += n;
+                b.doc = pending_doc;
                 // Collect `and let …` continuations into a mutually recursive group.
                 if matches!(first_token(&tokens[ptr..]), Some(Token::And)) {
                     let mut group = vec![b];
                     while matches!(first_token(&tokens[ptr..]), Some(Token::And)) {
                         ptr += 1; // consume `and`
-                        let (n, next) = parse_binding(&tokens[ptr..])?;
+                        let (and_doc_n, and_doc) = collect_doc_comments(&tokens[ptr..]);
+                        ptr += and_doc_n;
+                        let (n, mut next) = parse_binding(&tokens[ptr..])?;
                         ptr += n;
+                        next.doc = and_doc;
                         group.push(next);
                     }
                     items.push(TopItem::BindingGroup(group));
@@ -190,14 +215,16 @@ pub fn parse_program(tokens: &[Spanned]) -> Result<Program, ParseError> {
                 }
             }
             Some(Token::Trait) => {
-                let (n, td) = parse_trait_def(&tokens[ptr..])?;
+                let (n, mut td) = parse_trait_def(&tokens[ptr..])?;
                 ptr += n;
+                td.doc = pending_doc;
                 items.push(TopItem::TraitDef(td));
             }
             Some(Token::Use) => {
                 // Must be an impl def (module imports consumed above).
-                let (n, id) = parse_impl_def(&tokens[ptr..])?;
+                let (n, mut id) = parse_impl_def(&tokens[ptr..])?;
                 ptr += n;
+                id.doc = pending_doc;
                 items.push(TopItem::ImplDef(id));
             }
             _ => break,
@@ -294,13 +321,16 @@ fn parse_trait_def(tokens: &[Spanned]) -> Result<(usize, TraitDef), ParseError> 
 
     let mut methods = Vec::new();
     while !matches!(first_token(&tokens[ptr..]), Some(Token::RBrace) | None) {
+        let (method_doc_n, method_doc) = collect_doc_comments(&tokens[ptr..]);
+        ptr += method_doc_n;
         ptr += consume(&tokens[ptr..], &Token::Let)?;
+        let method_name_span = span(&tokens[ptr..]);
         let (n, method_name) = consume_ident(&tokens[ptr..])?;
         ptr += n;
         ptr += consume(&tokens[ptr..], &Token::Colon)?;
         let (n, ty) = parse_type(&tokens[ptr..])?;
         ptr += n;
-        methods.push(TraitMethod { name: method_name, ty });
+        methods.push(TraitMethod { name: method_name, name_span: method_name_span, ty, doc: method_doc });
         // optional comma between methods
         if matches!(first_token(&tokens[ptr..]), Some(Token::Comma)) {
             ptr += 1;
@@ -308,7 +338,7 @@ fn parse_trait_def(tokens: &[Spanned]) -> Result<(usize, TraitDef), ParseError> 
     }
 
     ptr += consume(&tokens[ptr..], &Token::RBrace)?;
-    Ok((ptr, TraitDef { name, type_param, methods }))
+    Ok((ptr, TraitDef { name, type_param, methods, doc: None }))
 }
 
 /// `use Show in Num { let show = x -> show x }` or with type annotation
@@ -329,6 +359,8 @@ fn parse_impl_def(tokens: &[Spanned]) -> Result<(usize, ImplDef), ParseError> {
 
     let mut methods = Vec::new();
     while !matches!(first_token(&tokens[ptr..]), Some(Token::RBrace) | None) {
+        let (method_doc_n, method_doc) = collect_doc_comments(&tokens[ptr..]);
+        ptr += method_doc_n;
         ptr += consume(&tokens[ptr..], &Token::Let)?;
         let name_span = span(&tokens[ptr..]);
         let (n, method_name) = consume_ident(&tokens[ptr..])?;
@@ -352,6 +384,7 @@ fn parse_impl_def(tokens: &[Spanned]) -> Result<(usize, ImplDef), ParseError> {
             constraints: vec![],
             ty,
             value,
+            doc: method_doc,
         });
         // optional comma between methods
         if matches!(first_token(&tokens[ptr..]), Some(Token::Comma)) {
@@ -360,7 +393,7 @@ fn parse_impl_def(tokens: &[Spanned]) -> Result<(usize, ImplDef), ParseError> {
     }
 
     ptr += consume(&tokens[ptr..], &Token::RBrace)?;
-    Ok((ptr, ImplDef { trait_name, type_name, methods }))
+    Ok((ptr, ImplDef { trait_name, type_name, methods, doc: None }))
 }
 
 // ── Type definitions ──────────────────────────────────────────────────────────
@@ -421,6 +454,7 @@ fn parse_typedef(tokens: &[Spanned]) -> Result<(usize, TypeDef), ParseError> {
             name,
             params,
             variants,
+            doc: None,
         },
     ))
 }
@@ -430,16 +464,28 @@ fn parse_variant(tokens: &[Spanned]) -> Result<(usize, Variant), ParseError> {
     let (n, name) = consume_type_ident(&tokens[ptr..])?;
     ptr += n;
 
-    // optional record payload
-    let payload = if matches!(first_token(&tokens[ptr..]), Some(Token::LBrace)) {
+    // record payload: `{ field: Type, ... }`
+    if matches!(first_token(&tokens[ptr..]), Some(Token::LBrace)) {
         let (n, rt) = parse_record_type(&tokens[ptr..])?;
         ptr += n;
-        Some(rt)
-    } else {
-        None
-    };
+        return Ok((ptr, Variant { name, payload: Some(rt), wraps: None }));
+    }
 
-    Ok((ptr, Variant { name, payload }))
+    // single-value wrapper: `TestBox a`, `TestBox (List a)`
+    // Must be a type expression that isn't the start of a new variant or the next `|`.
+    if matches!(
+        first_token(&tokens[ptr..]),
+        Some(Token::Ident(_) | Token::TypeIdent(_) | Token::LParen)
+    ) {
+        // Only consume a wrapped type if it's not the start of a new variant
+        // (i.e., a TypeIdent followed by `{` or `|` or next-line definition).
+        // We try to parse a type; if it's a simple ident or paren type, take it.
+        let (n, ty) = parse_type(&tokens[ptr..])?;
+        ptr += n;
+        return Ok((ptr, Variant { name, payload: None, wraps: Some(ty) }));
+    }
+
+    Ok((ptr, Variant { name, payload: None, wraps: None }))
 }
 
 // ── Let bindings ──────────────────────────────────────────────────────────────
@@ -474,7 +520,7 @@ pub fn parse_binding(tokens: &[Spanned]) -> Result<(usize, Binding), ParseError>
     let (n, value) = parse_expr(&tokens[ptr..])?;
     ptr += n;
 
-    Ok((ptr, Binding { pattern, constraints, ty, value }))
+    Ok((ptr, Binding { pattern, constraints, ty, value, doc: None }))
 }
 
 // ── Expressions ───────────────────────────────────────────────────────────────
@@ -778,6 +824,16 @@ fn can_start_atom(tokens: &[Spanned]) -> bool {
 /// ```
 fn parse_atom(tokens: &[Spanned]) -> Result<(usize, Expr), ParseError> {
     match first_token(tokens) {
+        // ── Typed hole ────────────────────────────────────────────────────────
+        Some(Token::Ident(s)) if s == "_" => Ok((
+            1,
+            Expr {
+                id: 0,
+                kind: ExprKind::Hole,
+                span: span(tokens),
+            },
+        )),
+
         // ── Literals ──────────────────────────────────────────────────────────
         Some(Token::Number(n)) => Ok((
             1,

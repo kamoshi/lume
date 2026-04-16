@@ -251,14 +251,9 @@ fn fmt_expr_inner(expr: &Expr) -> Doc {
             // Peel nested lambdas: a -> b -> c -> body
             let mut params: Vec<&Pattern> = Vec::new();
             let mut cur = expr;
-            loop {
-                match &cur.kind {
-                    ExprKind::Lambda { param, body } => {
-                        params.push(param);
-                        cur = body;
-                    }
-                    _ => break,
-                }
+            while let ExprKind::Lambda { param, body } = &cur.kind {
+                params.push(param);
+                cur = body;
             }
             let params_doc = join(
                 text(" -> "),
@@ -353,6 +348,8 @@ fn fmt_expr_inner(expr: &Expr) -> Doc {
             trait_name,
             method_name,
         } => text(format!("{}.{}", trait_name, method_name)),
+
+        ExprKind::Hole => text("_"),
     }
 }
 
@@ -376,14 +373,9 @@ fn fmt_match_arm(arm: &MatchArm) -> Doc {
 fn collect_apply(expr: &Expr) -> (&Expr, Vec<&Expr>) {
     let mut args: Vec<&Expr> = Vec::new();
     let mut cur = expr;
-    loop {
-        match &cur.kind {
-            ExprKind::Apply { func, arg } => {
-                args.push(arg);
-                cur = func;
-            }
-            _ => break,
-        }
+    while let ExprKind::Apply { func, arg } = &cur.kind {
+        args.push(arg);
+        cur = func;
     }
     args.reverse();
     (cur, args)

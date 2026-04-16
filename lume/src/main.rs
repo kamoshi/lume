@@ -51,7 +51,7 @@ fn run_file(path: &str) -> bool {
 
 /// Type-check and desugar every module in the bundle in place.
 /// Returns `false` (and prints an error) if any module fails to type-check.
-fn desugar_bundle(b: &mut Vec<bundle::BundleModule>) -> bool {
+fn desugar_bundle(b: &mut [bundle::BundleModule]) -> bool {
     use lume::ast::TopItem;
 
     // Build the global trait/impl/variant context from all modules so cross-module
@@ -94,6 +94,7 @@ fn desugar_bundle(b: &mut Vec<bundle::BundleModule>) -> bool {
                                 type_name: td.name.clone(),
                                 type_params: td.params.clone(),
                                 payload_fields: payload,
+                                wraps: variant.wraps.clone(),
                             },
                         );
                     }
