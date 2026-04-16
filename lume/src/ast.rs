@@ -98,10 +98,9 @@ pub struct TypeDef {
 #[derive(Debug, Clone)]
 pub struct Variant {
     pub name: String,
-    /// Unit variants have no payload; others carry a record type.
-    pub payload: Option<RecordType>,
-    /// Single-value wrapper: `type Box a = TestBox a`
-    /// The wrapped type (e.g., `a` in `TestBox a`).
+    /// The type this variant wraps (if any).
+    /// Unit variants have `None`. Wrapper variants carry a type, which may
+    /// be a plain type (`Some a`) or a record type (`Circle { radius: Num }`).
     pub wraps: Option<Type>,
 }
 

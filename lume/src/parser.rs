@@ -496,6 +496,13 @@ fn try_parse_impl_constraints(tokens: &[Spanned]) -> Option<(usize, Vec<(String,
 ///
 /// Examples: `Num`, `Box Num`, `Result Num Text`, `Box (List Num)`
 fn parse_impl_target_type(tokens: &[Spanned]) -> Result<(usize, String, Type), ParseError> {
+    // Accept a record type `{ field: Type, ... }` as an impl target.
+    if matches!(first_token(tokens), Some(Token::LBrace)) {
+        let (n, ty) = parse_type(tokens)?;
+        let type_name = type_to_canonical_string(&ty);
+        return Ok((n, type_name, ty));
+    }
+
     let (n, head) = consume_type_ident(tokens)?;
     let mut ptr = n;
     let mut args: Vec<Type> = Vec::new();
@@ -550,7 +557,18 @@ fn type_to_canonical_string(ty: &Type) -> String {
         Type::Func { param, ret } => {
             format!("{} -> {}", type_to_canonical_string(param), type_to_canonical_string(ret))
         }
-        Type::Record(_) => "{ .. }".to_string(),
+        Type::Record(rt) => {
+            let mut sorted_fields: Vec<&FieldType> = rt.fields.iter().collect();
+            sorted_fields.sort_by(|a, b| a.name.cmp(&b.name));
+            let fields: Vec<String> = sorted_fields.iter().map(|f| {
+                format!("{}: {}", f.name, type_to_canonical_string(&f.ty))
+            }).collect();
+            if rt.open {
+                format!("{{ {}, .. }}", fields.join(", "))
+            } else {
+                format!("{{ {} }}", fields.join(", "))
+            }
+        }
     }
 }
 
@@ -622,11 +640,12 @@ fn parse_variant(tokens: &[Spanned]) -> Result<(usize, Variant), ParseError> {
     let (n, name) = consume_type_ident(&tokens[ptr..])?;
     ptr += n;
 
-    // record payload: `{ field: Type, ... }`
+    // record payload: `{ field: Type, ... }` — parsed as wrapping a record type
     if matches!(first_token(&tokens[ptr..]), Some(Token::LBrace)) {
         let (n, rt) = parse_record_type(&tokens[ptr..])?;
         ptr += n;
-        return Ok((ptr, Variant { name, payload: Some(rt), wraps: None }));
+        let ty = Type::Record(rt);
+        return Ok((ptr, Variant { name, wraps: Some(ty) }));
     }
 
     // single-value wrapper: `TestBox a`, `TestBox (List a)`
@@ -640,10 +659,10 @@ fn parse_variant(tokens: &[Spanned]) -> Result<(usize, Variant), ParseError> {
         // We try to parse a type; if it's a simple ident or paren type, take it.
         let (n, ty) = parse_type(&tokens[ptr..])?;
         ptr += n;
-        return Ok((ptr, Variant { name, payload: None, wraps: Some(ty) }));
+        return Ok((ptr, Variant { name, wraps: Some(ty) }));
     }
 
-    Ok((ptr, Variant { name, payload: None, wraps: None }))
+    Ok((ptr, Variant { name, wraps: None }))
 }
 
 // ── Let bindings ──────────────────────────────────────────────────────────────
@@ -1484,6 +1503,13 @@ pub fn parse_pattern(tokens: &[Spanned]) -> Result<(usize, Pattern), ParseError>
                 Some(Token::Ident(s)) if s == "_" => {
                     ptr += 1;
                     Some(Box::new(Pattern::Wildcard))
+                }
+                // `Variant x` - bind the wrapped value to a name
+                Some(Token::Ident(s)) => {
+                    let s = s.clone();
+                    let pat_span = span(&tokens[ptr..]);
+                    ptr += 1;
+                    Some(Box::new(Pattern::Ident(s, pat_span, 0)))
                 }
                 _ => None,
             };

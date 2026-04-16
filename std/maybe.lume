@@ -4,18 +4,18 @@
 -- withDefault : a -> Maybe a -> a
 let withDefault = d ->
   | None -> d
-  | Some { value } -> value
+  | Some value -> value
 
 -- mapMaybe : (a -> b) -> Maybe a -> Maybe b
 let mapMaybe = f ->
   | None -> None
-  | Some { value } -> Some { value: f value }
+  | Some value -> Some (f value)
 
 -- orElse : Maybe a -> Maybe a -> Maybe a
 -- Returns the first Some, or the second if both are None.
 let orElse = alt ->
   | None -> alt
-  | Some { value } -> Some { value }
+  | Some value -> Some value
 
 pub {
   withDefault,

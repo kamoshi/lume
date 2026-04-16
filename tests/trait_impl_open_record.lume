@@ -1,0 +1,11 @@
+-- Attempting to impl a trait for an open record type should fail.
+
+trait Describable a {
+  let describe : a -> Text
+}
+
+use Describable in { name: Text, .. } {
+  let describe = self -> self.name
+}
+
+pub {}

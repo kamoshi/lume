@@ -1,0 +1,15 @@
+-- Implementing a trait for a closed record type should succeed.
+
+trait Describable a {
+  let describe : a -> Text
+}
+
+use Describable in { name: Text, age: Num } {
+  let describe = self -> self.name
+}
+
+let person = { name: "Alice", age: 30 }
+let msg = person |> Describable.describe
+let _ = msg |> print
+
+pub { msg }

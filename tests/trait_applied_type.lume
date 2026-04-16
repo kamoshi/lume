@@ -15,7 +15,7 @@ use Show in Num {
 }
 
 use Show in Box Num {
-  let show = MyBox { inner } -> "MyBox(" ++ Show.show inner ++ ")"
+  let show = b -> match b in | MyBox { inner } -> "MyBox(" ++ Show.show inner ++ ")"
 }
 
 let box = MyBox { inner: 42 }

@@ -121,9 +121,9 @@ fn fmt_typedef(td: &TypeDef) -> Doc {
 }
 
 fn fmt_variant(v: &Variant) -> Doc {
-    match &v.payload {
+    match &v.wraps {
         None => text(format!("| {}", v.name)),
-        Some(rt) => concat_all(vec![text(format!("| {} ", v.name)), fmt_record_type(rt)]),
+        Some(ty) => concat_all(vec![text(format!("| {} ", v.name)), fmt_type(ty)]),
     }
 }
 

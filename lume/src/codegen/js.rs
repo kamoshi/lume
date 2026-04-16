@@ -109,19 +109,11 @@ fn js_ident(name: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
-pub fn emit(bundle: &[BundleModule]) -> String {
+pub fn emit(bundle: &[BundleModule], variant_env: VariantEnv) -> String {
     let module_vars: HashMap<PathBuf, String> = bundle
         .iter()
         .map(|m| (m.canonical.clone(), m.var.clone()))
         .collect();
-
-    let mut variant_env = VariantEnv::default();
-    for m in bundle {
-        let local = crate::types::infer::build_variant_env(&m.program.items);
-        for (name, info) in local.all() {
-            variant_env.insert(name.clone(), info.clone());
-        }
-    }
 
     let mut e = Emitter {
         out: String::new(),
@@ -371,20 +363,8 @@ impl Emitter {
                     self.out.push_str(&format!("{{ $tag: \"{}\" }}", name));
                 }
                 Some(payload_expr) => {
-                    self.out.push_str(&format!("{{ $tag: \"{}\"", name));
-                    if let ExprKind::Record { fields, .. } = &payload_expr.kind {
-                        for f in fields {
-                            self.out.push_str(", ");
-                            self.out.push_str(&f.name);
-                            if let Some(val) = &f.value {
-                                self.out.push_str(": ");
-                                self.emit_expr(val);
-                            }
-                        }
-                    } else {
-                        self.out.push_str(", _0: ");
-                        self.emit_expr(payload_expr);
-                    }
+                    self.out.push_str(&format!("{{ $tag: \"{}\", _0: ", name));
+                    self.emit_expr(payload_expr);
                     self.out.push_str(" }");
                 }
             },
@@ -738,8 +718,8 @@ impl Emitter {
                 match payload {
                     None => tag,
                     Some(p) => {
-                        // Variant fields live on the same object as the tag.
-                        let inner = Self::pattern_cond(var, p);
+                        // Wrapped value lives at var._0
+                        let inner = Self::pattern_cond(&format!("{}._0", var), p);
                         if inner == "true" {
                             tag
                         } else {
@@ -800,6 +780,7 @@ impl Emitter {
             Pattern::Ident(name, _, _) => out.push((js_ident(name).into_owned(), var.to_string())),
             Pattern::Variant { name, payload, .. } => {
                 if let Some(p) = payload {
+                    // All non-unit variants wrap their value at _0
                     if self.variant_env.lookup(name).is_some_and(|i| i.wraps.is_some()) {
                         self.collect_binds(&format!("{}._0", var), p, out);
                     } else {

@@ -281,56 +281,9 @@ impl<'a> Cx<'a> {
             },
             ExprKind::Variant { name, payload: None } => {
                 // Bare constructor reference (no payload in the AST).
-                // If this variant has a payload, desugar to a constructor lambda:
-                //   fun __p -> Name { f1: __p.f1, f2: __p.f2, ... }
+                // If this variant wraps a type, desugar to a constructor lambda:
+                //   fun __v -> Variant(__v)
                 if let Some(info) = self.global.variants.get(&name) {
-                    if let Some(fields) = &info.payload_fields {
-                        let param_name = "__p".to_string();
-                        let payload_fields: Vec<RecordField> = fields
-                            .iter()
-                            .map(|(fname, _)| RecordField {
-                                name: fname.clone(),
-                                name_span: span.clone(),
-                                name_node_id: 0,
-                                value: Some(Expr {
-                                    id: 0,
-                                    kind: ExprKind::FieldAccess {
-                                        record: Box::new(Expr {
-                                            id: 0,
-                                            kind: ExprKind::Ident(param_name.clone()),
-                                            span: span.clone(),
-                                        }),
-                                        field: fname.clone(),
-                                    },
-                                    span: span.clone(),
-                                }),
-                            })
-                            .collect();
-                        return Expr {
-                            id,
-                            kind: ExprKind::Lambda {
-                                param: Pattern::Ident(param_name, span.clone(), 0),
-                                body: Box::new(Expr {
-                                    id: 0,
-                                    kind: ExprKind::Variant {
-                                        name,
-                                        payload: Some(Box::new(Expr {
-                                            id: 0,
-                                            kind: ExprKind::Record {
-                                                base: None,
-                                                fields: payload_fields,
-                                                spread: false,
-                                            },
-                                            span: span.clone(),
-                                        })),
-                                    },
-                                    span: span.clone(),
-                                }),
-                            },
-                            span,
-                        };
-                    }
-                    // Wrapper variant: desugar to `__v -> Variant(__v)`
                     if info.wraps.is_some() {
                         let param_name = "__v".to_string();
                         return Expr {
@@ -847,6 +800,18 @@ fn ty_canonical_name(ty: &Ty) -> Option<String> {
             let inner_name = ty_canonical_name(inner)?;
             Some(format!("List {}", inner_name))
         }
+        Ty::Record(row) => {
+            if !matches!(row.tail, crate::types::RowTail::Closed) {
+                return None;
+            }
+            let mut sorted = row.fields.clone();
+            sorted.sort_by(|a, b| a.0.cmp(&b.0));
+            let field_strs: Option<Vec<String>> = sorted
+                .iter()
+                .map(|(name, ty)| ty_canonical_name(ty).map(|t| format!("{}: {}", name, t)))
+                .collect();
+            Some(format!("{{ {} }}", field_strs?.join(", ")))
+        }
         _ => None,
     }
 }
@@ -854,7 +819,9 @@ fn ty_canonical_name(ty: &Ty) -> Option<String> {
 /// Canonical dict binding name: `Show` + `Num` → `__show_Num`.
 /// Spaces in applied types are replaced with `_`: `ToText` + `Box Num` → `__totext_Box_Num`.
 pub fn dict_name(trait_name: &str, type_name: &str) -> String {
-    let sanitized = type_name.replace(' ', "_");
+    let sanitized: String = type_name.chars().map(|c| {
+        if c.is_alphanumeric() { c } else { '_' }
+    }).collect();
     format!("__{}_{}", trait_name.to_ascii_lowercase(), sanitized)
 }
 
@@ -900,6 +867,25 @@ fn match_ast_inner_desugar(
         },
         (Type::Func { param, ret }, Ty::Func(cp, cr)) => {
             match_ast_inner_desugar(param, cp, bindings) && match_ast_inner_desugar(ret, cr, bindings)
+        }
+        (Type::Record(rt), Ty::Record(row)) => {
+            if rt.fields.len() != row.fields.len() {
+                return false;
+            }
+            // Closed AST record matches closed Ty row.
+            if !rt.open && !matches!(row.tail, crate::types::RowTail::Closed) {
+                return false;
+            }
+            for ast_f in &rt.fields {
+                if let Some((_, ty)) = row.fields.iter().find(|(n, _)| n == &ast_f.name) {
+                    if !match_ast_inner_desugar(&ast_f.ty, ty, bindings) {
+                        return false;
+                    }
+                } else {
+                    return false;
+                }
+            }
+            true
         }
         _ => false,
     }

@@ -50,8 +50,10 @@ fn run_file(path: &str) -> bool {
 }
 
 /// Type-check and desugar every module in the bundle in place.
-/// Returns `false` (and prints an error) if any module fails to type-check.
-fn desugar_bundle(b: &mut [bundle::BundleModule]) -> bool {
+/// Returns the combined `VariantEnv` (builtins + all user types) on success,
+/// or `None` (and prints an error) if any module fails to type-check.
+/// Downstream phases (codegen) receive this env so nothing is rebuilt.
+fn desugar_bundle(b: &mut [bundle::BundleModule]) -> Option<types::infer::VariantEnv> {
     use lume::ast::TopItem;
 
     // Build the global trait/impl/variant context from all modules so cross-module
@@ -91,18 +93,11 @@ fn desugar_bundle(b: &mut [bundle::BundleModule]) -> bool {
                 }
                 TopItem::TypeDef(td) => {
                     for variant in &td.variants {
-                        let payload = variant.payload.as_ref().map(|rt| {
-                            rt.fields
-                                .iter()
-                                .map(|f| (f.name.clone(), f.ty.clone()))
-                                .collect()
-                        });
                         global.variants.insert(
                             variant.name.clone(),
                             lume::types::infer::VariantInfo {
                                 type_name: td.name.clone(),
                                 type_params: td.params.clone(),
-                                payload_fields: payload,
                                 wraps: variant.wraps.clone(),
                             },
                         );
@@ -110,6 +105,16 @@ fn desugar_bundle(b: &mut [bundle::BundleModule]) -> bool {
                 }
                 _ => {}
             }
+        }
+    }
+
+    // Register built-in variants (Maybe, Result) so the desugarer can
+    // convert bare constructor references like `Some` and `Ok` into lambdas.
+    {
+        let mut scratch = lume::types::Subst::new();
+        let (_, builtin_variants) = types::infer::builtin_env(&mut scratch);
+        for (name, info) in builtin_variants.all() {
+            global.variants.entry(name.clone()).or_insert_with(|| info.clone());
         }
     }
 
@@ -152,14 +157,20 @@ fn desugar_bundle(b: &mut [bundle::BundleModule]) -> bool {
             Ok((nt, env, _)) => (nt, env),
             Err(e) => {
                 eprintln!("{}: type error: {e}", m.canonical.display());
-                return false;
+                return None;
             }
         };
         m.program = desugar::desugar(m.program.clone(), &node_types, &type_env, &local_global);
         // Suppress the unused-variable warning
         let _ = &local_global;
     }
-    true
+
+    // Convert the global variants map into a VariantEnv for codegen.
+    let mut variant_env = types::infer::VariantEnv::default();
+    for (name, info) in global.variants {
+        variant_env.insert(name, info);
+    }
+    Some(variant_env)
 }
 
 fn js_file(path: &str) -> bool {
@@ -170,10 +181,11 @@ fn js_file(path: &str) -> bool {
             return false;
         }
     };
-    if !desugar_bundle(&mut b) {
-        return false;
-    }
-    print!("{}", codegen::js::emit(&b));
+    let variant_env = match desugar_bundle(&mut b) {
+        Some(v) => v,
+        None => return false,
+    };
+    print!("{}", codegen::js::emit(&b, variant_env));
     true
 }
 
@@ -185,10 +197,11 @@ fn lua_file(path: &str) -> bool {
             return false;
         }
     };
-    if !desugar_bundle(&mut b) {
-        return false;
-    }
-    print!("{}", codegen::lua::emit(&b));
+    let variant_env = match desugar_bundle(&mut b) {
+        Some(v) => v,
+        None => return false,
+    };
+    print!("{}", codegen::lua::emit(&b, variant_env));
     true
 }
 

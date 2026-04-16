@@ -44,6 +44,11 @@ pub enum TypeError {
         type_name: String,
         extra: Vec<String>,
     },
+    /// A trait impl targets an open record type (one with `..` / row variable).
+    /// Only closed records may implement traits.
+    ImplForOpenRecord {
+        trait_name: String,
+    },
 }
 
 impl fmt::Display for TypeError {
@@ -103,6 +108,16 @@ impl fmt::Display for TypeError {
                     f,
                     "impl {} for {}: unknown method(s) not in trait: {}",
                     trait_name, type_name, extra.join(", ")
+                )
+            }
+            TypeError::ImplForOpenRecord { trait_name } => {
+                write!(
+                    f,
+                    "cannot implement trait '{}' for an open record type — \
+                     only closed records (without `..`) may implement traits, \
+                     because an open row admits unknown fields that could \
+                     violate the trait's contract",
+                    trait_name
                 )
             }
         }

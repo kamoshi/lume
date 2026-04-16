@@ -251,3 +251,15 @@ output = """
 path = "tests/module_duplicate_impl.lume"
 expect = "error"
 error_contains = "duplicate impl of trait 'Showable' for type 'Num'"
+
+[tests.trait_impl_open_record]
+path = "tests/trait_impl_open_record.lume"
+expect = "error"
+error_contains = "cannot implement trait"
+
+[tests.trait_impl_closed_record]
+path = "tests/trait_impl_closed_record.lume"
+expect = "typecheck"
+output = """
+Alice
+"""

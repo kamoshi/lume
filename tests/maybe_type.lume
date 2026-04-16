@@ -2,17 +2,17 @@
 
 let safeHead : List a -> Maybe a =
   | [] -> None
-  | [x, ..] -> Some { value: x }
+  | [x, ..] -> Some x
 
 let getOrElse : a -> Maybe a -> a = default ->
   | None -> default
-  | Some { value } -> value
+  | Some value -> value
 
 let _ = safeHead [10, 20, 30] |> getOrElse 0 |> showNum |> print
 let _ = safeHead [] |> getOrElse 0 |> showNum |> print
 
 let mapMaybe : (a -> b) -> Maybe a -> Maybe b = f ->
   | None -> None
-  | Some { value } -> Some { value: f value }
+  | Some value -> Some (f value)
 
 let _ = safeHead [5] |> mapMaybe (x -> x * 10) |> getOrElse 0 |> showNum |> print

@@ -4,26 +4,26 @@
 -- Safe list head
 let safeHead : List a -> Maybe a =
   | []       -> None
-  | [x, ..] -> Some { value: x }
+  | [x, ..] -> Some x
 
 -- Safe last element (self-recursive)
 let safeLast : List a -> Maybe a =
   | []          -> None
-  | [x]         -> Some { value: x }
+  | [x]         -> Some x
   | [_, ..rest] -> safeLast rest
 
 -- Safe second element
 let safeSecond : List a -> Maybe a =
-  | [_, x, ..] -> Some { value: x }
+  | [_, x, ..] -> Some x
   | _          -> None
 
 -- Safe division
 let safeDivide : Num -> Num -> Result Num Text = a -> b ->
-  if b == 0 then Err { reason: "division by zero" } else Ok { value: a / b }
+  if b == 0 then Err "division by zero" else Ok (a / b)
 
 -- Safe square root (non-negative only)
 let safeSqrt : Num -> Result Num Text = n ->
-  if n < 0 then Err { reason: "negative input" } else Ok { value: n }
+  if n < 0 then Err "negative input" else Ok n
 
 -- Chain two safe divisions with ?>
 let chainedOps = x ->
@@ -31,13 +31,13 @@ let chainedOps = x ->
 
 -- Map over a Maybe
 let mapMaybe : (a -> b) -> Maybe a -> Maybe b = f ->
-  | None           -> None
-  | Some { value } -> Some { value: f value }
+  | None      -> None
+  | Some value -> Some (f value)
 
 -- Extract a Maybe with a default
 let getOrElse : a -> Maybe a -> a = default ->
-  | None           -> default
-  | Some { value } -> value
+  | None      -> default
+  | Some value -> value
 
 pub {
   safeHead,

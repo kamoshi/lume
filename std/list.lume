@@ -48,12 +48,12 @@ let maximum =
 -- head : List a -> Maybe a
 let head =
   | [] -> None
-  | [x, ..] -> Some { value: x }
+  | [x, ..] -> Some x
 
 -- last : List a -> Maybe a
 let last =
   | [] -> None
-  | [x] -> Some { value: x }
+  | [x] -> Some x
   | [_, ..rest] -> last rest
 
 -- tail : List a -> List a
@@ -80,7 +80,7 @@ let dropWhile = f ->
 -- find : (a -> Bool) -> List a -> Maybe a
 let find = f ->
   | [] -> None
-  | [x, ..rest] -> if f x then Some { value: x } else find f rest
+  | [x, ..rest] -> if f x then Some x else find f rest
 
 -- flatten : List (List a) -> List a
 let flatten =

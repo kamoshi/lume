@@ -16,8 +16,8 @@ let diag    = hypotSq 3 4
 let safe    = boundedArea 1 10 radius
 
 let test =
-  let x = Some { value: 10 } |> maybe.withDefault 100 in
-  let y = Some { value: "" } |> maybe.withDefault "a" in
+  let x = Some 10 |> maybe.withDefault 100 in
+  let y = Some "" |> maybe.withDefault "a" in
   showText y ++ showNum x
 
 pub {

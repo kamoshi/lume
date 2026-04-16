@@ -91,10 +91,8 @@ pub struct VariantInfo {
     pub type_name: String,
     /// Named type parameters of the parent type (e.g. `["a"]` for `Maybe a`).
     pub type_params: Vec<String>,
-    /// Payload fields in the AST representation (None for unit variants).
+    /// The type this variant wraps (None for unit variants).
     /// Using AST types here so we can lower them fresh per instantiation.
-    pub payload_fields: Option<Vec<(String, ast::Type)>>,
-    /// Single-value wrapper type (e.g., `a` in `type Box a = TestBox a`).
     pub wraps: Option<ast::Type>,
 }
 
@@ -141,18 +139,11 @@ pub fn build_variant_env(items: &[TopItem]) -> VariantEnv {
     for item in items {
         if let TopItem::TypeDef(td) = item {
             for variant in &td.variants {
-                let payload = variant.payload.as_ref().map(|rt| {
-                    rt.fields
-                        .iter()
-                        .map(|f| (f.name.clone(), f.ty.clone()))
-                        .collect()
-                });
                 env.insert(
                     variant.name.clone(),
                     VariantInfo {
                         type_name: td.name.clone(),
                         type_params: td.params.clone(),
-                        payload_fields: payload,
                         wraps: variant.wraps.clone(),
                     },
                 );
@@ -602,14 +593,13 @@ pub fn builtin_env(s: &mut Subst) -> (TypeEnv, VariantEnv) {
         ),
     );
 
-    // Maybe variants: Some { value: a }, None
+    // Maybe variants: Some a, None
     var_env.insert(
         "Some".into(),
         VariantInfo {
             type_name: "Maybe".into(),
             type_params: vec!["a".into()],
-            payload_fields: Some(vec![("value".into(), ast::Type::Var("a".into()))]),
-            wraps: None,
+            wraps: Some(ast::Type::Var("a".into())),
         },
     );
     var_env.insert(
@@ -617,19 +607,17 @@ pub fn builtin_env(s: &mut Subst) -> (TypeEnv, VariantEnv) {
         VariantInfo {
             type_name: "Maybe".into(),
             type_params: vec!["a".into()],
-            payload_fields: None,
             wraps: None,
         },
     );
 
-    // Result variants: Ok { value: a }, Err { reason: b }
+    // Result variants: Ok a, Err b
     var_env.insert(
         "Ok".into(),
         VariantInfo {
             type_name: "Result".into(),
             type_params: vec!["a".into(), "b".into()],
-            payload_fields: Some(vec![("value".into(), ast::Type::Var("a".into()))]),
-            wraps: None,
+            wraps: Some(ast::Type::Var("a".into())),
         },
     );
     var_env.insert(
@@ -637,16 +625,15 @@ pub fn builtin_env(s: &mut Subst) -> (TypeEnv, VariantEnv) {
         VariantInfo {
             type_name: "Result".into(),
             type_params: vec!["a".into(), "b".into()],
-            payload_fields: Some(vec![("reason".into(), ast::Type::Var("b".into()))]),
-            wraps: None,
+            wraps: Some(ast::Type::Var("b".into())),
         },
     );
 
     (env, var_env)
 }
 
-/// Return type of `instantiate_variant`: (result_type, optional payload fields, optional wraps type).
-type VariantInstance = (Ty, Option<Vec<(String, Ty)>>, Option<Ty>);
+/// Return type of `instantiate_variant`: (result_type, optional wraps type).
+type VariantInstance = (Ty, Option<Ty>);
 
 // ── The typechecker ───────────────────────────────────────────────────────────
 
@@ -716,6 +703,18 @@ impl Checker {
     /// (parameterized, when constraints are present).
     /// Returns an error if a duplicate concrete impl is detected.
     fn register_impl(&mut self, id: &ImplDef) -> Result<(), TypeErrorAt> {
+        // Reject impls for open record types (rows with `..`).
+        if let ast::Type::Record(ref rt) = id.target_type {
+            if rt.open {
+                return Err(TypeErrorAt::new(
+                    TypeError::ImplForOpenRecord {
+                        trait_name: id.trait_name.clone(),
+                    },
+                    id.type_name_span.clone(),
+                ));
+            }
+        }
+
         if id.impl_constraints.is_empty() {
             let key = (id.trait_name.clone(), id.type_name.clone());
             if let Some(existing) = self.impl_env.get(&key) {
@@ -950,17 +949,17 @@ impl Checker {
 
     // Produce fresh types for one use of a variant constructor.
     //
-    // Returns `(result_ty, payload_fields)` where:
-    //   • `result_ty`      is the ADT type with fresh vars for each param,
-    //                      e.g. `Maybe ?a` with a fresh ?a per call.
-    //   • `payload_fields` is the typed record the constructor expects as its
-    //                      argument, or None for unit constructors.
+    // Returns `(result_ty, wraps_ty)` where:
+    //   • `result_ty` is the ADT type with fresh vars for each param,
+    //                  e.g. `Maybe ?a` with a fresh ?a per call.
+    //   • `wraps_ty`  is the type the constructor wraps, or None for unit
+    //                  constructors (e.g. `None`).
     //
-    // The payload's AST types (stored in VariantInfo) are lowered through
+    // The wrapped AST type (stored in VariantInfo) is lowered through
     // `lower_ty` using the same `param_vars` map that was populated when
     // building `result_ty`.  This guarantees the param names unify correctly:
-    // `Some { value: a }` gives a payload field `value : ?a` where ?a is the
-    // same variable as in `Maybe ?a`.
+    // `Some a` gives a wrapped type `?a` where ?a is the same variable as
+    // in `Maybe ?a`.
     fn instantiate_variant(&mut self, name: &str) -> Result<VariantInstance, TypeError> {
         let info = self
             .variant_env
@@ -982,27 +981,13 @@ impl Checker {
 
         let result_ty = Ty::Con(info.type_name.clone(), fresh_args);
 
-        let payload_ty = if let Some(fields) = info.payload_fields {
-            let mut converted: Vec<(String, Ty)> = fields
-                .iter()
-                .map(|(fname, fty)| {
-                    self.lower_ty(fty, &mut param_vars)
-                        .map(|t| (fname.clone(), t))
-                })
-                .collect::<Result<_, _>>()?;
-            converted.sort_by(|a, b| a.0.cmp(&b.0));
-            Some(converted)
-        } else {
-            None
-        };
-
         let wraps_ty = if let Some(wt) = &info.wraps {
             Some(self.lower_ty(wt, &mut param_vars)?)
         } else {
             None
         };
 
-        Ok((result_ty, payload_ty, wraps_ty))
+        Ok((result_ty, wraps_ty))
     }
 
     // ── Inference (⇒ mode) ───────────────────────────────────────────────────
@@ -1074,23 +1059,17 @@ impl Checker {
 
             // Variant used without a payload (e.g. bare `None` or `Some` as
             // a first-class function).
-            // If the variant *has* a payload type, treat the bare name as a
-            // curried constructor: `{ payload_fields } -> ConType`.
+            // If the variant wraps a type, treat the bare name as a
+            // curried constructor: `wraps_ty -> ConType`.
             ExprKind::Variant {
                 name,
                 payload: None,
             } => {
-                let (result_ty, payload_ty, wraps_ty) = self
+                let (result_ty, wraps_ty) = self
                     .instantiate_variant(name)
                     .map_err(|e| TypeErrorAt::new(e, span.clone()))?;
                 if let Some(wt) = wraps_ty {
                     Ok(Ty::Func(Box::new(wt), Box::new(result_ty)))
-                } else if let Some(fields) = payload_ty {
-                    let row = Row {
-                        fields,
-                        tail: RowTail::Closed,
-                    };
-                    Ok(Ty::Func(Box::new(Ty::Record(row)), Box::new(result_ty)))
                 } else {
                     Ok(result_ty)
                 }
@@ -1100,26 +1079,17 @@ impl Checker {
                 name,
                 payload: Some(payload_expr),
             } => {
-                let (result_ty, payload_fields, wraps_ty) = self
+                let (result_ty, wraps_ty) = self
                     .instantiate_variant(name)
                     .map_err(|e| TypeErrorAt::new(e, span.clone()))?;
-                if let Some(wt) = wraps_ty {
-                    self.check(env, payload_expr, wt)?;
-                    Ok(result_ty)
-                } else {
-                    let fields = payload_fields.ok_or_else(|| {
-                        TypeErrorAt::new(
-                            TypeError::UnboundVariant(format!("{} is a unit variant", name)),
-                            span.clone(),
-                        )
-                    })?;
-                    let expected = Ty::Record(Row {
-                        fields,
-                        tail: RowTail::Closed,
-                    });
-                    self.check(env, payload_expr, expected)?;
-                    Ok(result_ty)
-                }
+                let wt = wraps_ty.ok_or_else(|| {
+                    TypeErrorAt::new(
+                        TypeError::UnboundVariant(format!("{} is a unit variant", name)),
+                        span.clone(),
+                    )
+                })?;
+                self.check(env, payload_expr, wt)?;
+                Ok(result_ty)
             }
 
             ExprKind::Record {
@@ -1784,26 +1754,16 @@ impl Checker {
         payload: Option<&Pattern>,
         expected: Ty,
     ) -> Result<Vec<(String, Ty)>, TypeError> {
-        let (result_ty, payload_fields, wraps_ty) = self.instantiate_variant(name)?;
+        let (result_ty, wraps_ty) = self.instantiate_variant(name)?;
         self.unify(expected, result_ty)?;
 
-        if let Some(wt) = wraps_ty {
-            match payload {
-                None | Some(Pattern::Wildcard) => return Ok(vec![]),
-                Some(p) => return self.infer_pattern(p, wt),
+        match (wraps_ty, payload) {
+            (Some(wt), None) | (Some(wt), Some(Pattern::Wildcard)) => {
+                let _ = wt;
+                Ok(vec![])
             }
-        }
-
-        match (payload_fields, payload) {
+            (Some(wt), Some(p)) => self.infer_pattern(p, wt),
             (None, None) | (None, Some(Pattern::Wildcard)) => Ok(vec![]),
-            (Some(_), None) => Ok(vec![]), // payload ignored
-            (Some(fields), Some(p)) => {
-                let payload_ty = Ty::Record(Row {
-                    fields,
-                    tail: RowTail::Closed,
-                });
-                self.infer_pattern(p, payload_ty)
-            }
             (None, Some(p)) => self.infer_pattern(
                 p,
                 Ty::Record(Row {
@@ -2454,6 +2414,18 @@ pub fn ty_canonical_name(ty: &Ty) -> Option<String> {
             let inner_name = ty_canonical_name(inner)?;
             Some(format!("List {}", inner_name))
         }
+        Ty::Record(row) => {
+            if !matches!(row.tail, RowTail::Closed) {
+                return None;
+            }
+            let mut sorted = row.fields.clone();
+            sorted.sort_by(|a, b| a.0.cmp(&b.0));
+            let field_strs: Option<Vec<String>> = sorted
+                .iter()
+                .map(|(name, ty)| ty_canonical_name(ty).map(|t| format!("{}: {}", name, t)))
+                .collect();
+            Some(format!("{{ {} }}", field_strs?.join(", ")))
+        }
         _ => None,
     }
 }
@@ -2585,6 +2557,24 @@ fn match_ast_inner_tc(pattern: &Type, concrete: &Ty, bindings: &mut HashMap<Stri
         },
         (Type::Func { param, ret }, Ty::Func(cp, cr)) => {
             match_ast_inner_tc(param, cp, bindings) && match_ast_inner_tc(ret, cr, bindings)
+        }
+        (Type::Record(rt), Ty::Record(row)) => {
+            if rt.fields.len() != row.fields.len() {
+                return false;
+            }
+            if !rt.open && !matches!(row.tail, RowTail::Closed) {
+                return false;
+            }
+            for ast_f in &rt.fields {
+                if let Some((_, ty)) = row.fields.iter().find(|(n, _)| n == &ast_f.name) {
+                    if !match_ast_inner_tc(&ast_f.ty, ty, bindings) {
+                        return false;
+                    }
+                } else {
+                    return false;
+                }
+            }
+            true
         }
         _ => false,
     }
