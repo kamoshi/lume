@@ -55,6 +55,11 @@ pub enum TypeError {
         method_name: String,
         type_param: String,
     },
+    /// An impl references a trait that has not been declared (or is declared
+    /// after the impl — traits must be defined before use).
+    UndeclaredTrait {
+        trait_name: String,
+    },
 }
 
 impl fmt::Display for TypeError {
@@ -133,6 +138,13 @@ impl fmt::Display for TypeError {
                      the method signature must use '{}' so the compiler can connect it \
                      to concrete types in impls",
                     trait_name, method_name, type_param, type_param
+                )
+            }
+            TypeError::UndeclaredTrait { trait_name } => {
+                write!(
+                    f,
+                    "undeclared trait '{}' — trait must be defined before it is implemented",
+                    trait_name
                 )
             }
         }

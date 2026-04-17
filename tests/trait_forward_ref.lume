@@ -1,0 +1,11 @@
+-- Impl before trait definition should be a type error.
+-- Traits must be defined before they are implemented.
+use Test in Num {
+  let okay = _ -> "test"
+}
+
+trait Test a {
+  let okay : a -> Text
+}
+
+let _ = Test.okay 2222 |> print

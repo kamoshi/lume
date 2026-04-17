@@ -1,0 +1,6 @@
+-- Using an undeclared trait should be a type error.
+use Test in Num {
+  let okay = _ -> "test"
+}
+
+let _ = Test.okay 2222 |> print

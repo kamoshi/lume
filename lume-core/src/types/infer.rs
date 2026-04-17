@@ -2034,9 +2034,9 @@ impl Checker {
     ) -> Result<Ty, TypeErrorAt> {
         self.apply_imports(&program.uses, base, loader, &mut env)?;
 
-        // Pre-pass: collect all trait definitions so ImplDef checking and
-        // TraitCall typing can reference them.  Also validate that each method
-        // references the trait's type parameter.
+        // Validate trait definitions up front (method must reference type param),
+        // but do NOT register them yet — traits are registered sequentially so
+        // that `use … in` must appear after the trait definition.
         for item in &program.items {
             if let TopItem::TraitDef(td) = item {
                 for method in &td.methods {
@@ -2051,7 +2051,6 @@ impl Checker {
                         ));
                     }
                 }
-                self.trait_env.insert(td.name.clone(), td.clone());
             }
         }
 
@@ -2069,7 +2068,11 @@ impl Checker {
                     backfill_impl_method_types(id, &new_env, &mut self.node_types, &self.subst);
                     new_env
                 }
-                TopItem::TypeDef(_) | TopItem::TraitDef(_) => env,
+                TopItem::TypeDef(_) => env,
+                TopItem::TraitDef(td) => {
+                    self.trait_env.insert(td.name.clone(), td.clone());
+                    env
+                }
             };
         }
 
@@ -2083,7 +2086,14 @@ impl Checker {
     fn check_impl_completeness(&self, id: &ImplDef) -> Result<(), TypeErrorAt> {
         let trait_def = match self.trait_env.get(&id.trait_name) {
             Some(td) => td,
-            None => return Ok(()), // unknown trait (cross-module); skip
+            None => {
+                return Err(TypeErrorAt::new(
+                    TypeError::UndeclaredTrait {
+                        trait_name: id.trait_name.clone(),
+                    },
+                    id.trait_name_span.clone(),
+                ));
+            }
         };
         let mut missing = Vec::new();
         for method in &trait_def.methods {
@@ -2737,12 +2747,6 @@ pub fn elaborate_bindings(
 
     checker.apply_imports(&program.uses, path, &mut loader, &mut env)?;
 
-    for item in &program.items {
-        if let TopItem::TraitDef(td) = item {
-            checker.trait_env.insert(td.name.clone(), td.clone());
-        }
-    }
-
     let mut bindings = Vec::new();
     for item in &program.items {
         match item {
@@ -2765,7 +2769,10 @@ pub fn elaborate_bindings(
                 env = checker.check_binding(&b, env)?;
                 backfill_impl_method_types(id, &env, &mut checker.node_types, &checker.subst);
             }
-            TopItem::TypeDef(_) | TopItem::TraitDef(_) => {}
+            TopItem::TypeDef(_) => {}
+            TopItem::TraitDef(td) => {
+                checker.trait_env.insert(td.name.clone(), td.clone());
+            }
         }
     }
 
@@ -2847,12 +2854,6 @@ pub fn elaborate(
     checker.apply_imports(&program.uses, path, &mut loader, &mut env)?;
 
     for item in &program.items {
-        if let TopItem::TraitDef(td) = item {
-            checker.trait_env.insert(td.name.clone(), td.clone());
-        }
-    }
-
-    for item in &program.items {
         match item {
             TopItem::Binding(b) => {
                 env = checker.check_binding(b, env)?;
@@ -2873,7 +2874,10 @@ pub fn elaborate(
                 env = checker.check_binding(&b, env)?;
                 backfill_impl_method_types(id, &env, &mut checker.node_types, &checker.subst);
             }
-            TopItem::TypeDef(_) | TopItem::TraitDef(_) => {}
+            TopItem::TypeDef(_) => {}
+            TopItem::TraitDef(td) => {
+                checker.trait_env.insert(td.name.clone(), td.clone());
+            }
         }
     }
 
@@ -2909,6 +2913,8 @@ pub fn elaborate_with_env(
 
     checker.apply_imports(&program.uses, path, &mut loader, &mut env)?;
 
+    // Validate trait definitions up front (method must reference type param),
+    // but do NOT register them yet — traits are registered sequentially.
     for item in &program.items {
         if let TopItem::TraitDef(td) = item {
             for method in &td.methods {
@@ -2923,7 +2929,6 @@ pub fn elaborate_with_env(
                     ));
                 }
             }
-            checker.trait_env.insert(td.name.clone(), td.clone());
         }
     }
 
@@ -2948,7 +2953,10 @@ pub fn elaborate_with_env(
                 env = checker.check_binding(&b, env)?;
                 backfill_impl_method_types(id, &env, &mut checker.node_types, &checker.subst);
             }
-            TopItem::TypeDef(_) | TopItem::TraitDef(_) => {}
+            TopItem::TypeDef(_) => {}
+            TopItem::TraitDef(td) => {
+                checker.trait_env.insert(td.name.clone(), td.clone());
+            }
         }
     }
 
@@ -3007,6 +3015,8 @@ pub fn elaborate_with_env_partial(
 
     let mut errors = checker.apply_imports_partial(&program.uses, path, &mut loader, &mut env);
 
+    // Validate trait definitions up front (method must reference type param),
+    // but do NOT register them yet — traits are registered sequentially.
     for item in &program.items {
         if let TopItem::TraitDef(td) = item {
             for method in &td.methods {
@@ -3021,7 +3031,6 @@ pub fn elaborate_with_env_partial(
                     ));
                 }
             }
-            checker.trait_env.insert(td.name.clone(), td.clone());
         }
     }
 
@@ -3076,7 +3085,10 @@ pub fn elaborate_with_env_partial(
                     Err(e) => errors.push(e),
                 }
             }
-            TopItem::TypeDef(_) | TopItem::TraitDef(_) => {}
+            TopItem::TypeDef(_) => {}
+            TopItem::TraitDef(td) => {
+                checker.trait_env.insert(td.name.clone(), td.clone());
+            }
         }
     }
 

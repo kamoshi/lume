@@ -310,3 +310,13 @@ Text
 path = "tests/trait_partial_param_mismatch.lume"
 expect = "error"
 error_contains = "does not reference type parameter"
+
+[tests.trait_undeclared]
+path = "tests/trait_undeclared.lume"
+expect = "error"
+error_contains = "undeclared trait 'Test'"
+
+[tests.trait_forward_ref]
+path = "tests/trait_forward_ref.lume"
+expect = "error"
+error_contains = "undeclared trait 'Test'"
