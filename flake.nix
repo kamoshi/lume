@@ -60,6 +60,8 @@
             baseArgs = commonArgs // {
               CARGO_BUILD_TARGET = rustTarget;
               HOST_CC = "${pkgs.stdenv.cc.nativePrefix}cc";
+              # Tests can't run on the host when cross-compiling.
+              doCheck = false;
               inherit depsBuildBuild;
             } // extraEnv;
             crossArtifacts = crossCrane.buildDepsOnly baseArgs;
@@ -68,10 +70,26 @@
             lume = crossCrane.buildPackage (baseArgs // {
               cargoArtifacts = crossArtifacts;
               cargoExtraArgs = "--package lume";
+              postInstall = ''
+                for f in "$out/bin/"*; do
+                  base="$(basename "$f")"
+                  name="''${base%%.*}"
+                  ext="''${base#"$name"}"
+                  mv "$f" "$out/bin/$name.${rustTarget}$ext"
+                done
+              '';
             });
             lume-lsp = crossCrane.buildPackage (baseArgs // {
               cargoArtifacts = crossArtifacts;
               cargoExtraArgs = "--package lume-lsp";
+              postInstall = ''
+                for f in "$out/bin/"*; do
+                  base="$(basename "$f")"
+                  name="''${base%%.*}"
+                  ext="''${base#"$name"}"
+                  mv "$f" "$out/bin/$name.${rustTarget}$ext"
+                done
+              '';
             });
           };
 
@@ -90,6 +108,9 @@
             "${pkgs.pkgsCross.aarch64-multiplatform-musl.stdenv.cc.targetPrefix}cc";
         };
 
+        # NOTE: Windows cross-compilation (x86_64-pc-windows-gnu) requires
+        # a working mingw toolchain.  On current nixpkgs-unstable the GCC
+        # bootstrap fails on macOS.  Build from a Linux host or CI instead.
         x86_64-windows = mkCross {
           rustTarget = "x86_64-pc-windows-gnu";
           depsBuildBuild = [ pkgs.pkgsCross.mingwW64.stdenv.cc ];
@@ -118,7 +139,7 @@
             lume-aarch64-linux = aarch64-linux.lume;
             lume-lsp-aarch64-linux = aarch64-linux.lume-lsp;
 
-            # Cross: Windows
+            # Cross: Windows (build from Linux host)
             lume-x86_64-windows = x86_64-windows.lume;
             lume-lsp-x86_64-windows = x86_64-windows.lume-lsp;
           }

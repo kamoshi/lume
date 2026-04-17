@@ -3,11 +3,12 @@
 !.gitignore
 !Cargo.toml
 !Cargo.lock
-!build-wasm.sh
-!examples/
-!examples/**
 !spec.md
-!parser.md
+
+!flake.nix
+!flake.lock
+
+!build-wasm.sh
 
 !lume/
 !lume/Cargo.toml
@@ -27,6 +28,9 @@
 
 !std/
 !std/**.lume
+
+!examples/
+!examples/**
 
 !tests/
 !tests/tests.toml
