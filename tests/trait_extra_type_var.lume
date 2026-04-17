@@ -1,0 +1,13 @@
+-- Tests that a trait method with additional (non-trait) type variables works.
+-- The trait param `a` is substituted while `b` stays universally quantified.
+
+trait Convert a {
+  let convert : a -> b -> Text
+}
+
+use Convert in Num {
+  let convert = n -> _ -> showNum n
+}
+
+let _ = Convert.convert 42 "ignored" |> print
+let _ = Convert.convert 42 true |> print

@@ -1,0 +1,23 @@
+-- Tests that a user-provided type annotation on an impl method is respected.
+-- The annotation `List a -> Text` constrains the body more precisely than
+-- the trait-derived type alone.
+
+trait Render a {
+  let render : a -> Text
+}
+
+use Render in Bool {
+  let render = b -> if b then "true" else "false"
+}
+
+use Render in Num {
+  let render : Num -> Text = n -> showNum n
+}
+
+use Render in Render a => List a {
+  let render : List a -> Text = xs -> "[" ++ join ", " (map (x -> Render.render x) xs) ++ "]"
+}
+
+let _ = Render.render true
+let _ = Render.render [10, 20] |> print
+let _ = Render.render [[1, 2], [3]] |> print

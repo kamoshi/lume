@@ -1,0 +1,12 @@
+-- Tests that a trait whose method does NOT reference the trait type parameter
+-- is rejected at definition time with a clear error pointing at the method.
+
+trait Show b {
+  let show : a -> Text
+}
+
+use Show in Num {
+  let show = n -> showNum n
+}
+
+let _ = Show.show 42 |> print

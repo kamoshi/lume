@@ -49,6 +49,12 @@ pub enum TypeError {
     ImplForOpenRecord {
         trait_name: String,
     },
+    /// A trait method does not reference the trait's type parameter.
+    TraitMethodMissingParam {
+        trait_name: String,
+        method_name: String,
+        type_param: String,
+    },
 }
 
 impl fmt::Display for TypeError {
@@ -118,6 +124,15 @@ impl fmt::Display for TypeError {
                      because an open row admits unknown fields that could \
                      violate the trait's contract",
                     trait_name
+                )
+            }
+            TypeError::TraitMethodMissingParam { trait_name, method_name, type_param } => {
+                write!(
+                    f,
+                    "trait '{}' method '{}' does not reference type parameter '{}' — \
+                     the method signature must use '{}' so the compiler can connect it \
+                     to concrete types in impls",
+                    trait_name, method_name, type_param, type_param
                 )
             }
         }

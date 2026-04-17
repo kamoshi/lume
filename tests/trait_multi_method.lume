@@ -1,0 +1,14 @@
+-- Tests that a trait with multiple methods all referencing the type param works.
+
+trait Describe a {
+  let name : a -> Text,
+  let size : a -> Num
+}
+
+use Describe in Text {
+  let name = _ -> "Text"
+  let size = _ -> 0
+}
+
+let _ = Describe.name "hello" |> print
+let _ = Describe.size "hello" |> showNum |> print

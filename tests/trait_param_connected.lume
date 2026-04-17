@@ -1,0 +1,18 @@
+-- Tests that the trait type parameter correctly connects to the method body.
+-- When the trait param is `a` and the method type is `a -> a`, calling the
+-- method with a Num must return Num.
+
+trait Identity a {
+  let identity : a -> a
+}
+
+use Identity in Num {
+  let identity = x -> x
+}
+
+use Identity in Text {
+  let identity = x -> x
+}
+
+let _ = Identity.identity 42 |> showNum |> print
+let _ = Identity.identity "hello" |> print

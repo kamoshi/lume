@@ -1,0 +1,14 @@
+-- Tests that a trait where one of several methods doesn't reference the
+-- type param is rejected with an error pointing at that method.
+
+trait Broken a {
+  let good : a -> Text,
+  let bad : b -> Num
+}
+
+use Broken in Num {
+  let good = n -> showNum n
+  let bad = _ -> 0
+}
+
+let _ = Broken.good 42 |> print

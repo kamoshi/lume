@@ -263,3 +263,50 @@ expect = "typecheck"
 output = """
 Alice
 """
+
+[tests.trait_param_mismatch]
+path = "tests/trait_param_mismatch.lume"
+expect = "error"
+error_contains = "does not reference type parameter"
+
+[tests.trait_impl_annotation]
+path = "tests/trait_impl_annotation.lume"
+expect = "typecheck"
+output = """
+[10, 20]
+[[1, 2], [3]]
+"""
+
+[tests.trait_param_connected]
+path = "tests/trait_param_connected.lume"
+expect = "typecheck"
+output = """
+42
+hello
+"""
+
+[tests.trait_extra_type_var]
+path = "tests/trait_extra_type_var.lume"
+expect = "typecheck"
+output = """
+42
+42
+"""
+
+[tests.trait_impl_annotation_mismatch]
+path = "tests/trait_impl_annotation_mismatch.lume"
+expect = "error"
+error_contains = "type mismatch"
+
+[tests.trait_multi_method]
+path = "tests/trait_multi_method.lume"
+expect = "typecheck"
+output = """
+Text
+0
+"""
+
+[tests.trait_partial_param_mismatch]
+path = "tests/trait_partial_param_mismatch.lume"
+expect = "error"
+error_contains = "does not reference type parameter"

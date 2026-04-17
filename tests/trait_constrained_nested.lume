@@ -1,7 +1,7 @@
 -- Tests that constrained impls work with nested types.
 -- Show (List (List Num)) uses Show (List a) which uses Show Num.
 
-trait Show b {
+trait Show a {
   let show : a -> Text
 }
 
@@ -10,7 +10,7 @@ use Show in Num {
 }
 
 use Show in Show a => List a {
-  let show : List b -> Text = xs -> "[" ++ join ", " (map (x -> Show.show x) xs) ++ "]"
+  let show : List a -> Text = xs -> "[" ++ join ", " (map (x -> Show.show x) xs) ++ "]"
 }
 
 let _ = Show.show [[1, 2], [3]] |> print

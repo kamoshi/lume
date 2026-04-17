@@ -1,0 +1,13 @@
+-- Tests that a wrong type annotation in an impl method is caught.
+-- The impl is for Num but the annotation says Text -> Text, which should
+-- fail with a type mismatch.
+
+trait Stringify a {
+  let stringify : a -> Text
+}
+
+use Stringify in Num {
+  let stringify : Text -> Text = x -> x
+}
+
+let _ = Stringify.stringify 42 |> print

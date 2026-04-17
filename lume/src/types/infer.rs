@@ -1181,20 +1181,22 @@ impl Checker {
                     Some(td) => {
                         match td.methods.iter().find(|m| m.name == *method_name) {
                             Some(method) => {
-                                let mut param_vars: HashMap<String, TyVar> = HashMap::new();
+                                // Pre-seed param_vars with the trait's type parameter
+                                // so `lower_ty` connects it to the same fresh var
+                                // everywhere it appears in the method signature.
+                                let trait_param_var = self.subst.fresh_var();
+                                let mut param_vars: HashMap<String, TyVar> =
+                                    HashMap::from([(td.type_param.clone(), trait_param_var)]);
                                 let ty = self
                                     .lower_ty(&method.ty, &mut param_vars)
                                     .map_err(|e| TypeErrorAt::new(e, span.clone()))?;
-                                // Record constraint: this trait call introduces a
-                                // constraint on the fresh var for the type param.
-                                if let Some(&v) = param_vars.get(&td.type_param) {
-                                    self.constraint_map.push((trait_name.clone(), v));
-                                    self.trait_call_constraints.push((
-                                        trait_name.clone(),
-                                        v,
-                                        span.clone(),
-                                    ));
-                                }
+                                // Record constraint on the trait's type param.
+                                self.constraint_map.push((trait_name.clone(), trait_param_var));
+                                self.trait_call_constraints.push((
+                                    trait_name.clone(),
+                                    trait_param_var,
+                                    span.clone(),
+                                ));
                                 Ok(ty)
                             }
                             None => Err(TypeErrorAt::new(
@@ -2033,9 +2035,22 @@ impl Checker {
         self.apply_imports(&program.uses, base, loader, &mut env)?;
 
         // Pre-pass: collect all trait definitions so ImplDef checking and
-        // TraitCall typing can reference them.
+        // TraitCall typing can reference them.  Also validate that each method
+        // references the trait's type parameter.
         for item in &program.items {
             if let TopItem::TraitDef(td) = item {
+                for method in &td.methods {
+                    if !ast_type_contains_var(&method.ty, &td.type_param) {
+                        return Err(TypeErrorAt::new(
+                            TypeError::TraitMethodMissingParam {
+                                trait_name: td.name.clone(),
+                                method_name: method.name.clone(),
+                                type_param: td.type_param.clone(),
+                            },
+                            method.name_span.clone(),
+                        ));
+                    }
+                }
                 self.trait_env.insert(td.name.clone(), td.clone());
             }
         }
@@ -2046,6 +2061,7 @@ impl Checker {
                 TopItem::BindingGroup(bs) => self.check_binding_group(bs, env)?,
                 TopItem::ImplDef(id) => {
                     self.check_impl_completeness(id)?;
+                    self.check_impl_annotations(id)?;
                     self.register_impl(id)?;
                     let td = self.trait_env.get(&id.trait_name).cloned();
                     let b = synth_impl_binding(id, td.as_ref());
@@ -2108,6 +2124,41 @@ impl Checker {
                 },
                 id.trait_name_span.clone(),
             ));
+        }
+        Ok(())
+    }
+
+    /// If an impl method carries a user type annotation, verify it is consistent
+    /// with the type derived from the trait definition (after substituting the
+    /// trait's type parameter for the impl target type).
+    fn check_impl_annotations(&mut self, id: &ImplDef) -> Result<(), TypeErrorAt> {
+        let td = match self.trait_env.get(&id.trait_name) {
+            Some(td) => td.clone(),
+            None => return Ok(()),
+        };
+        for impl_method in &id.methods {
+            let user_ann = match &impl_method.ty {
+                Some(ty) => ty,
+                None => continue,
+            };
+            let method_name = match &impl_method.pattern {
+                Pattern::Ident(n, _, _) => n.clone(),
+                _ => continue,
+            };
+            let trait_method = match td.methods.iter().find(|m| m.name == method_name) {
+                Some(m) => m,
+                None => continue,
+            };
+            let derived_ty = subst_type_var(&trait_method.ty, &td.type_param, &id.target_type);
+            // Lower both to internal types and unify to check consistency.
+            let mut pvars = HashMap::new();
+            let derived = self
+                .lower_ty(&derived_ty, &mut pvars)
+                .map_err(|e| TypeErrorAt::new(e, impl_method.value.span.clone()))?;
+            let user = self
+                .lower_ty(user_ann, &mut pvars)
+                .map_err(|e| TypeErrorAt::new(e, impl_method.value.span.clone()))?;
+            self.unify_at(derived, user, &impl_method.value.span)?;
         }
         Ok(())
     }
@@ -2451,7 +2502,7 @@ fn synth_impl_binding(id: &ImplDef, trait_def: Option<&TraitDef>) -> Binding {
             RecordField {
                 name,
                 name_span: crate::error::Span::default(),
-                name_node_id: 0,
+                name_node_id: u32::MAX,
                 value: Some(b.value.clone()),
             }
         })
@@ -2459,13 +2510,27 @@ fn synth_impl_binding(id: &ImplDef, trait_def: Option<&TraitDef>) -> Binding {
 
     // Build a type annotation from the trait def: substitute the trait's type
     // parameter with the impl's concrete target type in every method signature.
+    // When the impl method provides its own type annotation, prefer that over
+    // the trait-derived type so the user can constrain the method body precisely.
     let ty = trait_def.map(|td| {
         let ann_fields: Vec<FieldType> = td
             .methods
             .iter()
-            .map(|m| FieldType {
-                name: m.name.clone(),
-                ty: subst_type_var(&m.ty, &td.type_param, &id.target_type),
+            .map(|m| {
+                // Check if the impl provides a user annotation for this method.
+                let user_ty = id.methods.iter().find_map(|b| {
+                    let name = match &b.pattern {
+                        Pattern::Ident(n, _, _) => n.clone(),
+                        _ => return None,
+                    };
+                    if name == m.name { b.ty.clone() } else { None }
+                });
+                FieldType {
+                    name: m.name.clone(),
+                    ty: user_ty.unwrap_or_else(|| {
+                        subst_type_var(&m.ty, &td.type_param, &id.target_type)
+                    }),
+                }
             })
             .collect();
         Type::Record(RecordType {
@@ -2475,11 +2540,11 @@ fn synth_impl_binding(id: &ImplDef, trait_def: Option<&TraitDef>) -> Binding {
     });
 
     Binding {
-        pattern: Pattern::Ident(dict_name, crate::error::Span::default(), 0),
+        pattern: Pattern::Ident(dict_name, crate::error::Span::default(), u32::MAX),
         constraints: id.impl_constraints.clone(),
         ty,
         value: Expr {
-            id: 0,
+            id: u32::MAX,
             kind: ExprKind::Record {
                 base: None,
                 fields,
@@ -2488,6 +2553,18 @@ fn synth_impl_binding(id: &ImplDef, trait_def: Option<&TraitDef>) -> Binding {
             span: crate::error::Span::default(),
         },
         doc: None,
+    }
+}
+
+/// Check whether an AST `Type` references a given type-variable name.
+fn ast_type_contains_var(ty: &Type, var_name: &str) -> bool {
+    match ty {
+        Type::Var(v) => v == var_name,
+        Type::Named { args, .. } => args.iter().any(|a| ast_type_contains_var(a, var_name)),
+        Type::Func { param, ret } => {
+            ast_type_contains_var(param, var_name) || ast_type_contains_var(ret, var_name)
+        }
+        Type::Record(rt) => rt.fields.iter().any(|f| ast_type_contains_var(&f.ty, var_name)),
     }
 }
 
@@ -2594,10 +2671,8 @@ fn backfill_impl_method_types(
         if let Ty::Record(row) = &ty {
             for method in &id.methods {
                 if let Pattern::Ident(mname, _, nid) = &method.pattern {
-                    if *nid != 0 {
-                        if let Some((_, fty)) = row.fields.iter().find(|(n, _)| n == mname) {
-                            node_types.insert(*nid, fty.clone());
-                        }
+                    if let Some((_, fty)) = row.fields.iter().find(|(n, _)| n == mname) {
+                        node_types.insert(*nid, fty.clone());
                     }
                 }
             }
@@ -2683,6 +2758,7 @@ pub fn elaborate_bindings(
             }
             TopItem::ImplDef(id) => {
                 checker.check_impl_completeness(id)?;
+                checker.check_impl_annotations(id)?;
                 checker.register_impl(id)?;
                 let td = checker.trait_env.get(&id.trait_name).cloned();
                 let b = synth_impl_binding(id, td.as_ref());
@@ -2790,6 +2866,7 @@ pub fn elaborate(
             }
             TopItem::ImplDef(id) => {
                 checker.check_impl_completeness(id)?;
+                checker.check_impl_annotations(id)?;
                 checker.register_impl(id)?;
                 let td = checker.trait_env.get(&id.trait_name).cloned();
                 let b = synth_impl_binding(id, td.as_ref());
@@ -2834,6 +2911,18 @@ pub fn elaborate_with_env(
 
     for item in &program.items {
         if let TopItem::TraitDef(td) = item {
+            for method in &td.methods {
+                if !ast_type_contains_var(&method.ty, &td.type_param) {
+                    return Err(TypeErrorAt::new(
+                        TypeError::TraitMethodMissingParam {
+                            trait_name: td.name.clone(),
+                            method_name: method.name.clone(),
+                            type_param: td.type_param.clone(),
+                        },
+                        method.name_span.clone(),
+                    ));
+                }
+            }
             checker.trait_env.insert(td.name.clone(), td.clone());
         }
     }
@@ -2852,6 +2941,7 @@ pub fn elaborate_with_env(
             }
             TopItem::ImplDef(id) => {
                 checker.check_impl_completeness(id)?;
+                checker.check_impl_annotations(id)?;
                 checker.register_impl(id)?;
                 let td = checker.trait_env.get(&id.trait_name).cloned();
                 let b = synth_impl_binding(id, td.as_ref());
@@ -2919,6 +3009,18 @@ pub fn elaborate_with_env_partial(
 
     for item in &program.items {
         if let TopItem::TraitDef(td) = item {
+            for method in &td.methods {
+                if !ast_type_contains_var(&method.ty, &td.type_param) {
+                    errors.push(TypeErrorAt::new(
+                        TypeError::TraitMethodMissingParam {
+                            trait_name: td.name.clone(),
+                            method_name: method.name.clone(),
+                            type_param: td.type_param.clone(),
+                        },
+                        method.name_span.clone(),
+                    ));
+                }
+            }
             checker.trait_env.insert(td.name.clone(), td.clone());
         }
     }
@@ -2951,6 +3053,9 @@ pub fn elaborate_with_env_partial(
             },
             TopItem::ImplDef(id) => {
                 if let Err(e) = checker.check_impl_completeness(id) {
+                    errors.push(e);
+                }
+                if let Err(e) = checker.check_impl_annotations(id) {
                     errors.push(e);
                 }
                 if let Err(e) = checker.register_impl(id) {
