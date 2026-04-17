@@ -326,6 +326,8 @@ enum Command {
         #[arg(required = true)]
         file: String,
     },
+    /// Start the Language Server Protocol server
+    Lsp,
     /// Start an interactive REPL
     Repl {
         /// Read input from stdin instead of an interactive terminal
@@ -348,6 +350,14 @@ fn main() {
         Command::Dump { files } => run_on_files(&files, dump_file),
         Command::Fmt { files } => run_on_files(&files, fmt_file),
         Command::Js { file } => js_file(&file),
+        Command::Lsp => {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("failed to build tokio runtime")
+                .block_on(lume_lsp::run());
+            true
+        }
         Command::Lua { file } => lua_file(&file),
         Command::Repl { stdin } => {
             if stdin {

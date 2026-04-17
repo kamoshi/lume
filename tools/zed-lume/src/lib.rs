@@ -13,12 +13,12 @@ impl zed::Extension for LumeExtension {
         worktree: &zed::Worktree,
     ) -> Result<zed::Command> {
         let path = worktree
-            .which("lume-lsp")
-            .ok_or_else(|| "lume-lsp not found in PATH".to_string())?;
+            .which("lume")
+            .ok_or_else(|| "lume not found in PATH".to_string())?;
 
         Ok(zed::Command {
             command: path,
-            args: vec![],
+            args: vec!["lsp".to_string()],
             env: vec![],
         })
     }

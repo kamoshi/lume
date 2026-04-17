@@ -7,6 +7,10 @@ edition = "2021"
 name = "lume-lsp"
 path = "src/main.rs"
 
+[lib]
+name = "lume_lsp"
+path = "src/lib.rs"
+
 [dependencies]
 lume-core = { path = "../lume-core" }
 tower-lsp = "0.20"

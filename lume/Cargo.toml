@@ -10,4 +10,6 @@ path = "src/main.rs"
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 lume-core = { path = "../lume-core" }
+lume-lsp = { path = "../lume-lsp" }
 lume-repl = { path = "../lume-repl" }
+tokio = { version = "1", features = ["full"] }

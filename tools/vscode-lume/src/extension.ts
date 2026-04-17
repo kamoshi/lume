@@ -12,11 +12,11 @@ export async function activate(context: vscode.ExtensionContext) {
     const config = vscode.workspace.getConfiguration('lume');
 
     // User setting → PATH fallback
-    const serverPath: string = config.get<string>('lsp.serverPath') || 'lume-lsp';
+    const serverPath: string = config.get<string>('lsp.serverPath') || 'lume';
 
     const run: Executable = {
         command: serverPath,
-        args: [],
+        args: ['lsp'],
         options: { env: { ...process.env } },
     };
 
