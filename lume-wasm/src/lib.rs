@@ -9,7 +9,7 @@ use lume::{
     lexer::Lexer,
     loader::{stdlib_path, stdlib_source, use_path_context, Loader, UsePathKind, STDLIB_MODULES},
     parser,
-    types::{self, infer::builtin_env, infer::elaborate_with_env_partial, Ty},
+    types::{self, infer::build_variant_env, infer::builtin_env, infer::elaborate_with_env_partial, Ty},
 };
 use wasm_bindgen::prelude::*;
 
@@ -296,7 +296,15 @@ pub fn to_js(src: &str) -> Result<JsValue, JsValue> {
         .ok_or_else(|| JsValue::from_str("internal error: empty bundle"))?;
     types::infer::check_program(&entry.program, Some(Path::new(WASM_ENTRY_PATH)))
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
-    Ok(JsValue::from_str(&codegen::js::emit(&bundle)))
+    let variant_env = {
+        let mut scratch = types::Subst::new();
+        let (_, mut env) = builtin_env(&mut scratch);
+        for m in &bundle {
+            env.merge(build_variant_env(&m.program.items));
+        }
+        env
+    };
+    Ok(JsValue::from_str(&codegen::js::emit(&bundle, variant_env)))
 }
 
 /// Transpile to Lua (type-checks first). Returns Lua code or throws.
@@ -308,7 +316,15 @@ pub fn to_lua(src: &str) -> Result<JsValue, JsValue> {
         .ok_or_else(|| JsValue::from_str("internal error: empty bundle"))?;
     types::infer::check_program(&entry.program, Some(Path::new(WASM_ENTRY_PATH)))
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
-    Ok(JsValue::from_str(&codegen::lua::emit(&bundle)))
+    let variant_env = {
+        let mut scratch = types::Subst::new();
+        let (_, mut env) = builtin_env(&mut scratch);
+        for m in &bundle {
+            env.merge(build_variant_env(&m.program.items));
+        }
+        env
+    };
+    Ok(JsValue::from_str(&codegen::lua::emit(&bundle, variant_env)))
 }
 
 /// Returns a JSON array of diagnostics: `[{from, to, message}]`.
