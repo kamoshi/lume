@@ -3,10 +3,10 @@ name = "lume"
 version = "0.1.0"
 edition = "2021"
 
-[lib]
-name = "lume"
-path = "src/lib.rs"
-
 [[bin]]
 name = "lume"
 path = "src/main.rs"
+
+[dependencies]
+lume-core = { path = "../lume-core" }
+mlua = { version = "0.10", features = ["luajit", "vendored"] }

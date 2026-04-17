@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use lume::{
+use lume_core::{
     ast::{self, Expr, ExprKind, NodeId, Program, TopItem, TraitDef},
     error::{LumeError, Span},
     lexer::Lexer,

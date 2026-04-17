@@ -1,4 +1,4 @@
-use lume::{
+use lume_core::{
     loader::{use_path_context, UsePathContext, STDLIB_MODULES},
     types::Ty,
 };

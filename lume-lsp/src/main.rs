@@ -6,7 +6,7 @@ mod semantic_tokens;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use dashmap::DashMap;
-use lume::loader::UsePathKind;
+use lume_core::loader::UsePathKind;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};

@@ -1,4 +1,4 @@
-use lume::lexer::{Lexer, Token};
+use lume_core::lexer::{Lexer, Token};
 use tower_lsp::lsp_types::*;
 
 pub const LEGEND_TOKEN_TYPES: &[SemanticTokenType] = &[

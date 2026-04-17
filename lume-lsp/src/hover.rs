@@ -1,4 +1,4 @@
-use lume::{
+use lume_core::{
     ast::{TraitDef, Type},
     ast::NodeId,
     types::Ty,

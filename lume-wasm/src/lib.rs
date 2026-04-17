@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use lume::{
+use lume_core::{
     ast::{Expr, ExprKind, MatchArm, NodeId, Pattern, Program, TopItem},
     bundle::BundleModule,
     codegen,
@@ -444,7 +444,7 @@ pub fn complete(src: &str, offset: usize) -> String {
     ident_completions(src, word_start, offset, prefix)
 }
 
-fn use_path_completions_json(ctx: lume::loader::UsePathContext) -> String {
+fn use_path_completions_json(ctx: lume_core::loader::UsePathContext) -> String {
     match ctx.kind {
         UsePathKind::Stdlib => {
             let lower = ctx.prefix.to_lowercase();

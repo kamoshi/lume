@@ -4,7 +4,7 @@
 //!
 //! # Example
 //! ```
-//! use lume::pretty::{group, nest, text, line, join, render};
+//! use lume_core::pretty::{group, nest, text, line, join, render};
 //!
 //! let doc = group(
 //!     nest(2, join(line(), vec![text("a"), text("b"), text("c")]))

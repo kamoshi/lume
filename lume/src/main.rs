@@ -1,13 +1,13 @@
 use std::path::Path;
 
-use lume::ast;
-use lume::bundle;
-use lume::codegen;
-use lume::desugar;
-use lume::error::LumeError;
-use lume::lexer::Lexer;
-use lume::parser;
-use lume::types;
+use lume_core::ast;
+use lume_core::bundle;
+use lume_core::codegen;
+use lume_core::desugar;
+use lume_core::error::LumeError;
+use lume_core::lexer::Lexer;
+use lume_core::parser;
+use lume_core::types;
 
 fn parse(src: &str) -> Result<ast::Program, LumeError> {
     let tokens = Lexer::new(src).tokenize()?;
@@ -54,7 +54,7 @@ fn run_file(path: &str) -> bool {
 /// or `None` (and prints an error) if any module fails to type-check.
 /// Downstream phases (codegen) receive this env so nothing is rebuilt.
 fn desugar_bundle(b: &mut [bundle::BundleModule]) -> Option<types::infer::VariantEnv> {
-    use lume::ast::TopItem;
+    use lume_core::ast::TopItem;
 
     // Build the global trait/impl/variant context from all modules so cross-module
     // TraitCalls can be resolved to `_mod_dep.__trait_Type.method` and bare
@@ -95,7 +95,7 @@ fn desugar_bundle(b: &mut [bundle::BundleModule]) -> Option<types::infer::Varian
                     for variant in &td.variants {
                         global.variants.insert(
                             variant.name.clone(),
-                            lume::types::infer::VariantInfo {
+                            lume_core::types::infer::VariantInfo {
                                 type_name: td.name.clone(),
                                 type_params: td.params.clone(),
                                 wraps: variant.wraps.clone(),
@@ -111,7 +111,7 @@ fn desugar_bundle(b: &mut [bundle::BundleModule]) -> Option<types::infer::Varian
     // Register built-in variants (Maybe, Result) so the desugarer can
     // convert bare constructor references like `Some` and `Ok` into lambdas.
     {
-        let mut scratch = lume::types::Subst::new();
+        let mut scratch = lume_core::types::Subst::new();
         let (_, builtin_variants) = types::infer::builtin_env(&mut scratch);
         for (name, info) in builtin_variants.all() {
             global.variants.entry(name.clone()).or_insert_with(|| info.clone());
@@ -205,6 +205,31 @@ fn lua_file(path: &str) -> bool {
     true
 }
 
+/// Compile to Lua and execute immediately via the vendored LuaJIT runtime.
+fn exec_file(path: &str) -> bool {
+    let mut b = match bundle::collect(Path::new(path)) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("{path}: {e}");
+            return false;
+        }
+    };
+    let variant_env = match desugar_bundle(&mut b) {
+        Some(v) => v,
+        None => return false,
+    };
+    let lua_src = codegen::lua::emit(&b, variant_env);
+
+    let lua = mlua::Lua::new();
+    match lua.load(&lua_src).exec() {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!("{path}: runtime error: {e}");
+            false
+        }
+    }
+}
+
 fn fmt_file(path: &str) -> bool {
     let src = match std::fs::read_to_string(path) {
         Ok(s) => s,
@@ -277,7 +302,7 @@ fn main() {
 
     let (cmd, paths): (&str, &[String]) = match args.as_slice() {
         [] => {
-            eprintln!("Usage: lume [check|dump|fmt|js|lua] <file.lume> ...");
+            eprintln!("Usage: lume [check|dump|fmt|js|lua|run] <file.lume> ...");
             std::process::exit(1);
         }
         [first, rest @ ..] if first == "check" => ("check", rest),
@@ -285,6 +310,7 @@ fn main() {
         [first, rest @ ..] if first == "fmt" => ("fmt", rest),
         [first, rest @ ..] if first == "js" => ("js", rest),
         [first, rest @ ..] if first == "lua" => ("lua", rest),
+        [first, rest @ ..] if first == "run" => ("run", rest),
         paths => ("check", paths),
     };
 
@@ -295,6 +321,7 @@ fn main() {
             "fmt" => fmt_file(path),
             "js" => js_file(path),
             "lua" => lua_file(path),
+            "run" => exec_file(path),
             _ => run_file(path),
         };
         if !ok {
@@ -310,9 +337,9 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::parse;
-    use lume::ast::*;
-    use lume::lexer::{Lexer, Spanned, Token};
-    use lume::parser;
+    use lume_core::ast::*;
+    use lume_core::lexer::{Lexer, Spanned, Token};
+    use lume_core::parser;
 
     fn lex(src: &str) -> Vec<Spanned> {
         Lexer::new(src).tokenize().expect("lex error")
