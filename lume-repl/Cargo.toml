@@ -10,4 +10,4 @@ path = "src/lib.rs"
 [dependencies]
 lume-core = { path = "../lume-core" }
 mlua = { version = "0.10", features = ["luajit", "vendored"] }
-rustyline = "15"
+rustyline = "18"

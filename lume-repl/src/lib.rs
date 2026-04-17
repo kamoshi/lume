@@ -1,5 +1,6 @@
 //! Lume runtime: file execution and interactive REPL backed by LuaJIT.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -8,6 +9,187 @@ use lume_core::bundle;
 use lume_core::codegen;
 use lume_core::lower;
 use lume_core::types;
+
+// ── Syntax highlighting ───────────────────────────────────────────────────────
+
+// ANSI escape helpers (no extra deps needed)
+const RESET: &str = "\x1b[0m";
+const BOLD: &str = "\x1b[1m";
+const DIM: &str = "\x1b[2m";
+const FG_CYAN: &str = "\x1b[36m";
+const FG_YELLOW: &str = "\x1b[33m";
+const FG_GREEN: &str = "\x1b[32m";
+const FG_MAGENTA: &str = "\x1b[35m";
+const FG_BLUE: &str = "\x1b[34m";
+const FG_RED: &str = "\x1b[31m";
+
+fn highlight_line(line: &str) -> String {
+    use lume_core::lexer::{Lexer, Token};
+
+    // REPL commands get special coloring
+    if line.starts_with(':') {
+        return format!("{FG_MAGENTA}{BOLD}{line}{RESET}");
+    }
+
+    // Tokenise; on failure return plain text
+    let tokens = match Lexer::new(line).tokenize() {
+        Ok(t) => t,
+        Err(_) => return line.to_string(),
+    };
+
+    // Build a coloured string by walking token spans.
+    // Each token carries a Span (col, len) in the original source.
+    let mut out = String::with_capacity(line.len() + 64);
+    let mut cursor = 0usize; // byte offset into `line`
+
+    for spanned in &tokens {
+        let tok = &spanned.token;
+        if matches!(tok, Token::Eof) {
+            break;
+        }
+
+        let span = &spanned.span;
+        let col = span.col.saturating_sub(1); // 1-based → 0-based
+        let len = span.len;
+
+        // Append any gap between last token and this one (whitespace/etc.)
+        if col > cursor {
+            out.push_str(&line[cursor..col]);
+        }
+        let end = (col + len).min(line.len());
+        let lexeme = &line[col..end];
+        cursor = end;
+
+        let colored = match tok {
+            // Keywords
+            Token::Let | Token::Pub | Token::Type | Token::Use
+            | Token::If | Token::Then | Token::Else | Token::In
+            | Token::Trait | Token::Match | Token::And | Token::Not => {
+                format!("{FG_BLUE}{BOLD}{lexeme}{RESET}")
+            }
+            // Boolean literals
+            Token::True | Token::False => {
+                format!("{FG_CYAN}{lexeme}{RESET}")
+            }
+            // Type identifiers (PascalCase)
+            Token::TypeIdent(_) => {
+                format!("{FG_YELLOW}{lexeme}{RESET}")
+            }
+            // String literals
+            Token::Text(_) => {
+                format!("{FG_GREEN}{lexeme}{RESET}")
+            }
+            // Numeric literals
+            Token::Number(_) => {
+                format!("{FG_CYAN}{lexeme}{RESET}")
+            }
+            // Doc comments
+            Token::DocComment(_) => {
+                format!("{DIM}{lexeme}{RESET}")
+            }
+            // Pipe operators (key Lume operators)
+            Token::Pipe | Token::ResultPipe => {
+                format!("{FG_MAGENTA}{lexeme}{RESET}")
+            }
+            // Arrow / fat arrow
+            Token::Arrow | Token::FatArrow => {
+                format!("{FG_RED}{lexeme}{RESET}")
+            }
+            // Other operators
+            Token::Plus | Token::Minus | Token::Star | Token::Slash
+            | Token::EqEq | Token::BangEq | Token::Lt | Token::Gt
+            | Token::LtEq | Token::GtEq | Token::Concat
+            | Token::AmpAmp | Token::PipePipe | Token::Equal
+            | Token::Colon | Token::Bar | Token::DotDot | Token::Dot => {
+                format!("{DIM}{lexeme}{RESET}")
+            }
+            // Plain identifiers — no color (terminal default)
+            Token::Ident(_) => lexeme.to_string(),
+            // Punctuation — no color
+            _ => lexeme.to_string(),
+        };
+        out.push_str(&colored);
+    }
+
+    // Append any remaining characters after the last token
+    if cursor < line.len() {
+        out.push_str(&line[cursor..]);
+    }
+
+    out
+}
+
+struct LumeHelper;
+
+impl rustyline::highlight::Highlighter for LumeHelper {
+    fn highlight<'l>(&self, line: &'l str, _pos: usize) -> Cow<'l, str> {
+        Cow::Owned(highlight_line(line))
+    }
+
+    fn highlight_char(&self, _line: &str, _pos: usize, _kind: rustyline::highlight::CmdKind) -> bool {
+        true // re-highlight on every keystroke
+    }
+
+    fn highlight_prompt<'b, 's: 'b, 'p: 'b>(
+        &'s self,
+        prompt: &'p str,
+        _default: bool,
+    ) -> Cow<'b, str> {
+        Cow::Owned(format!("{FG_MAGENTA}{BOLD}{prompt}{RESET}"))
+    }
+}
+
+impl rustyline::completion::Completer for LumeHelper {
+    type Candidate = String;
+}
+impl rustyline::hint::Hinter for LumeHelper {
+    type Hint = String;
+}
+impl rustyline::validate::Validator for LumeHelper {
+    fn validate(
+        &self,
+        ctx: &mut rustyline::validate::ValidationContext,
+    ) -> rustyline::Result<rustyline::validate::ValidationResult> {
+        use lume_core::error::ParseErrorKind;
+        use lume_core::lexer::Lexer;
+        use lume_core::parser;
+
+        let input = ctx.input();
+        // Skip REPL commands — always valid immediately
+        if input.starts_with(':') {
+            return Ok(rustyline::validate::ValidationResult::Valid(None));
+        }
+
+        // Wrap in a dummy pub export so the parser sees a complete program
+        let src = format!("{input}\npub {{}}\n");
+        let result = Lexer::new(&src)
+            .tokenize()
+            .map_err(|_| ())
+            .and_then(|tokens| parser::parse_program(&tokens).map_err(|_| ()));
+
+        match result {
+            Ok(_) => Ok(rustyline::validate::ValidationResult::Valid(None)),
+            Err(_) => {
+                // Re-run to get the actual error kind
+                let src2 = format!("{input}\npub {{}}\n");
+                let is_eof = Lexer::new(&src2)
+                    .tokenize()
+                    .ok()
+                    .and_then(|tokens| parser::parse_program(&tokens).err())
+                    .map(|e| matches!(e.kind, ParseErrorKind::UnexpectedEof))
+                    .unwrap_or(false);
+                if is_eof {
+                    Ok(rustyline::validate::ValidationResult::Incomplete)
+                } else {
+                    // Other parse errors: let readline accept the input anyway
+                    // so eval_input can report the error with context
+                    Ok(rustyline::validate::ValidationResult::Valid(None))
+                }
+            }
+        }
+    }
+}
+impl rustyline::Helper for LumeHelper {}
 
 // ── File execution ───────────────────────────────────────────────────────────
 
@@ -33,7 +215,7 @@ pub fn run(path: &str) -> Result<(), String> {
 /// Launch an interactive REPL. Blocks until the user exits (Ctrl-D).
 pub fn run_repl() {
     use rustyline::error::ReadlineError;
-    use rustyline::DefaultEditor;
+    use rustyline::{Config, Editor};
 
     let lua = mlua::Lua::new();
 
@@ -47,7 +229,9 @@ pub fn run_repl() {
     // Accumulated Lua source that has been executed so far.
     let mut lua_history = String::new();
 
-    let mut rl = DefaultEditor::new().expect("failed to initialise terminal");
+    let mut rl: Editor<LumeHelper, _> = Editor::with_config(Config::default())
+        .expect("failed to initialise terminal");
+    rl.set_helper(Some(LumeHelper));
 
     eprintln!("Lume REPL — type expressions or let-bindings. Ctrl-D to exit.");
 
@@ -75,16 +259,79 @@ pub fn run_repl() {
     }
 }
 
+/// Like `run_repl` but reads input from stdin line-by-line (for piping / scripting).
+pub fn run_repl_stdin() {
+    use std::io::{self, BufRead};
+
+    let lua = mlua::Lua::new();
+    lua.load(SHOW_HELPER).exec().expect("failed to load _show");
+
+    let mut defs = String::new();
+    let mut lua_history = String::new();
+
+    let stdin = io::stdin();
+    for line in stdin.lock().lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(e) => { eprintln!("  read error: {e}"); break; }
+        };
+        let input = line.trim();
+        if input.is_empty() {
+            continue;
+        }
+        eval_input(input, &lua, &mut defs, &mut lua_history);
+    }
+}
+
+
+fn type_of(expr: &str, defs: &str) {
+    use lume_core::lexer::Lexer;
+    use lume_core::parser;
+
+    let src = format!("{}let __type_expr = {}\npub {{ __type_expr }}\n", defs, expr);
+
+    let tokens = match Lexer::new(&src).tokenize() {
+        Ok(t) => t,
+        Err(e) => { eprintln!("  parse error: {e}"); return; }
+    };
+    let program = match parser::parse_program(&tokens) {
+        Ok(p) => p,
+        Err(e) => { eprintln!("  parse error: {e}"); return; }
+    };
+
+    match types::infer::elaborate_with_env(&program, None) {
+        Ok((_, type_env, _)) => {
+            match type_env.lookup("__type_expr") {
+                Some(scheme) => println!("  {expr} : {scheme}"),
+                None => eprintln!("  (could not determine type)"),
+            }
+        }
+        Err(e) => eprintln!("  type error: {e}"),
+    }
+}
+
 fn eval_input(
     input: &str,
     lua: &mlua::Lua,
     defs: &mut String,
     lua_history: &mut String,
 ) {
-    let is_definition = input.starts_with("let ")
-        || input.starts_with("type ")
-        || input.starts_with("trait ")
-        || input.starts_with("use ");
+    // ── REPL commands ────────────────────────────────────────────────────────
+    let trimmed = input.trim();
+    if let Some(expr) = trimmed.strip_prefix(":type ").or_else(|| trimmed.strip_prefix(":t ")) {
+        type_of(expr.trim(), defs);
+        return;
+    }
+    if trimmed == ":type" || trimmed == ":t" {
+        eprintln!("  usage: :type <expression>");
+        return;
+    }
+
+    let first_line = input.lines().find(|l| !l.trim().is_empty()).unwrap_or(input);
+    let is_definition = first_line.starts_with("let ")
+        || first_line.starts_with("type ")
+        || first_line.starts_with("trait ")
+        || first_line.starts_with("use ");
 
     if is_definition {
         let src = format!("{}{}\npub {{}}\n", defs, input);

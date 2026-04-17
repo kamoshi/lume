@@ -327,7 +327,11 @@ enum Command {
         file: String,
     },
     /// Start an interactive REPL
-    Repl,
+    Repl {
+        /// Read input from stdin instead of an interactive terminal
+        #[arg(long, short = 's')]
+        stdin: bool,
+    },
     /// Compile and execute via the embedded LuaJIT runtime
     Run {
         /// Entry-point Lume source file
@@ -345,8 +349,12 @@ fn main() {
         Command::Fmt { files } => run_on_files(&files, fmt_file),
         Command::Js { file } => js_file(&file),
         Command::Lua { file } => lua_file(&file),
-        Command::Repl => {
-            lume_repl::run_repl();
+        Command::Repl { stdin } => {
+            if stdin {
+                lume_repl::run_repl_stdin();
+            } else {
+                lume_repl::run_repl();
+            }
             true
         }
         Command::Run { file } => exec_file(&file),
