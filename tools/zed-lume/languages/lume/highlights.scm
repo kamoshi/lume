@@ -78,4 +78,11 @@
 (field_access (identifier) @property .)
 
 ; Comments
+(doc_comment) @comment.doc
 (comment) @comment
+
+; Typed hole
+(hole) @variable.special
+
+; Unary operators
+"not" @keyword.operator
