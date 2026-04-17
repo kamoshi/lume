@@ -42,3 +42,12 @@
 !tools/zed-lume/src/**
 !tools/zed-lume/languages/
 !tools/zed-lume/languages/**
+!tools/vscode-lume/
+!tools/vscode-lume/.vscodeignore
+!tools/vscode-lume/esbuild.js
+!tools/vscode-lume/language-configuration.json
+!tools/vscode-lume/package.json
+!tools/vscode-lume/package-lock.json
+!tools/vscode-lume/tsconfig.json
+!tools/vscode-lume/src/
+!tools/vscode-lume/src/**
