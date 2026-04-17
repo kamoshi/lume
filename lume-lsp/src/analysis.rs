@@ -243,7 +243,10 @@ fn collect_expr_spans(expr: &Expr, out: &mut Vec<(Span, NodeId)>) {
         }
         ExprKind::FieldAccess { record, .. } => collect_expr_spans(record, out),
         ExprKind::Variant { payload: Some(p), .. } => collect_expr_spans(p, out),
-        ExprKind::Lambda { body, .. } => collect_expr_spans(body, out),
+        ExprKind::Lambda { param, body } => {
+            collect_pattern_spans(param, out);
+            collect_expr_spans(body, out);
+        }
         ExprKind::Apply { func, arg } => {
             collect_expr_spans(func, out);
             collect_expr_spans(arg, out);
@@ -264,6 +267,7 @@ fn collect_expr_spans(expr: &Expr, out: &mut Vec<(Span, NodeId)>) {
         }
         ExprKind::Match(arms) => {
             for a in arms {
+                collect_pattern_spans(&a.pattern, out);
                 if let Some(g) = &a.guard {
                     collect_expr_spans(g, out);
                 }
@@ -273,13 +277,15 @@ fn collect_expr_spans(expr: &Expr, out: &mut Vec<(Span, NodeId)>) {
         ExprKind::MatchExpr { scrutinee, arms } => {
             collect_expr_spans(scrutinee, out);
             for a in arms {
+                collect_pattern_spans(&a.pattern, out);
                 if let Some(g) = &a.guard {
                     collect_expr_spans(g, out);
                 }
                 collect_expr_spans(&a.body, out);
             }
         }
-        ExprKind::LetIn { value, body, .. } => {
+        ExprKind::LetIn { pattern, value, body } => {
+            collect_pattern_spans(pattern, out);
             collect_expr_spans(value, out);
             collect_expr_spans(body, out);
         }
