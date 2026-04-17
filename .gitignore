@@ -1,9 +1,13 @@
 *
 
 !.gitignore
+!.gitmodules
+!.gitattributes
+
+!README.md
+
 !Cargo.toml
 !Cargo.lock
-!spec.md
 
 !flake.nix
 !flake.lock
@@ -48,6 +52,7 @@
 !tests/**.lume
 
 !tools/
+!tools/tree-sitter-lume
 !tools/zed-lume/
 !tools/zed-lume/Cargo.toml
 !tools/zed-lume/Cargo.lock

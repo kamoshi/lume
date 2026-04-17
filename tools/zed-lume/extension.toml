@@ -12,6 +12,5 @@ name = "Lume LSP"
 language = "lume"
 
 [grammars.lume]
-repository = "file:///Users/kamov/Desktop/tree-sitter-lume"
+repository = "https://github.com/kamoshi/tree-sitter-lume.git"
 rev = "42a3592df34f36777913749419185c2beb7124c7"
-path = ""

@@ -1,0 +1,3 @@
+[submodule "tools/tree-sitter-lume"]
+	path = tools/tree-sitter-lume
+	url = ../tree-sitter-lume.git
