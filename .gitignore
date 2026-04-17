@@ -15,6 +15,11 @@
 !lume/src/
 !lume/src/**
 
+!lume-core/
+!lume-core/Cargo.toml
+!lume-core/src/
+!lume-core/src/**
+
 !lume-lsp/
 !lume-lsp/Cargo.toml
 !lume-lsp/src/
