@@ -1,4 +1,5 @@
 pub mod ast;
+pub mod builtin;
 pub mod bundle;
 pub mod codegen;
 pub mod error;

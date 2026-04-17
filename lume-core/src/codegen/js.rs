@@ -1,3 +1,4 @@
+use crate::builtin::BUILTINS;
 use crate::ir;
 use crate::codegen::IrModule;
 use crate::types::infer::VariantEnv;
@@ -142,6 +143,11 @@ pub fn emit(bundle: &[IrModule], variant_env: VariantEnv) -> String {
     for (lume_name, _, impl_str) in JS_STDLIB {
         if e.needed_stdlib.contains(*lume_name) {
             preamble.push_str(impl_str);
+        }
+    }
+    for b in BUILTINS {
+        if e.needed_stdlib.contains(b.name) {
+            preamble.push_str(b.js.body);
         }
     }
     if !preamble.is_empty() {
@@ -322,6 +328,10 @@ impl Emitter {
             ir::Expr::Var(name) => {
                 if JS_STDLIB.iter().any(|(n, _, _)| *n == name.as_str()) {
                     self.needed_stdlib.insert(name.clone());
+                } else if let Some(b) = BUILTINS.iter().find(|b| b.name == name.as_str()) {
+                    self.needed_stdlib.insert(name.clone());
+                    self.out.push_str(b.js.name);
+                    return;
                 }
                 self.out.push_str(&js_ident(name));
             }

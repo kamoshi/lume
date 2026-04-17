@@ -1,3 +1,4 @@
+use crate::builtin::BUILTINS;
 use crate::codegen::IrModule;
 use crate::ir;
 use crate::ir::{BinOp, UnOp};
@@ -406,6 +407,11 @@ pub fn emit(bundle: &[IrModule], variant_env: VariantEnv) -> String {
             preamble.push_str(impl_str);
         }
     }
+    for b in BUILTINS {
+        if e.needed_stdlib.contains(b.name) {
+            preamble.push_str(b.lua.body);
+        }
+    }
 
     if !preamble.is_empty() {
         e.out.insert_str(0, &preamble);
@@ -669,6 +675,9 @@ impl Emitter {
                 {
                     self.needed_stdlib.insert(name.clone());
                     self.out.push_str(lua_name);
+                } else if let Some(b) = BUILTINS.iter().find(|b| b.name == name.as_str()) {
+                    self.needed_stdlib.insert(name.clone());
+                    self.out.push_str(b.lua.name);
                 } else {
                     self.out.push_str(&lua_ident(name));
                 }

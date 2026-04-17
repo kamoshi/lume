@@ -181,6 +181,8 @@ pub fn builtin_env(s: &mut Subst) -> (TypeEnv, VariantEnv) {
         ty,
     };
 
+    crate::builtin::populate_env(s, &mut env);
+
     let v0 = s.fresh_var();
     let v1 = s.fresh_var();
 
@@ -1142,7 +1144,8 @@ impl Checker {
                                     .lower_ty(&method.ty, &mut param_vars)
                                     .map_err(|e| TypeErrorAt::new(e, span.clone()))?;
                                 // Record constraint on the trait's type param.
-                                self.constraint_map.push((trait_name.clone(), trait_param_var));
+                                self.constraint_map
+                                    .push((trait_name.clone(), trait_param_var));
                                 self.trait_call_constraints.push((
                                     trait_name.clone(),
                                     trait_param_var,
@@ -2484,13 +2487,16 @@ fn synth_impl_binding(id: &ImplDef, trait_def: Option<&TraitDef>) -> Binding {
                         Pattern::Ident(n, _, _) => n.clone(),
                         _ => return None,
                     };
-                    if name == m.name { b.ty.clone() } else { None }
+                    if name == m.name {
+                        b.ty.clone()
+                    } else {
+                        None
+                    }
                 });
                 FieldType {
                     name: m.name.clone(),
-                    ty: user_ty.unwrap_or_else(|| {
-                        subst_type_var(&m.ty, &td.type_param, &id.target_type)
-                    }),
+                    ty: user_ty
+                        .unwrap_or_else(|| subst_type_var(&m.ty, &td.type_param, &id.target_type)),
                 }
             })
             .collect();
@@ -2525,7 +2531,10 @@ fn ast_type_contains_var(ty: &Type, var_name: &str) -> bool {
         Type::Func { param, ret } => {
             ast_type_contains_var(param, var_name) || ast_type_contains_var(ret, var_name)
         }
-        Type::Record(rt) => rt.fields.iter().any(|f| ast_type_contains_var(&f.ty, var_name)),
+        Type::Record(rt) => rt
+            .fields
+            .iter()
+            .any(|f| ast_type_contains_var(&f.ty, var_name)),
     }
 }
 

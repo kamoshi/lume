@@ -371,7 +371,7 @@ impl<'src> Lexer<'src> {
             b'0'..=b'9' => self.lex_number(),
 
             // Identifier or keyword
-            b'a'..=b'z' | b'_' => self.lex_ident_or_keyword(),
+            b'a'..=b'z' | b'_' => self.lex_ident_or_keyword(line, col)?,
 
             // Type identifier (uppercase start)
             b'A'..=b'Z' => self.lex_type_ident(),
@@ -434,7 +434,7 @@ impl<'src> Lexer<'src> {
         Token::Number(s.parse().unwrap_or(0.0))
     }
 
-    fn lex_ident_or_keyword(&mut self) -> Token {
+    fn lex_ident_or_keyword(&mut self, line: usize, col: usize) -> Result<Token, LexError> {
         let start = self.pos;
         while matches!(
             self.peek(),
@@ -443,7 +443,13 @@ impl<'src> Lexer<'src> {
             self.advance();
         }
         let word = std::str::from_utf8(&self.src[start..self.pos]).unwrap();
-        match word {
+        if word.starts_with("__") {
+            return Err(LexError {
+                kind: LexErrorKind::ReservedIdentifier,
+                span: self.span_at(line, col, word.len()),
+            });
+        }
+        Ok(match word {
             "let" => Token::Let,
             "pub" => Token::Pub,
             "type" => Token::Type,
@@ -459,7 +465,7 @@ impl<'src> Lexer<'src> {
             "trait" => Token::Trait,
             "match" => Token::Match,
             _ => Token::Ident(word.to_string()),
-        }
+        })
     }
 
     fn lex_type_ident(&mut self) -> Token {

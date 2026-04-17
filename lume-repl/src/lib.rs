@@ -288,7 +288,7 @@ fn type_of(expr: &str, defs: &str) {
     use lume_core::lexer::Lexer;
     use lume_core::parser;
 
-    let src = format!("{}let __type_expr = {}\npub {{ __type_expr }}\n", defs, expr);
+    let src = format!("{}let _repl_type = {}\n", defs, expr);
 
     let tokens = match Lexer::new(&src).tokenize() {
         Ok(t) => t,
@@ -301,7 +301,7 @@ fn type_of(expr: &str, defs: &str) {
 
     match types::infer::elaborate_with_env(&program, None) {
         Ok((_, type_env, _)) => {
-            match type_env.lookup("__type_expr") {
+            match type_env.lookup("_repl_type") {
                 Some(scheme) => println!("  {expr} : {scheme}"),
                 None => eprintln!("  (could not determine type)"),
             }
@@ -353,7 +353,7 @@ fn eval_input(
     } else {
         // Expression — evaluate and print.
         let src = format!(
-            "{}let __repl_result = {}\npub {{ __repl_result }}\n",
+            "{}let _repl_result = {}\n",
             defs, input
         );
         match compile_repl(&src) {
@@ -361,7 +361,7 @@ fn eval_input(
                 let new_lua = strip_prefix(&lua_src, lua_history);
                 let new_lua = strip_trailing_return(new_lua);
                 let chunk = format!(
-                    "{}\nif __repl_result ~= nil then print(_show(__repl_result)) end",
+                    "{}\nif _repl_result ~= nil then print(_show(_repl_result)) end",
                     new_lua
                 );
                 match lua.load(chunk.as_str()).exec() {

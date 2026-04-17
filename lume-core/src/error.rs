@@ -22,6 +22,7 @@ impl fmt::Display for Span {
 pub enum LexErrorKind {
     UnexpectedChar(u8),
     UnterminatedString,
+    ReservedIdentifier,
 }
 
 #[derive(Debug)]
@@ -38,6 +39,9 @@ impl fmt::Display for LexError {
             }
             LexErrorKind::UnterminatedString => {
                 write!(f, "[{}] unterminated string literal", self.span)
+            }
+            LexErrorKind::ReservedIdentifier => {
+                write!(f, "[{}] identifiers starting with __ are reserved", self.span)
             }
         }
     }
