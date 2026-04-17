@@ -8,5 +8,6 @@ name = "lume"
 path = "src/main.rs"
 
 [dependencies]
+clap = { version = "4", features = ["derive"] }
 lume-core = { path = "../lume-core" }
-mlua = { version = "0.10", features = ["luajit", "vendored"] }
+lume-repl = { path = "../lume-repl" }

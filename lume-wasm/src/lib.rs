@@ -8,8 +8,9 @@ use lume_core::{
     error::Span,
     lexer::Lexer,
     loader::{stdlib_path, stdlib_source, use_path_context, Loader, UsePathKind, STDLIB_MODULES},
+    lower,
     parser,
-    types::{self, infer::build_variant_env, infer::builtin_env, infer::elaborate_with_env_partial, Ty},
+    types::{self, infer::builtin_env, infer::elaborate_with_env_partial, Ty},
 };
 use wasm_bindgen::prelude::*;
 
@@ -75,11 +76,10 @@ fn collect_expr(src: &str, expr: &Expr, out: &mut Vec<(usize, usize, NodeId)>) {
             }
         }
         ExprKind::FieldAccess { record, .. } => collect_expr(src, record, out),
-        ExprKind::Variant { payload, .. } => {
-            if let Some(p) = payload {
-                collect_expr(src, p, out);
-            }
+        ExprKind::Variant { payload: Some(p), .. } => {
+            collect_expr(src, p, out);
         }
+        ExprKind::Variant { payload: None, .. } => {}
         ExprKind::Lambda { param, body } => {
             collect_pat(src, param, out);
             collect_expr(src, body, out);
@@ -122,11 +122,10 @@ fn collect_arm(src: &str, arm: &MatchArm, out: &mut Vec<(usize, usize, NodeId)>)
 fn collect_pat(src: &str, pat: &Pattern, out: &mut Vec<(usize, usize, NodeId)>) {
     match pat {
         Pattern::Ident(_, span, id) => push_span(src, span, *id, out),
-        Pattern::Variant { payload, .. } => {
-            if let Some(p) = payload {
-                collect_pat(src, p, out);
-            }
+        Pattern::Variant { payload: Some(p), .. } => {
+            collect_pat(src, p, out);
         }
+        Pattern::Variant { payload: None, .. } => {}
         Pattern::Record(rp) => {
             for f in &rp.fields {
                 push_span(src, &f.span, f.node_id, out);
@@ -257,6 +256,124 @@ fn stdlib_var(path: &str) -> String {
     format!("_mod_{suffix}")
 }
 
+/// Type-check and lower a bundle of AST modules into IR modules.
+fn lower_bundle(
+    b: &[BundleModule],
+) -> Result<(Vec<codegen::IrModule>, types::infer::VariantEnv), String> {
+    use std::collections::HashMap;
+
+    let mut global = lower::GlobalCtx {
+        traits: HashMap::new(),
+        impls: HashMap::new(),
+        param_impls: Vec::new(),
+        variants: HashMap::new(),
+    };
+    for m in b.iter() {
+        for item in &m.program.items {
+            match item {
+                TopItem::TraitDef(td) => {
+                    global.traits.insert(td.name.clone(), td.clone());
+                }
+                TopItem::ImplDef(id) => {
+                    let dict = lower::dict_name(&id.trait_name, &id.type_name);
+                    if id.impl_constraints.is_empty() {
+                        global.impls.insert(
+                            (id.trait_name.clone(), id.type_name.clone()),
+                            lower::ImplEntry {
+                                module_var: Some(m.var.clone()),
+                                dict_ident: dict,
+                            },
+                        );
+                    } else {
+                        global.param_impls.push(lower::ParamImplEntry {
+                            trait_name: id.trait_name.clone(),
+                            target_type: id.target_type.clone(),
+                            constraints: id.impl_constraints.clone(),
+                            module_var: Some(m.var.clone()),
+                            dict_ident: dict,
+                        });
+                    }
+                }
+                TopItem::TypeDef(td) => {
+                    for variant in &td.variants {
+                        global.variants.insert(
+                            variant.name.clone(),
+                            types::infer::VariantInfo {
+                                type_name: td.name.clone(),
+                                type_params: td.params.clone(),
+                                wraps: variant.wraps.clone(),
+                            },
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    {
+        let mut scratch = types::Subst::new();
+        let (_, builtin_variants) = builtin_env(&mut scratch);
+        for (name, info) in builtin_variants.all() {
+            global.variants.entry(name.clone()).or_insert_with(|| info.clone());
+        }
+    }
+
+    let mut ir_modules = Vec::new();
+    for m in b.iter() {
+        let local_global = lower::GlobalCtx {
+            traits: global.traits.clone(),
+            impls: global
+                .impls
+                .iter()
+                .map(|(k, e)| {
+                    let is_local = e.module_var.as_deref() == Some(&m.var);
+                    (
+                        k.clone(),
+                        lower::ImplEntry {
+                            module_var: if is_local { None } else { e.module_var.clone() },
+                            dict_ident: e.dict_ident.clone(),
+                        },
+                    )
+                })
+                .collect(),
+            param_impls: global
+                .param_impls
+                .iter()
+                .map(|pi| lower::ParamImplEntry {
+                    trait_name: pi.trait_name.clone(),
+                    target_type: pi.target_type.clone(),
+                    constraints: pi.constraints.clone(),
+                    module_var: if pi.module_var.as_deref() == Some(&m.var) {
+                        None
+                    } else {
+                        pi.module_var.clone()
+                    },
+                    dict_ident: pi.dict_ident.clone(),
+                })
+                .collect(),
+            variants: global.variants.clone(),
+        };
+
+        let module_path = Some(m.canonical.as_path());
+        let (node_types, type_env) = types::infer::elaborate_with_env(&m.program, module_path)
+            .map(|(nt, env, _)| (nt, env))
+            .map_err(|e| format!("{}: type error: {e}", m.canonical.display()))?;
+        let ir_mod = lower::lower(m.program.clone(), &node_types, &type_env, &local_global);
+        ir_modules.push(codegen::IrModule {
+            canonical: m.canonical.clone(),
+            module: ir_mod,
+            var: m.var.clone(),
+        });
+    }
+
+    let mut variant_env = types::infer::VariantEnv::default();
+    for (name, info) in global.variants {
+        variant_env.insert(name, info);
+    }
+    Ok((ir_modules, variant_env))
+}
+
 // ── Public WASM API ───────────────────────────────────────────────────────────
 
 /// Returns a JSON array of the built-in stdlib module paths,
@@ -296,15 +413,9 @@ pub fn to_js(src: &str) -> Result<JsValue, JsValue> {
         .ok_or_else(|| JsValue::from_str("internal error: empty bundle"))?;
     types::infer::check_program(&entry.program, Some(Path::new(WASM_ENTRY_PATH)))
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
-    let variant_env = {
-        let mut scratch = types::Subst::new();
-        let (_, mut env) = builtin_env(&mut scratch);
-        for m in &bundle {
-            env.merge(build_variant_env(&m.program.items));
-        }
-        env
-    };
-    Ok(JsValue::from_str(&codegen::js::emit(&bundle, variant_env)))
+    let (ir_modules, variant_env) =
+        lower_bundle(&bundle).map_err(|e| JsValue::from_str(&e))?;
+    Ok(JsValue::from_str(&codegen::js::emit(&ir_modules, variant_env)))
 }
 
 /// Transpile to Lua (type-checks first). Returns Lua code or throws.
@@ -316,15 +427,9 @@ pub fn to_lua(src: &str) -> Result<JsValue, JsValue> {
         .ok_or_else(|| JsValue::from_str("internal error: empty bundle"))?;
     types::infer::check_program(&entry.program, Some(Path::new(WASM_ENTRY_PATH)))
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
-    let variant_env = {
-        let mut scratch = types::Subst::new();
-        let (_, mut env) = builtin_env(&mut scratch);
-        for m in &bundle {
-            env.merge(build_variant_env(&m.program.items));
-        }
-        env
-    };
-    Ok(JsValue::from_str(&codegen::lua::emit(&bundle, variant_env)))
+    let (ir_modules, variant_env) =
+        lower_bundle(&bundle).map_err(|e| JsValue::from_str(&e))?;
+    Ok(JsValue::from_str(&codegen::lua::emit(&ir_modules, variant_env)))
 }
 
 /// Returns a JSON array of diagnostics: `[{from, to, message}]`.

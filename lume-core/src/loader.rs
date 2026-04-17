@@ -167,6 +167,7 @@ pub fn resolve_path(raw: &str, base: &Path) -> Result<PathBuf, String> {
 
 /// Exported information from a compiled module.
 #[derive(Clone)]
+#[allow(clippy::type_complexity)]
 pub struct ModuleExports {
     pub scheme: Scheme,
     pub variant_env: VariantEnv,

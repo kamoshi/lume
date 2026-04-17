@@ -104,6 +104,7 @@ fn try_parse_constraints(tokens: &[Spanned]) -> Option<(usize, Vec<(String, Stri
     if matches!(first_token(tokens), Some(Token::LParen)) {
         let mut ptr = 1; // skip `(`
         let mut constraints = Vec::new();
+        #[allow(clippy::while_let_loop)]
         loop {
             // Expect TypeIdent (trait name) then Ident (type param)
             let trait_name = match tokens.get(ptr).map(|t| &t.token) {
@@ -456,7 +457,7 @@ fn try_parse_impl_constraints(tokens: &[Spanned]) -> Option<(usize, Vec<(String,
     let fat_arrow_pos = tokens.iter().position(|t| matches!(t.token, Token::FatArrow))?;
     // Make sure `{` doesn't appear before `=>`
     let lbrace_pos = tokens.iter().position(|t| matches!(t.token, Token::LBrace));
-    if lbrace_pos.map_or(false, |p| p < fat_arrow_pos) {
+    if lbrace_pos.is_some_and(|p| p < fat_arrow_pos) {
         return None;
     }
 

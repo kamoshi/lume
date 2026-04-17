@@ -1,0 +1,13 @@
+[package]
+name = "lume-repl"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "lume_repl"
+path = "src/lib.rs"
+
+[dependencies]
+lume-core = { path = "../lume-core" }
+mlua = { version = "0.10", features = ["luajit", "vendored"] }
+rustyline = "15"

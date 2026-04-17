@@ -1,5 +1,6 @@
-use crate::ast::*;
-use crate::bundle::BundleModule;
+use crate::codegen::IrModule;
+use crate::ir;
+use crate::ir::{BinOp, UnOp};
 use crate::types::infer::VariantEnv;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -286,16 +287,17 @@ static STDLIB: &[(&str, &str, &str)] = &[
     )),
 ];
 
+#[rustfmt::skip]
+const LUA_RESERVED: &[&str] = &[
+    "and", "break", "do", "else", "elseif", "end", "false", "for",
+    "function", "goto", "if", "in", "local", "nil", "not", "or",
+    "repeat", "return", "then", "true", "until", "while",
+];
+
 /// Emit a Lua table key safely: bare identifier for normal names,
 /// `["keyword"]` for Lua reserved words.
 fn lua_field_key(name: &str) -> String {
-    #[rustfmt::skip]
-    const RESERVED: &[&str] = &[
-        "and", "break", "do", "else", "elseif", "end", "false", "for",
-        "function", "goto", "if", "in", "local", "nil", "not", "or",
-        "repeat", "return", "then", "true", "until", "while",
-    ];
-    if RESERVED.contains(&name) {
+    if LUA_RESERVED.contains(&name) {
         format!("[\"{}\"]", name)
     } else {
         name.to_string()
@@ -304,20 +306,14 @@ fn lua_field_key(name: &str) -> String {
 
 /// Escape Lua reserved words.
 fn lua_ident(name: &str) -> std::borrow::Cow<'_, str> {
-    #[rustfmt::skip]
-    const RESERVED: &[&str] = &[
-        "and", "break", "do", "else", "elseif", "end", "false", "for",
-        "function", "goto", "if", "in", "local", "nil", "not", "or",
-        "repeat", "return", "then", "true", "until", "while",
-    ];
-    if RESERVED.contains(&name) {
+    if LUA_RESERVED.contains(&name) {
         std::borrow::Cow::Owned(format!("_{}", name))
     } else {
         std::borrow::Cow::Borrowed(name)
     }
 }
 
-pub fn emit(bundle: &[BundleModule], variant_env: VariantEnv) -> String {
+pub fn emit(bundle: &[IrModule], variant_env: VariantEnv) -> String {
     let module_vars: HashMap<PathBuf, String> = bundle
         .iter()
         .map(|m| (m.canonical.clone(), m.var.clone()))
@@ -338,7 +334,7 @@ pub fn emit(bundle: &[BundleModule], variant_env: VariantEnv) -> String {
 
     let last = bundle.len().saturating_sub(1);
     for (i, m) in bundle.iter().enumerate() {
-        e.emit_module(&m.program, &m.canonical, &m.var, i == last);
+        e.emit_module(&m.module, &m.canonical, &m.var, i == last);
     }
 
     // Build the preamble. Internal code-gen helpers come first, then stdlib
@@ -441,34 +437,33 @@ impl Emitter {
         format!("_t{}", n)
     }
 
-    fn emit_module(&mut self, program: &Program, canonical: &Path, var: &str, is_entry: bool) {
+    fn emit_module(&mut self, module: &ir::Module, canonical: &Path, var: &str, is_entry: bool) {
         if !is_entry {
             self.out.push_str(&format!("local {} = (function()\n", var));
         }
 
-        for u in &program.uses {
-            self.emit_use(u, canonical);
+        for u in &module.imports {
+            self.emit_import(u, canonical);
         }
-        if !program.uses.is_empty() {
+        if !module.imports.is_empty() {
             self.out.push('\n');
         }
 
-        for item in &program.items {
+        for item in &module.items {
             match item {
-                TopItem::TypeDef(_) | TopItem::TraitDef(_) | TopItem::ImplDef(_) => {}
-                TopItem::Binding(b) => {
-                    self.emit_binding(b);
+                ir::Decl::Let(pat, expr) => {
+                    self.emit_pat_binding(pat, expr);
                     self.out.push('\n');
                 }
-                TopItem::BindingGroup(bs) => {
-                    self.emit_binding_group(bs);
+                ir::Decl::LetRec(bindings) => {
+                    self.emit_binding_group(bindings);
                     self.out.push('\n');
                 }
             }
         }
 
         self.out.push_str("\nreturn ");
-        self.emit_expr(&program.exports);
+        self.emit_expr(&module.exports);
         self.out.push('\n');
 
         if !is_entry {
@@ -476,7 +471,7 @@ impl Emitter {
         }
     }
 
-    fn emit_use(&mut self, u: &UseDecl, base: &Path) {
+    fn emit_import(&mut self, u: &ir::Import, base: &Path) {
         // Try to resolve to a canonical path and look up the bundle var.
         // Stdlib paths use the synthetic key produced by `stdlib_path`.
         let mod_var = if crate::loader::stdlib_source(&u.path).is_some() {
@@ -491,17 +486,17 @@ impl Emitter {
 
         match mod_var {
             Some(mv) => match &u.binding {
-                UseBinding::Ident(name, _, _) => {
+                ir::ImportBinding::Name(name) => {
                     self.out
                         .push_str(&format!("local {} = {}\n", lua_ident(name), mv));
                 }
-                UseBinding::Record(rp) => {
-                    for f in &rp.fields {
+                ir::ImportBinding::Destructure(names) => {
+                    for name in names {
                         self.out.push_str(&format!(
                             "local {} = {}.{}\n",
-                            lua_ident(&f.name),
+                            lua_ident(name),
                             mv,
-                            f.name
+                            name
                         ));
                     }
                 }
@@ -515,23 +510,23 @@ impl Emitter {
                     raw.clone()
                 };
                 match &u.binding {
-                    UseBinding::Ident(name, _, _) => {
+                    ir::ImportBinding::Name(name) => {
                         self.out.push_str(&format!(
                             "local {} = require(\"{}\")\n",
                             lua_ident(name),
                             path
                         ));
                     }
-                    UseBinding::Record(rp) => {
+                    ir::ImportBinding::Destructure(names) => {
                         let tmp = self.fresh();
                         self.out
                             .push_str(&format!("local {} = require(\"{}\")\n", tmp, path));
-                        for f in &rp.fields {
+                        for name in names {
                             self.out.push_str(&format!(
                                 "local {} = {}.{}\n",
-                                lua_ident(&f.name),
+                                lua_ident(name),
                                 tmp,
-                                f.name
+                                name
                             ));
                         }
                     }
@@ -540,20 +535,16 @@ impl Emitter {
         }
     }
 
-    fn emit_binding(&mut self, b: &Binding) {
-        self.emit_pat_binding(&b.pattern, &b.value);
-    }
-
     /// Emit a mutually recursive binding group.
     ///
     /// All names are declared with a single `local` statement first, so every
     /// body in the group can close over every other name.
-    fn emit_binding_group(&mut self, bs: &[Binding]) {
-        // Collect names of simple Ident patterns.
+    fn emit_binding_group(&mut self, bs: &[(ir::Pat, ir::Expr)]) {
+        // Collect names of simple Var patterns.
         let names: Vec<String> = bs
             .iter()
-            .filter_map(|b| {
-                if let Pattern::Ident(name, _, _) = &b.pattern {
+            .filter_map(|(pat, _)| {
+                if let ir::Pat::Var(name) = pat {
                     Some(lua_ident(name).into_owned())
                 } else {
                     None
@@ -566,17 +557,17 @@ impl Emitter {
         }
 
         // Now emit each assignment (without the `local` prefix).
-        for b in bs {
-            match &b.pattern {
-                Pattern::Ident(name, _, _) => {
+        for (pat, expr) in bs {
+            match pat {
+                ir::Pat::Var(name) => {
                     let n = lua_ident(name).into_owned();
                     self.out.push_str(&format!("{} = ", n));
-                    self.emit_expr(&b.value);
+                    self.emit_expr(expr);
                     self.out.push('\n');
                 }
                 _ => {
                     // Non-ident patterns fall back to the normal path.
-                    self.emit_pat_binding(&b.pattern, &b.value);
+                    self.emit_pat_binding(pat, expr);
                     self.out.push('\n');
                 }
             }
@@ -584,41 +575,40 @@ impl Emitter {
     }
 
     /// Emit one or more `local` statements for `pat = expr`.
-    fn emit_pat_binding(&mut self, pat: &Pattern, expr: &Expr) {
+    fn emit_pat_binding(&mut self, pat: &ir::Pat, expr: &ir::Expr) {
         match pat {
-            Pattern::Ident(name, _, _) => {
+            ir::Pat::Var(name) => {
                 let n = lua_ident(name).into_owned();
                 self.out.push_str(&format!("local {}\n", n));
                 self.out.push_str(&format!("{} = ", n));
                 self.emit_expr(expr);
             }
-            Pattern::Wildcard => {
+            ir::Pat::Wild => {
                 self.out.push_str("local _ = ");
                 self.emit_expr(expr);
             }
-            Pattern::Record(rp) => {
+            ir::Pat::Record { fields, rest } => {
                 let tmp = self.fresh();
                 self.out.push_str(&format!("local {} = ", tmp));
                 self.emit_expr(expr);
                 self.out.push('\n');
-                for f in &rp.fields {
-                    let src = format!("{}.{}", tmp, f.name);
-                    if let Some(p) = &f.pattern {
+                for (name, pat_opt) in fields {
+                    let src = format!("{}.{}", tmp, name);
+                    if let Some(p) = pat_opt {
                         let binds = self.collect_binds_pure(&src, p);
                         for (lhs, rhs) in binds {
                             self.out.push_str(&format!("local {} = {}\n", lhs, rhs));
                         }
                     } else {
                         self.out
-                            .push_str(&format!("local {} = {}\n", lua_ident(&f.name), src));
+                            .push_str(&format!("local {} = {}\n", lua_ident(name), src));
                     }
                 }
-                if let Some(Some(rest_name)) = &rp.rest {
+                if let Some(Some(rest_name)) = rest {
                     self.needs_omit = true;
-                    let excluded: Vec<_> = rp
-                        .fields
+                    let excluded: Vec<_> = fields
                         .iter()
-                        .map(|f| format!("\"{}\"", f.name))
+                        .map(|(name, _)| format!("\"{}\"", name))
                         .collect();
                     self.out.push_str(&format!(
                         "local {} = _omit({}, {{{}}})\n",
@@ -628,25 +618,25 @@ impl Emitter {
                     ));
                 }
             }
-            Pattern::List(lp) => {
+            ir::Pat::List { elems, rest } => {
                 let tmp = self.fresh();
                 self.out.push_str(&format!("local {} = ", tmp));
                 self.emit_expr(expr);
                 self.out.push('\n');
-                for (i, elem) in lp.elements.iter().enumerate() {
+                for (i, elem) in elems.iter().enumerate() {
                     let src = format!("{}[{}]", tmp, i + 1);
                     let binds = self.collect_binds_pure(&src, elem);
                     for (lhs, rhs) in binds {
                         self.out.push_str(&format!("local {} = {}\n", lhs, rhs));
                     }
                 }
-                if let Some(Some(rest_name)) = &lp.rest {
+                if let Some(Some(rest_name)) = rest {
                     self.needs_slice = true;
                     self.out.push_str(&format!(
                         "local {} = _slice({}, {})\n",
                         rest_name,
                         tmp,
-                        lp.elements.len() + 1
+                        elems.len() + 1
                     ));
                 }
             }
@@ -657,12 +647,12 @@ impl Emitter {
         }
     }
 
-    fn emit_expr(&mut self, expr: &Expr) {
-        match &expr.kind {
-            ExprKind::Number(n) => self.emit_number(*n),
-            ExprKind::Text(s) => self.emit_string(s),
-            ExprKind::Bool(b) => self.out.push_str(if *b { "true" } else { "false" }),
-            ExprKind::List(items) => {
+    fn emit_expr(&mut self, expr: &ir::Expr) {
+        match expr {
+            ir::Expr::Num(n) => self.emit_number(*n),
+            ir::Expr::Str(s) => self.emit_string(s),
+            ir::Expr::Bool(b) => self.out.push_str(if *b { "true" } else { "false" }),
+            ir::Expr::List(items) => {
                 self.out.push('{');
                 for (i, item) in items.iter().enumerate() {
                     if i > 0 {
@@ -672,7 +662,7 @@ impl Emitter {
                 }
                 self.out.push('}');
             }
-            ExprKind::Ident(name) => {
+            ir::Expr::Var(name) => {
                 // Check if this is a stdlib function. If so, record it (so the
                 // preamble implementation is emitted) and use the Lua-side name.
                 if let Some((_, lua_name, _)) = STDLIB.iter().find(|(n, _, _)| *n == name.as_str())
@@ -683,58 +673,43 @@ impl Emitter {
                     self.out.push_str(&lua_ident(name));
                 }
             }
-            ExprKind::Record { base, fields, .. } => {
+            ir::Expr::Record { base, fields } => {
                 if let Some(base_expr) = base {
                     // Record update: _extend(base, { overrides })
                     self.needs_extend = true;
                     self.out.push_str("_extend(");
                     self.emit_expr(base_expr);
                     self.out.push_str(", {");
-                    for (i, f) in fields.iter().enumerate() {
+                    for (i, (name, val)) in fields.iter().enumerate() {
                         if i > 0 {
                             self.out.push_str(", ");
                         }
-                        self.out.push_str(&format!("{} = ", lua_field_key(&f.name)));
-                        if let Some(val) = &f.value {
-                            self.emit_expr(val);
-                        } else {
-                            self.out.push_str(&lua_ident(&f.name));
-                        }
+                        self.out.push_str(&format!("{} = ", lua_field_key(name)));
+                        self.emit_expr(val);
                     }
                     self.out.push_str("})");
                 } else {
                     self.out.push('{');
-                    for (i, f) in fields.iter().enumerate() {
+                    for (i, (name, val)) in fields.iter().enumerate() {
                         if i > 0 {
                             self.out.push_str(", ");
                         }
-                        self.out.push_str(&format!("{} = ", lua_field_key(&f.name)));
-                        if let Some(val) = &f.value {
-                            self.emit_expr(val);
-                        } else {
-                            self.out.push_str(&lua_ident(&f.name));
-                        }
+                        self.out.push_str(&format!("{} = ", lua_field_key(name)));
+                        self.emit_expr(val);
                     }
                     self.out.push('}');
                 }
             }
-            ExprKind::FieldAccess { record, field } => {
+            ir::Expr::Field(record, field) => {
                 self.emit_access_target(record);
-                // Use bracket syntax for Lua reserved words.
-                #[rustfmt::skip]
-                const RESERVED: &[&str] = &[
-                    "and", "break", "do", "else", "elseif", "end", "false", "for",
-                    "function", "goto", "if", "in", "local", "nil", "not", "or",
-                    "repeat", "return", "then", "true", "until", "while",
-                ];
-                if RESERVED.contains(&field.as_str()) {
+                if LUA_RESERVED.contains(&field.as_str()) {
                     self.out.push_str(&format!("[\"{}\"]", field));
                 } else {
                     self.out.push('.');
                     self.out.push_str(field);
                 }
             }
-            ExprKind::Variant { name, payload } => match payload {
+            ir::Expr::Tag(name, payload) => match payload {
                 None => {
                     self.out.push_str(&format!("{{_tag = \"{}\"}}", name));
                 }
@@ -744,15 +719,15 @@ impl Emitter {
                     self.out.push('}');
                 }
             },
-            ExprKind::Lambda { param, body } => self.emit_lambda(param, body),
-            ExprKind::Apply { func, arg } => {
+            ir::Expr::Lam(param, body) => self.emit_lambda(param, body),
+            ir::Expr::App(func, arg) => {
                 self.emit_call_target(func);
                 self.out.push('(');
                 self.emit_expr(arg);
                 self.out.push(')');
             }
-            ExprKind::Binary { op, left, right } => self.emit_binary(op, left, right),
-            ExprKind::Unary { op, operand } => match op {
+            ir::Expr::BinOp(op, left, right) => self.emit_binary(op, left, right),
+            ir::Expr::UnOp(op, operand) => match op {
                 UnOp::Neg => {
                     self.out.push('-');
                     self.emit_call_target(operand);
@@ -762,11 +737,7 @@ impl Emitter {
                     self.emit_call_target(operand);
                 }
             },
-            ExprKind::If {
-                cond,
-                then_branch,
-                else_branch,
-            } => {
+            ir::Expr::If(cond, then_branch, else_branch) => {
                 self.out.push_str("(function() if ");
                 self.emit_expr(cond);
                 self.out.push_str(" then return ");
@@ -775,30 +746,15 @@ impl Emitter {
                 self.emit_expr(else_branch);
                 self.out.push_str(" end end)()");
             }
-            ExprKind::Match(arms) => self.emit_match_fn(arms),
-            ExprKind::MatchExpr { scrutinee, arms } => self.emit_match_expr(scrutinee, arms),
-            ExprKind::TraitCall { trait_name, method_name } => {
-                // A TraitCall with an ambiguous (polymorphic) type survives desugaring.
-                // Emit a function that errors when called; the fix is a type annotation.
-                self.out.push_str(&format!(
-                    "function() error(\"ambiguous trait call {}.{}: add a type annotation\") end",
-                    trait_name, method_name
-                ));
-            }
-            ExprKind::LetIn {
-                pattern,
-                value,
-                body,
-            } => {
+            ir::Expr::MatchFn(arms) => self.emit_match_fn(arms),
+            ir::Expr::Match(scrutinee, arms) => self.emit_match_expr(scrutinee, arms),
+            ir::Expr::Let(pattern, value, body) => {
                 // Emit as IIFE: (function(param) return body end)(value)
                 self.out.push('(');
                 self.emit_lambda(pattern, body);
                 self.out.push_str(")(");
                 self.emit_expr(value);
                 self.out.push(')');
-            }
-            ExprKind::Hole => {
-                self.out.push_str("(function() error(\"typed hole: program is incomplete\") end)()");
             }
         }
     }
@@ -825,9 +781,9 @@ impl Emitter {
         self.out.push('"');
     }
 
-    fn emit_access_target(&mut self, expr: &Expr) {
-        match &expr.kind {
-            ExprKind::Ident(_) | ExprKind::FieldAccess { .. } => self.emit_expr(expr),
+    fn emit_access_target(&mut self, expr: &ir::Expr) {
+        match expr {
+            ir::Expr::Var(_) | ir::Expr::Field(_, _) => self.emit_expr(expr),
             _ => {
                 self.out.push('(');
                 self.emit_expr(expr);
@@ -836,14 +792,14 @@ impl Emitter {
         }
     }
 
-    fn emit_call_target(&mut self, expr: &Expr) {
-        match &expr.kind {
-            ExprKind::Ident(_)
-            | ExprKind::FieldAccess { .. }
-            | ExprKind::Apply { .. }
-            | ExprKind::Number(_)
-            | ExprKind::Text(_)
-            | ExprKind::Bool(_) => self.emit_expr(expr),
+    fn emit_call_target(&mut self, expr: &ir::Expr) {
+        match expr {
+            ir::Expr::Var(_)
+            | ir::Expr::Field(_, _)
+            | ir::Expr::App(_, _)
+            | ir::Expr::Num(_)
+            | ir::Expr::Str(_)
+            | ir::Expr::Bool(_) => self.emit_expr(expr),
             _ => {
                 self.out.push('(');
                 self.emit_expr(expr);
@@ -860,13 +816,9 @@ impl Emitter {
     /// lists do not blow the call stack.
     ///
     /// For every other expression kind, this is identical to `return <emit_expr>`.
-    fn emit_tail_expr(&mut self, expr: &Expr, indent: &str) {
-        match &expr.kind {
-            ExprKind::If {
-                cond,
-                then_branch,
-                else_branch,
-            } => {
+    fn emit_tail_expr(&mut self, expr: &ir::Expr, indent: &str) {
+        match expr {
+            ir::Expr::If(cond, then_branch, else_branch) => {
                 self.out.push_str("if ");
                 self.emit_expr(cond);
                 self.out.push_str(" then\n");
@@ -877,36 +829,32 @@ impl Emitter {
                 self.emit_tail_expr(else_branch, &format!("{}  ", indent));
                 self.out.push_str(&format!("\n{}end", indent));
             }
-            ExprKind::LetIn {
-                pattern,
-                value,
-                body,
-            } => {
+            ir::Expr::Let(pattern, value, body) => {
                 // Emit as local bindings + tail body - no IIFE, so LuaJIT can
                 // see the tail call in `body` as a proper tail call.
                 match pattern {
-                    Pattern::Ident(name, _, _) => {
+                    ir::Pat::Var(name) => {
                         self.out.push_str(&format!("local {} = ", lua_ident(name)));
                         self.emit_expr(value);
                         self.out.push_str(&format!("\n{}", indent));
                         self.emit_tail_expr(body, indent);
                     }
-                    Pattern::Wildcard => {
+                    ir::Pat::Wild => {
                         self.emit_expr(value);
                         self.out.push_str(&format!("\n{}", indent));
                         self.emit_tail_expr(body, indent);
                     }
-                    Pattern::Record(rp) => {
+                    ir::Pat::Record { fields, .. } => {
                         // Collect bindings first (immutable borrow), then emit.
                         let mut all_binds: Vec<(String, String)> = Vec::new();
-                        for f in &rp.fields {
-                            if let Some(p) = &f.pattern {
-                                let b = self.collect_binds_pure(&format!("_lv.{}", f.name), p);
+                        for (name, pat_opt) in fields {
+                            if let Some(p) = pat_opt {
+                                let b = self.collect_binds_pure(&format!("_lv.{}", name), p);
                                 all_binds.extend(b);
                             } else {
                                 all_binds.push((
-                                    lua_ident(&f.name).to_string(),
-                                    format!("_lv.{}", f.name),
+                                    lua_ident(name).to_string(),
+                                    format!("_lv.{}", name),
                                 ));
                             }
                         }
@@ -930,7 +878,7 @@ impl Emitter {
                     }
                 }
             }
-            ExprKind::MatchExpr { scrutinee, arms } => {
+            ir::Expr::Match(scrutinee, arms) => {
                 // Emit directly (no IIFE) so the Lua tail-call in each arm is
                 // visible to LuaJIT, enabling O(1) stack for recursive fns.
                 let tmp = self.fresh();
@@ -946,41 +894,40 @@ impl Emitter {
         }
     }
 
-    fn emit_lambda(&mut self, param: &Pattern, body: &Expr) {
+    fn emit_lambda(&mut self, param: &ir::Pat, body: &ir::Expr) {
         match param {
-            Pattern::Ident(name, _, _) => {
+            ir::Pat::Var(name) => {
                 self.out
                     .push_str(&format!("function({})\n  ", lua_ident(name)));
                 self.emit_tail_expr(body, "  ");
                 self.out.push_str("\nend");
             }
-            Pattern::Wildcard => {
+            ir::Pat::Wild => {
                 self.out.push_str("function(_)\n  ");
                 self.emit_tail_expr(body, "  ");
                 self.out.push_str("\nend");
             }
-            Pattern::Record(rp) => {
+            ir::Pat::Record { fields, rest } => {
                 self.out.push_str("function(_arg)\n");
-                for f in &rp.fields {
-                    if let Some(p) = &f.pattern {
-                        let binds = self.collect_binds_pure(&format!("_arg.{}", f.name), p);
+                for (name, pat_opt) in fields {
+                    if let Some(p) = pat_opt {
+                        let binds = self.collect_binds_pure(&format!("_arg.{}", name), p);
                         for (lhs, rhs) in binds {
                             self.out.push_str(&format!("  local {} = {}\n", lhs, rhs));
                         }
                     } else {
                         self.out.push_str(&format!(
                             "  local {} = _arg.{}\n",
-                            lua_ident(&f.name),
-                            f.name
+                            lua_ident(name),
+                            name
                         ));
                     }
                 }
-                if let Some(Some(rest_name)) = &rp.rest {
+                if let Some(Some(rest_name)) = rest {
                     self.needs_omit = true;
-                    let excluded: Vec<_> = rp
-                        .fields
+                    let excluded: Vec<_> = fields
                         .iter()
-                        .map(|f| format!("\"{}\"", f.name))
+                        .map(|(name, _)| format!("\"{}\"", name))
                         .collect();
                     self.out.push_str(&format!(
                         "  local {} = _omit(_arg, {{{}}})\n",
@@ -1013,14 +960,8 @@ impl Emitter {
         }
     }
 
-    fn emit_binary(&mut self, op: &BinOp, left: &Expr, right: &Expr) {
+    fn emit_binary(&mut self, op: &BinOp, left: &ir::Expr, right: &ir::Expr) {
         match op {
-            BinOp::Pipe => {
-                self.emit_call_target(right);
-                self.out.push('(');
-                self.emit_expr(left);
-                self.out.push(')');
-            }
             BinOp::ResultPipe => {
                 self.needs_result_bind = true;
                 self.out.push_str("_resultBind(");
@@ -1062,7 +1003,7 @@ impl Emitter {
         }
     }
 
-    fn emit_match_fn(&mut self, arms: &[MatchArm]) {
+    fn emit_match_fn(&mut self, arms: &[ir::Branch]) {
         self.out.push_str("function(_v)\n");
         for arm in arms {
             let cond = Self::pattern_cond("_v", &arm.pattern);
@@ -1098,7 +1039,7 @@ impl Emitter {
         self.out.push_str("  error(\"incomplete match\")\nend");
     }
 
-    fn emit_match_expr(&mut self, scrutinee: &Expr, arms: &[MatchArm]) {
+    fn emit_match_expr(&mut self, scrutinee: &ir::Expr, arms: &[ir::Branch]) {
         let tmp = self.fresh();
         self.out.push_str("(function()\n");
         self.out.push_str(&format!("local {} = ", tmp));
@@ -1111,7 +1052,7 @@ impl Emitter {
     /// Emit match arms as an if/elseif chain with `return` in each branch.
     /// Used both by the IIFE wrapper (`emit_match_expr`) and the direct TCO
     /// path (`emit_tail_expr`).
-    fn emit_match_arms(&mut self, var: &str, arms: &[MatchArm], indent: &str) {
+    fn emit_match_arms(&mut self, var: &str, arms: &[ir::Branch], indent: &str) {
         let ind2 = format!("{}  ", indent);
         let ind3 = format!("{}    ", indent);
         for arm in arms {
@@ -1152,11 +1093,11 @@ impl Emitter {
     // ── Pattern helpers ───────────────────────────────────────────────────────
 
     /// Returns a Lua boolean expression testing whether `var` matches `pat`.
-    fn pattern_cond(var: &str, pat: &Pattern) -> String {
+    fn pattern_cond(var: &str, pat: &ir::Pat) -> String {
         match pat {
-            Pattern::Wildcard | Pattern::Ident(_, _, _) => "true".to_string(),
-            Pattern::Literal(lit) => match lit {
-                Literal::Number(n) => {
+            ir::Pat::Wild | ir::Pat::Var(_) => "true".to_string(),
+            ir::Pat::Lit(lit) => match lit {
+                ir::Lit::Num(n) => {
                     let s = if n.fract() == 0.0 {
                         format!("{}", *n as i64)
                     } else {
@@ -1164,12 +1105,12 @@ impl Emitter {
                     };
                     format!("{} == {}", var, s)
                 }
-                Literal::Text(s) => {
+                ir::Lit::Str(s) => {
                     format!("{} == \"{}\"", var, s.replace('"', "\\\""))
                 }
-                Literal::Bool(b) => format!("{} == {}", var, b),
+                ir::Lit::Bool(b) => format!("{} == {}", var, b),
             },
-            Pattern::Variant { name, payload } => {
+            ir::Pat::Tag(name, payload) => {
                 let tag = format!("{}._tag == \"{}\"", var, name);
                 match payload {
                     None => tag,
@@ -1184,13 +1125,12 @@ impl Emitter {
                     }
                 }
             }
-            Pattern::Record(rp) => {
-                let conds: Vec<String> = rp
-                    .fields
+            ir::Pat::Record { fields, .. } => {
+                let conds: Vec<String> = fields
                     .iter()
-                    .filter_map(|f| {
-                        f.pattern.as_ref().and_then(|p| {
-                            let c = Self::pattern_cond(&format!("{}.{}", var, f.name), p);
+                    .filter_map(|(name, pat_opt)| {
+                        pat_opt.as_ref().and_then(|p| {
+                            let c = Self::pattern_cond(&format!("{}.{}", var, name), p);
                             if c == "true" {
                                 None
                             } else {
@@ -1205,14 +1145,14 @@ impl Emitter {
                     conds.join(" and ")
                 }
             }
-            Pattern::List(lp) => {
+            ir::Pat::List { elems, rest } => {
                 let mut conds = vec![format!("type({}) == \"table\"", var)];
-                if lp.rest.is_none() {
-                    conds.push(format!("#{} == {}", var, lp.elements.len()));
-                } else if !lp.elements.is_empty() {
-                    conds.push(format!("#{} >= {}", var, lp.elements.len()));
+                if rest.is_none() {
+                    conds.push(format!("#{} == {}", var, elems.len()));
+                } else if !elems.is_empty() {
+                    conds.push(format!("#{} >= {}", var, elems.len()));
                 }
-                for (i, elem) in lp.elements.iter().enumerate() {
+                for (i, elem) in elems.iter().enumerate() {
                     let c = Self::pattern_cond(&format!("{}[{}]", var, i + 1), elem);
                     if c != "true" {
                         conds.push(c);
@@ -1225,17 +1165,17 @@ impl Emitter {
 
     /// Returns `(lhs, rhs)` binding pairs from matching `var` against `pat`.
     /// Sets helper flags on `self` when `_slice` / `_omit` are needed.
-    fn collect_binds_pure(&mut self, var: &str, pat: &Pattern) -> Vec<(String, String)> {
+    fn collect_binds_pure(&mut self, var: &str, pat: &ir::Pat) -> Vec<(String, String)> {
         let mut out = Vec::new();
         self.collect_binds(var, pat, &mut out);
         out
     }
 
-    fn collect_binds(&mut self, var: &str, pat: &Pattern, out: &mut Vec<(String, String)>) {
+    fn collect_binds(&mut self, var: &str, pat: &ir::Pat, out: &mut Vec<(String, String)>) {
         match pat {
-            Pattern::Wildcard | Pattern::Literal(_) => {}
-            Pattern::Ident(name, _, _) => out.push((lua_ident(name).into_owned(), var.to_string())),
-            Pattern::Variant { name, payload, .. } => {
+            ir::Pat::Wild | ir::Pat::Lit(_) => {}
+            ir::Pat::Var(name) => out.push((lua_ident(name).into_owned(), var.to_string())),
+            ir::Pat::Tag(name, payload) => {
                 if let Some(p) = payload {
                     // All non-unit variants wrap their value at _0
                     if self.variant_env.lookup(name).is_some_and(|i| i.wraps.is_some()) {
@@ -1245,21 +1185,20 @@ impl Emitter {
                     }
                 }
             }
-            Pattern::Record(rp) => {
-                for f in &rp.fields {
-                    let field_expr = format!("{}.{}", var, f.name);
-                    if let Some(p) = &f.pattern {
+            ir::Pat::Record { fields, rest } => {
+                for (name, pat_opt) in fields {
+                    let field_expr = format!("{}.{}", var, name);
+                    if let Some(p) = pat_opt {
                         self.collect_binds(&field_expr, p, out);
                     } else {
-                        out.push((lua_ident(&f.name).into_owned(), field_expr));
+                        out.push((lua_ident(name).into_owned(), field_expr));
                     }
                 }
-                if let Some(Some(rest_name)) = &rp.rest {
+                if let Some(Some(rest_name)) = rest {
                     self.needs_omit = true;
-                    let excluded: Vec<_> = rp
-                        .fields
+                    let excluded: Vec<_> = fields
                         .iter()
-                        .map(|f| format!("\"{}\"", f.name))
+                        .map(|(name, _)| format!("\"{}\"", name))
                         .collect();
                     out.push((
                         rest_name.clone(),
@@ -1267,15 +1206,15 @@ impl Emitter {
                     ));
                 }
             }
-            Pattern::List(lp) => {
-                for (i, elem) in lp.elements.iter().enumerate() {
+            ir::Pat::List { elems, rest } => {
+                for (i, elem) in elems.iter().enumerate() {
                     self.collect_binds(&format!("{}[{}]", var, i + 1), elem, out);
                 }
-                if let Some(Some(rest_name)) = &lp.rest {
+                if let Some(Some(rest_name)) = rest {
                     self.needs_slice = true;
                     out.push((
                         lua_ident(rest_name).into_owned(),
-                        format!("_slice({}, {})", var, lp.elements.len() + 1),
+                        format!("_slice({}, {})", var, elems.len() + 1),
                     ));
                 }
             }

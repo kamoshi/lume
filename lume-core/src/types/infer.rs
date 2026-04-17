@@ -155,56 +155,6 @@ pub fn build_variant_env(items: &[TopItem]) -> VariantEnv {
 
 // ── Built-in environment ──────────────────────────────────────────────────────
 
-macro_rules! ty {
-    // 1. Function arrow (Right-Associative)
-    // The left-hand side ($lhs) MUST be a single token tree (an ident, or enclosed in (), [], or {}).
-    ($lhs:tt -> $($rhs:tt)+) => {
-        Ty::Func(Box::new(ty!($lhs)), Box::new(ty!($($rhs)+)))
-    };
-
-    // 2. Parentheses (strips them and evaluates the inside)
-    (( $($inner:tt)+ )) => { ty!($($inner)+) };
-
-    // 3. Base primitives
-    (Num) => { Ty::Num };
-    (Bool) => { Ty::Bool };
-    (Text) => { Ty::Text };
-
-    // 4. Unit / Empty Record
-    ({}) => { Ty::Record(Row { fields: vec![], tail: RowTail::Closed }) };
-
-    // 5. List Sugar
-    // Write [Num] instead of List Num so it groups as a single token tree
-    ([$($inner:tt)+]) => { Ty::List(Box::new(ty!($($inner)+))) };
-
-    // 6. Generic Constructors (e.g., Maybe[a], Result[a, e])
-    // Using brackets makes the arguments a single token tree.
-    ($con:ident [ $($arg:tt),* ]) => {
-        Ty::Con(stringify!($con).into(), vec![ $( ty!($arg) ),* ])
-    };
-
-    // 7. Variables (Fallback)
-    // Any remaining single identifier is assumed to be a Rust variable holding a TyVar.
-    ($v:ident) => { Ty::Var($v) };
-}
-
-macro_rules! forall {
-    // 1. Polymorphic: Has variables and a dot
-    ($($v:ident)+ . $($body:tt)+) => {
-        Scheme {
-            vars: vec![$($v),*],
-            row_vars: vec![],
-            constraints: vec![],
-            ty: ty!($($body)+),
-        }
-    };
-
-    // 2. Monomorphic: No variables, no dot. Just wraps a type in a Scheme.
-    ($($body:tt)+) => {
-        Scheme::mono(ty!($($body)+))
-    };
-}
-
 // Produce the initial TypeEnv and VariantEnv containing all language-level
 // built-ins (arithmetic, list ops, Maybe/Result constructors, etc.).
 //
@@ -646,6 +596,7 @@ type VariantInstance = (Ty, Option<Ty>);
 //                 NodeId.  Used by the LSP for hover/completion information.
 //                 Types here still contain unification variables; callers
 //                 apply the final `subst` to obtain ground types.
+#[allow(clippy::type_complexity)]
 pub struct Checker {
     pub subst: Subst,
     pub variant_env: VariantEnv,
@@ -2468,7 +2419,7 @@ pub fn ty_canonical_name(ty: &Ty) -> Option<String> {
         Ty::Bool => Some("Bool".to_string()),
         Ty::Con(name, args) if args.is_empty() => Some(name.clone()),
         Ty::Con(name, args) => {
-            let arg_strs: Option<Vec<String>> = args.iter().map(|a| ty_canonical_name(a)).collect();
+            let arg_strs: Option<Vec<String>> = args.iter().map(ty_canonical_name).collect();
             Some(format!("{} {}", name, arg_strs?.join(" ")))
         }
         Ty::List(inner) => {

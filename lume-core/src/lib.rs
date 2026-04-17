@@ -1,11 +1,12 @@
 pub mod ast;
 pub mod bundle;
 pub mod codegen;
-pub mod desugar;
 pub mod error;
 pub mod fmt;
+pub mod ir;
 pub mod lexer;
 pub mod loader;
+pub mod lower;
 pub mod parser;
 pub mod pretty;
 pub mod types;

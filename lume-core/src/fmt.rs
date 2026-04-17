@@ -105,9 +105,6 @@ fn fmt_typedef(td: &TypeDef) -> Doc {
 
     // flat: "type Foo = | A | B | C"
     // break: "type Foo =\n  | A\n  | B"
-    let variant_docs: Vec<Doc> = td.variants.iter().map(fmt_variant).collect();
-    let variants_flat = join(space(), variant_docs.clone());
-    let _ = variants_flat;
     concat(
         text(header),
         group(concat(

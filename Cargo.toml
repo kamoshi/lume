@@ -1,7 +1,7 @@
 [workspace]
-members = ["lume", "lume-core", "lume-lsp", "lume-wasm"]
+members = ["lume", "lume-core", "lume-lsp", "lume-repl", "lume-wasm"]
 exclude = ["tools/zed-lume"]
-default-members = ["lume", "lume-core", "lume-lsp"]
+default-members = ["lume", "lume-core", "lume-lsp", "lume-repl"]
 resolver = "2"
 
 # Standard release - used for native CLI and LSP binaries.

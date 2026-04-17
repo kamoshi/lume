@@ -3,9 +3,9 @@ use std::path::Path;
 use lume_core::ast;
 use lume_core::bundle;
 use lume_core::codegen;
-use lume_core::desugar;
 use lume_core::error::LumeError;
 use lume_core::lexer::Lexer;
+use lume_core::lower;
 use lume_core::parser;
 use lume_core::types;
 
@@ -32,7 +32,7 @@ fn load(path: &str) -> Option<ast::Program> {
     }
 }
 
-fn run_file(path: &str) -> bool {
+fn check_file(path: &str) -> bool {
     let program = match load(path) {
         Some(p) => p,
         None => return false,
@@ -49,17 +49,15 @@ fn run_file(path: &str) -> bool {
     }
 }
 
-/// Type-check and desugar every module in the bundle in place.
-/// Returns the combined `VariantEnv` (builtins + all user types) on success,
+/// Type-check and lower every module in the bundle to IR.
+/// Returns `(Vec<IrModule>, VariantEnv)` on success,
 /// or `None` (and prints an error) if any module fails to type-check.
-/// Downstream phases (codegen) receive this env so nothing is rebuilt.
-fn desugar_bundle(b: &mut [bundle::BundleModule]) -> Option<types::infer::VariantEnv> {
+fn lower_bundle(b: &[bundle::BundleModule]) -> Option<(Vec<codegen::IrModule>, types::infer::VariantEnv)> {
     use lume_core::ast::TopItem;
 
     // Build the global trait/impl/variant context from all modules so cross-module
-    // TraitCalls can be resolved to `_mod_dep.__trait_Type.method` and bare
-    // constructor references are desugared to constructor lambdas.
-    let mut global = desugar::GlobalCtx {
+    // TraitCalls can be resolved and bare constructor references lowered to lambdas.
+    let mut global = lower::GlobalCtx {
         traits: std::collections::HashMap::new(),
         impls: std::collections::HashMap::new(),
         param_impls: Vec::new(),
@@ -72,17 +70,17 @@ fn desugar_bundle(b: &mut [bundle::BundleModule]) -> Option<types::infer::Varian
                     global.traits.insert(td.name.clone(), td.clone());
                 }
                 TopItem::ImplDef(id) => {
-                    let dict = desugar::dict_name(&id.trait_name, &id.type_name);
+                    let dict = lower::dict_name(&id.trait_name, &id.type_name);
                     if id.impl_constraints.is_empty() {
                         global.impls.insert(
                             (id.trait_name.clone(), id.type_name.clone()),
-                            desugar::ImplEntry {
+                            lower::ImplEntry {
                                 module_var: Some(m.var.clone()),
                                 dict_ident: dict,
                             },
                         );
                     } else {
-                        global.param_impls.push(desugar::ParamImplEntry {
+                        global.param_impls.push(lower::ParamImplEntry {
                             trait_name: id.trait_name.clone(),
                             target_type: id.target_type.clone(),
                             constraints: id.impl_constraints.clone(),
@@ -108,7 +106,7 @@ fn desugar_bundle(b: &mut [bundle::BundleModule]) -> Option<types::infer::Varian
         }
     }
 
-    // Register built-in variants (Maybe, Result) so the desugarer can
+    // Register built-in variants (Maybe, Result) so the lowerer can
     // convert bare constructor references like `Some` and `Ok` into lambdas.
     {
         let mut scratch = lume_core::types::Subst::new();
@@ -118,17 +116,17 @@ fn desugar_bundle(b: &mut [bundle::BundleModule]) -> Option<types::infer::Varian
         }
     }
 
-    // Desugar each module with its own local view: impls defined in this
+    // Lower each module with its own local view: impls defined in this
     // module are accessed by bare name (module_var = None).
-    for m in b.iter_mut() {
-        // Patch local impls to have no module prefix.
-        let local_global = desugar::GlobalCtx {
+    let mut ir_modules = Vec::new();
+    for m in b.iter() {
+        let local_global = lower::GlobalCtx {
             traits: global.traits.clone(),
             impls: global.impls
                 .iter()
                 .map(|(k, e)| {
                     let is_local = e.module_var.as_deref() == Some(&m.var);
-                    let entry = desugar::ImplEntry {
+                    let entry = lower::ImplEntry {
                         module_var: if is_local { None } else { e.module_var.clone() },
                         dict_ident: e.dict_ident.clone(),
                     };
@@ -137,7 +135,7 @@ fn desugar_bundle(b: &mut [bundle::BundleModule]) -> Option<types::infer::Varian
                 .collect(),
             param_impls: global.param_impls
                 .iter()
-                .map(|pi| desugar::ParamImplEntry {
+                .map(|pi| lower::ParamImplEntry {
                     trait_name: pi.trait_name.clone(),
                     target_type: pi.target_type.clone(),
                     constraints: pi.constraints.clone(),
@@ -160,9 +158,12 @@ fn desugar_bundle(b: &mut [bundle::BundleModule]) -> Option<types::infer::Varian
                 return None;
             }
         };
-        m.program = desugar::desugar(m.program.clone(), &node_types, &type_env, &local_global);
-        // Suppress the unused-variable warning
-        let _ = &local_global;
+        let ir_mod = lower::lower(m.program.clone(), &node_types, &type_env, &local_global);
+        ir_modules.push(codegen::IrModule {
+            canonical: m.canonical.clone(),
+            module: ir_mod,
+            var: m.var.clone(),
+        });
     }
 
     // Convert the global variants map into a VariantEnv for codegen.
@@ -170,61 +171,47 @@ fn desugar_bundle(b: &mut [bundle::BundleModule]) -> Option<types::infer::Varian
     for (name, info) in global.variants {
         variant_env.insert(name, info);
     }
-    Some(variant_env)
+    Some((ir_modules, variant_env))
 }
 
 fn js_file(path: &str) -> bool {
-    let mut b = match bundle::collect(Path::new(path)) {
+    let b = match bundle::collect(Path::new(path)) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("{path}: {e}");
             return false;
         }
     };
-    let variant_env = match desugar_bundle(&mut b) {
+    let (ir_modules, variant_env) = match lower_bundle(&b) {
         Some(v) => v,
         None => return false,
     };
-    print!("{}", codegen::js::emit(&b, variant_env));
+    print!("{}", codegen::js::emit(&ir_modules, variant_env));
     true
 }
 
 fn lua_file(path: &str) -> bool {
-    let mut b = match bundle::collect(Path::new(path)) {
+    let b = match bundle::collect(Path::new(path)) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("{path}: {e}");
             return false;
         }
     };
-    let variant_env = match desugar_bundle(&mut b) {
+    let (ir_modules, variant_env) = match lower_bundle(&b) {
         Some(v) => v,
         None => return false,
     };
-    print!("{}", codegen::lua::emit(&b, variant_env));
+    print!("{}", codegen::lua::emit(&ir_modules, variant_env));
     true
 }
 
 /// Compile to Lua and execute immediately via the vendored LuaJIT runtime.
 fn exec_file(path: &str) -> bool {
-    let mut b = match bundle::collect(Path::new(path)) {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("{path}: {e}");
-            return false;
-        }
-    };
-    let variant_env = match desugar_bundle(&mut b) {
-        Some(v) => v,
-        None => return false,
-    };
-    let lua_src = codegen::lua::emit(&b, variant_env);
-
-    let lua = mlua::Lua::new();
-    match lua.load(&lua_src).exec() {
+    match lume_repl::run(path) {
         Ok(()) => true,
         Err(e) => {
-            eprintln!("{path}: runtime error: {e}");
+            eprintln!("{e}");
             false
         }
     }
@@ -297,41 +284,87 @@ fn dump_file(path: &str) -> bool {
     }
 }
 
-fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+use clap::{Parser, Subcommand};
 
-    let (cmd, paths): (&str, &[String]) = match args.as_slice() {
-        [] => {
-            eprintln!("Usage: lume [check|dump|fmt|js|lua|run] <file.lume> ...");
-            std::process::exit(1);
+/// The Lume programming language compiler and runtime.
+#[derive(Parser)]
+#[command(name = "lume", version, about)]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Type-check source files
+    Check {
+        /// Lume source files to check
+        #[arg(required = true)]
+        files: Vec<String>,
+    },
+    /// Dump inferred types for all bindings
+    Dump {
+        /// Lume source files to inspect
+        #[arg(required = true)]
+        files: Vec<String>,
+    },
+    /// Format source files in place
+    Fmt {
+        /// Lume source files to format
+        #[arg(required = true)]
+        files: Vec<String>,
+    },
+    /// Compile to JavaScript and print to stdout
+    Js {
+        /// Entry-point Lume source file
+        #[arg(required = true)]
+        file: String,
+    },
+    /// Compile to Lua and print to stdout
+    Lua {
+        /// Entry-point Lume source file
+        #[arg(required = true)]
+        file: String,
+    },
+    /// Start an interactive REPL
+    Repl,
+    /// Compile and execute via the embedded LuaJIT runtime
+    Run {
+        /// Entry-point Lume source file
+        #[arg(required = true)]
+        file: String,
+    },
+}
+
+fn main() {
+    let cli = Cli::parse();
+
+    let ok = match cli.command {
+        Command::Check { files } => run_on_files(&files, check_file),
+        Command::Dump { files } => run_on_files(&files, dump_file),
+        Command::Fmt { files } => run_on_files(&files, fmt_file),
+        Command::Js { file } => js_file(&file),
+        Command::Lua { file } => lua_file(&file),
+        Command::Repl => {
+            lume_repl::run_repl();
+            true
         }
-        [first, rest @ ..] if first == "check" => ("check", rest),
-        [first, rest @ ..] if first == "dump" => ("dump", rest),
-        [first, rest @ ..] if first == "fmt" => ("fmt", rest),
-        [first, rest @ ..] if first == "js" => ("js", rest),
-        [first, rest @ ..] if first == "lua" => ("lua", rest),
-        [first, rest @ ..] if first == "run" => ("run", rest),
-        paths => ("check", paths),
+        Command::Run { file } => exec_file(&file),
     };
 
+    if !ok {
+        std::process::exit(1);
+    }
+}
+
+fn run_on_files(files: &[String], f: fn(&str) -> bool) -> bool {
     let mut all_ok = true;
-    for path in paths {
-        let ok = match cmd {
-            "dump" => dump_file(path),
-            "fmt" => fmt_file(path),
-            "js" => js_file(path),
-            "lua" => lua_file(path),
-            "run" => exec_file(path),
-            _ => run_file(path),
-        };
-        if !ok {
+    for path in files {
+        if !f(path) {
             all_ok = false;
         }
     }
-
-    if !all_ok {
-        std::process::exit(1);
-    }
+    all_ok
 }
 
 #[cfg(test)]

@@ -20,6 +20,11 @@
 !lume-core/src/
 !lume-core/src/**
 
+!lume-repl/
+!lume-repl/Cargo.toml
+!lume-repl/src/
+!lume-repl/src/**
+
 !lume-lsp/
 !lume-lsp/Cargo.toml
 !lume-lsp/src/
