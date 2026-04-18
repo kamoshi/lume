@@ -221,16 +221,18 @@ pub(crate) fn type_of(expr: &str, defs: &str, base_dir: &Path) {
     }
 }
 
-/// Print the kind of a type constructor.
+/// Print the kind of a type expression.
 ///
 /// Parses the accumulated REPL definitions to build the arity environment,
-/// then looks up the requested type name and prints its kind using star notation
-/// (e.g., `Maybe : * -> *`, `Result : * -> * -> *`, `Num : *`).
-pub(crate) fn kind_of(name: &str, defs: &str, base_dir: &Path) {
+/// then parses `expr` as a type and computes its kind using star notation
+/// (e.g., `Maybe : * -> *`, `Box Num : *`, `Result : * -> * -> *`).
+pub(crate) fn kind_of(expr: &str, defs: &str, base_dir: &Path) {
+    use lume_core::ast::Type;
     use lume_core::lexer::Lexer;
     use lume_core::parser;
-    use lume_core::types::infer::build_arity_env;
+    use lume_core::types::infer::{build_arity_env, ArityEnv};
 
+    // Build the arity env from the accumulated defs.
     let src = if defs.is_empty() { "let _x = 0\n".to_string() } else {
         let sep = if defs.ends_with('\n') { "" } else { "\n" };
         format!("{}{}", defs, sep)
@@ -245,15 +247,69 @@ pub(crate) fn kind_of(name: &str, defs: &str, base_dir: &Path) {
         Err(e) => { eprintln!("  parse error: {e}"); return; }
     };
 
-    let _ = base_dir; // available for future use (e.g., resolving imports)
+    let _ = base_dir;
     let arity_env = build_arity_env(&program.items);
 
-    match arity_env.get(name) {
-        Some(&arity) => {
-            let kind = arity_to_kind_string(arity);
-            println!("  {name} :{DIM} {kind}{RESET}");
+    // Parse `expr` as a type expression (wrap in a dummy binding so the lexer
+    // and parser see a valid program; we only need the type tokens).
+    let type_src = format!("let _k : {} = 0\n", expr);
+    let type_tokens = match Lexer::new(&type_src).tokenize() {
+        Ok(t) => t,
+        Err(e) => { eprintln!("  parse error: {e}"); return; }
+    };
+    // Find the `:` token and parse the type that follows it.
+    // Token layout: `let` `_k` `:` <type tokens> `=` `0`
+    // We can skip to after `:` and call parse_type.
+    let colon_pos = type_tokens.iter().position(|t| {
+        matches!(t.token, lume_core::lexer::Token::Colon)
+    });
+    let type_start = match colon_pos {
+        Some(pos) => pos + 1,
+        None => { eprintln!("  internal error: could not locate type in dummy program"); return; }
+    };
+
+    let (_, parsed_ty) = match parser::parse_type(&type_tokens[type_start..]) {
+        Ok(r) => r,
+        Err(e) => { eprintln!("  parse error: {e}"); return; }
+    };
+
+    // Recursively compute the remaining arity of a Type node.
+    fn kind_of_ty(ty: &Type, env: &ArityEnv) -> Result<usize, String> {
+        match ty {
+            Type::Constructor(name) => {
+                env.get(name.as_str())
+                    .copied()
+                    .ok_or_else(|| format!("unknown type '{name}'"))
+            }
+            Type::Var(_) => Ok(0), // type variables have kind *
+            Type::App { callee, arg } => {
+                let callee_arity = kind_of_ty(callee, env)?;
+                let arg_arity = kind_of_ty(arg, env)?;
+                if arg_arity != 0 {
+                    return Err(format!(
+                        "kind mismatch: argument has kind '{}', expected '*'",
+                        arity_to_kind_string(arg_arity)
+                    ));
+                }
+                if callee_arity == 0 {
+                    return Err(format!(
+                        "type '{}' is fully applied (kind *) and cannot be applied further",
+                        callee
+                    ));
+                }
+                Ok(callee_arity - 1)
+            }
+            Type::Func { .. } => Ok(0), // function types have kind *
+            Type::Record(_) => Ok(0),   // record types have kind *
         }
-        None => eprintln!("  unknown type '{name}'"),
+    }
+
+    match kind_of_ty(&parsed_ty, &arity_env) {
+        Ok(arity) => {
+            let kind = arity_to_kind_string(arity);
+            println!("  {expr} :{DIM} {kind}{RESET}");
+        }
+        Err(e) => eprintln!("  {e}"),
     }
 }
 
