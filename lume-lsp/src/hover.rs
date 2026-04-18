@@ -1,7 +1,8 @@
 use lume_core::{
     ast::{TraitDef, Type},
     ast::NodeId,
-    types::Ty,
+    types::{unify, Scheme, Subst, Ty},
+    types::infer::TypeEnv,
 };
 use tower_lsp::lsp_types::*;
 
@@ -100,6 +101,51 @@ pub fn format_constraint(trait_name: &str, param_ty: &Ty) -> String {
     }
 }
 
+// ── Typed-hole suggestions ───────────────────────────────────────────────────
+
+/// Instantiate a scheme by substituting each quantified variable with a
+/// fresh type variable, returning the concrete (but still possibly generic) Ty.
+fn instantiate_fresh(scheme: &Scheme) -> Ty {
+    let mut s = Subst::new();
+    for &var in &scheme.vars {
+        let fresh = s.fresh_var();
+        s.bind_ty(var, Ty::Var(fresh));
+    }
+    s.apply(&scheme.ty)
+}
+
+/// Return true if `scheme` can be instantiated to a type that unifies with
+/// `hole_ty`. Each call uses a fresh substitution so attempts are independent.
+fn fits_hole(hole_ty: &Ty, scheme: &Scheme) -> bool {
+    let candidate = instantiate_fresh(scheme);
+    let mut s = Subst::new();
+    unify(&mut s, candidate, hole_ty.clone()).is_ok()
+}
+
+/// Collect up to `limit` binding names (sorted alphabetically) whose type is
+/// compatible with `hole_ty`. Returns an empty vec when the hole is a bare
+/// free variable (it would match everything, making the list meaningless).
+fn suggest_for_hole<'e>(
+    hole_ty: &Ty,
+    env: &'e TypeEnv,
+    limit: usize,
+) -> Vec<(&'e str, &'e Scheme)> {
+    // A bare free var means the type is unconstrained — suggestions are noise.
+    if matches!(hole_ty, Ty::Var(_)) {
+        return vec![];
+    }
+
+    let mut matches: Vec<(&str, &Scheme)> = env
+        .iter()
+        .filter(|(name, scheme)| !name.starts_with('_') && fits_hole(hole_ty, scheme))
+        .map(|(name, scheme)| (name.as_str(), scheme))
+        .collect();
+
+    matches.sort_by_key(|(name, _)| *name);
+    matches.truncate(limit);
+    matches
+}
+
 /// Build the hover label for a given cursor position.
 ///
 /// Returns `None` when no hover information is available.
@@ -138,6 +184,18 @@ pub fn hover_label(pos: Position, text: &str, doc: &DocInfo) -> Option<String> {
 
         // Regular expression — show word : type.
         match word_at(text, pos.line, pos.character) {
+            Some("_") => {
+                // Typed hole: show the expected type and suggest fitting bindings.
+                let mut label = format!("_ : {ty}");
+                let suggestions = suggest_for_hole(&ty, &doc.top_env, 5);
+                if !suggestions.is_empty() {
+                    label.push_str("\n\n**Fits:**");
+                    for (name, scheme) in suggestions {
+                        label.push_str(&format!("\n- `{name}` : `{scheme}`"));
+                    }
+                }
+                Some(label)
+            }
             Some(w) if w.starts_with(|c: char| c.is_alphabetic() || c == '_') => {
                 if let Some(scheme) = doc.top_env.lookup(w) {
                     Some(format!("{w} : {scheme}"))

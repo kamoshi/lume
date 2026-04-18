@@ -314,6 +314,144 @@ fn lua_ident(name: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
+/// All stdlib + builtin implementations as globals, for REPL preloading.
+/// Each STDLIB entry has its leading `local ` stripped so the definitions
+/// land in the global table. BUILTIN entries are emitted as `name = body`.
+pub fn full_prelude() -> String {
+    let mut out = String::new();
+
+    // Internal helpers — written directly without `local`.
+    out.push_str(
+        "function _resultBind(r, f)\n\
+         \x20 if r._tag == \"Ok\" then return f(r.value) else return r end\n\
+         end\n\n",
+    );
+    out.push_str(
+        "function _extend(t, u)\n\
+         \x20 local r = {}\n\
+         \x20 for k, v in pairs(t) do r[k] = v end\n\
+         \x20 for k, v in pairs(u) do r[k] = v end\n\
+         \x20 return r\n\
+         end\n\n",
+    );
+    out.push_str(
+        "function _slice(t, i)\n\
+         \x20 local r = {}\n\
+         \x20 for j = i, #t do r[#r + 1] = t[j] end\n\
+         \x20 return r\n\
+         end\n\n",
+    );
+    out.push_str(
+        "function _concat(a, b)\n\
+         \x20 if type(a) == \"string\" then return a .. b end\n\
+         \x20 local r = {}\n\
+         \x20 for _, v in ipairs(a) do r[#r+1] = v end\n\
+         \x20 for _, v in ipairs(b) do r[#r+1] = v end\n\
+         \x20 return r\n\
+         end\n\n",
+    );
+    out.push_str(
+        "function _omit(t, keys)\n\
+         \x20 local r = {}\n\
+         \x20 local s = {}\n\
+         \x20 for _, k in ipairs(keys) do s[k] = true end\n\
+         \x20 for k, v in pairs(t) do\n\
+         \x20\x20\x20 if not s[k] then r[k] = v end\n\
+         \x20 end\n\
+         \x20 return r\n\
+         end\n\n",
+    );
+
+    // STDLIB: strip leading `local ` to make definitions global.
+    for (_, _, impl_str) in STDLIB {
+        out.push_str(impl_str.strip_prefix("local ").unwrap_or(impl_str));
+    }
+
+    // BUILTINS: bare assignment.
+    for b in BUILTINS {
+        out.push_str(&format!("{} = {}\n\n", b.lua_name(), b.lua));
+    }
+
+    out
+}
+
+/// Emit new REPL bindings as bare assignments (no `local`, no preamble, no
+/// `return`). `skip` is the number of IR items already loaded into the Lua
+/// state from previous evals and should not be re-emitted.
+/// `module_vars` maps canonical dep paths to the global variable names under
+/// which their exports are stored (populated by [`emit_dep_modules`]).
+pub fn emit_repl(
+    module: &IrModule,
+    variant_env: VariantEnv,
+    skip: usize,
+    module_vars: HashMap<PathBuf, String>,
+) -> String {
+    let mut e = Emitter {
+        out: String::new(),
+        tmp: 0,
+        repl: true,
+        needs_extend: false,
+        needs_slice: false,
+        needs_omit: false,
+        needs_result_bind: false,
+        needs_concat: false,
+        needed_stdlib: HashSet::new(),
+        module_vars,
+        variant_env,
+    };
+
+    // Emit import bindings (persistent bare assignments, no `local`).
+    for u in &module.module.imports {
+        e.emit_import(u, &module.canonical);
+    }
+    if !module.module.imports.is_empty() {
+        e.out.push('\n');
+    }
+
+    for item in module.module.items.iter().skip(skip) {
+        match item {
+            ir::Decl::Let(pat, expr) => {
+                e.emit_pat_binding(pat, expr);
+                e.out.push('\n');
+            }
+            ir::Decl::LetRec(bindings) => {
+                e.emit_binding_group(bindings);
+                e.out.push('\n');
+            }
+        }
+    }
+
+    e.out
+}
+
+/// Emit dependency modules as global IIFE assignments for the REPL.
+/// Each module becomes `_mod_foo = (function() … return exports end)()`.
+/// `module_vars` must contain entries for *all* transitive deps so that
+/// inter-module imports resolve correctly.
+pub fn emit_dep_modules(
+    modules: &[&IrModule],
+    module_vars: HashMap<PathBuf, String>,
+    variant_env: VariantEnv,
+) -> String {
+    let mut e = Emitter {
+        out: String::new(),
+        tmp: 0,
+        repl: false,
+        needs_extend: false,
+        needs_slice: false,
+        needs_omit: false,
+        needs_result_bind: false,
+        needs_concat: false,
+        needed_stdlib: HashSet::new(),
+        module_vars,
+        variant_env,
+    };
+    for m in modules {
+        e.emit_module_global(&m.module, &m.canonical, &m.var);
+    }
+    e.out
+}
+
 pub fn emit(bundle: &[IrModule], variant_env: VariantEnv) -> String {
     let module_vars: HashMap<PathBuf, String> = bundle
         .iter()
@@ -323,6 +461,7 @@ pub fn emit(bundle: &[IrModule], variant_env: VariantEnv) -> String {
     let mut e = Emitter {
         out: String::new(),
         tmp: 0,
+        repl: false,
         needs_extend: false,
         needs_slice: false,
         needs_omit: false,
@@ -409,7 +548,7 @@ pub fn emit(bundle: &[IrModule], variant_env: VariantEnv) -> String {
     }
     for b in BUILTINS {
         if e.needed_stdlib.contains(b.name) {
-            preamble.push_str(b.lua.body);
+            preamble.push_str(&format!("local {} = {}\n\n", b.lua_name(), b.lua));
         }
     }
 
@@ -422,6 +561,10 @@ pub fn emit(bundle: &[IrModule], variant_env: VariantEnv) -> String {
 struct Emitter {
     out: String,
     tmp: usize,
+    /// When true, top-level `Pat::Var` bindings are emitted as bare assignments
+    /// (`x = expr`) instead of `local x\nx = expr`. Used by the REPL so
+    /// bindings land in the persistent env rather than as chunk-local variables.
+    repl: bool,
     // Internal code-generation helpers (triggered by language constructs).
     needs_extend: bool,
     needs_slice: bool,
@@ -490,16 +633,20 @@ impl Emitter {
                 .and_then(|p| self.module_vars.get(&p).cloned())
         };
 
+        // In REPL mode emit bare assignments so bindings persist across chunks.
+        let local = if self.repl { "" } else { "local " };
+
         match mod_var {
             Some(mv) => match &u.binding {
                 ir::ImportBinding::Name(name) => {
                     self.out
-                        .push_str(&format!("local {} = {}\n", lua_ident(name), mv));
+                        .push_str(&format!("{}{} = {}\n", local, lua_ident(name), mv));
                 }
                 ir::ImportBinding::Destructure(names) => {
                     for name in names {
                         self.out.push_str(&format!(
-                            "local {} = {}.{}\n",
+                            "{}{} = {}.{}\n",
+                            local,
                             lua_ident(name),
                             mv,
                             name
@@ -518,18 +665,21 @@ impl Emitter {
                 match &u.binding {
                     ir::ImportBinding::Name(name) => {
                         self.out.push_str(&format!(
-                            "local {} = require(\"{}\")\n",
+                            "{}{} = require(\"{}\")\n",
+                            local,
                             lua_ident(name),
                             path
                         ));
                     }
                     ir::ImportBinding::Destructure(names) => {
                         let tmp = self.fresh();
+                        // Always use `local` for the temp var even in REPL mode.
                         self.out
                             .push_str(&format!("local {} = require(\"{}\")\n", tmp, path));
                         for name in names {
                             self.out.push_str(&format!(
-                                "local {} = {}.{}\n",
+                                "{}{} = {}.{}\n",
+                                local,
                                 lua_ident(name),
                                 tmp,
                                 name
@@ -539,6 +689,38 @@ impl Emitter {
                 }
             }
         }
+    }
+
+    /// Like `emit_module` for non-entry modules but assigns to a global
+    /// variable instead of `local`, so the binding outlives the chunk.
+    /// Used when loading dependency modules into the REPL Lua state.
+    fn emit_module_global(&mut self, module: &ir::Module, canonical: &Path, var: &str) {
+        self.out.push_str(&format!("{} = (function()\n", var));
+
+        for u in &module.imports {
+            self.emit_import(u, canonical);
+        }
+        if !module.imports.is_empty() {
+            self.out.push('\n');
+        }
+
+        for item in &module.items {
+            match item {
+                ir::Decl::Let(pat, expr) => {
+                    self.emit_pat_binding(pat, expr);
+                    self.out.push('\n');
+                }
+                ir::Decl::LetRec(bindings) => {
+                    self.emit_binding_group(bindings);
+                    self.out.push('\n');
+                }
+            }
+        }
+
+        self.out.push_str("\nreturn ");
+        self.emit_expr(&module.exports);
+        self.out.push('\n');
+        self.out.push_str("end)()\n\n");
     }
 
     /// Emit a mutually recursive binding group.
@@ -558,7 +740,7 @@ impl Emitter {
             })
             .collect();
 
-        if !names.is_empty() {
+        if !names.is_empty() && !self.repl {
             self.out.push_str(&format!("local {}\n", names.join(", ")));
         }
 
@@ -585,7 +767,9 @@ impl Emitter {
         match pat {
             ir::Pat::Var(name) => {
                 let n = lua_ident(name).into_owned();
-                self.out.push_str(&format!("local {}\n", n));
+                if !self.repl {
+                    self.out.push_str(&format!("local {}\n", n));
+                }
                 self.out.push_str(&format!("{} = ", n));
                 self.emit_expr(expr);
             }
@@ -677,7 +861,7 @@ impl Emitter {
                     self.out.push_str(lua_name);
                 } else if let Some(b) = BUILTINS.iter().find(|b| b.name == name.as_str()) {
                     self.needed_stdlib.insert(name.clone());
-                    self.out.push_str(b.lua.name);
+                    self.out.push_str(&b.lua_name());
                 } else {
                     self.out.push_str(&lua_ident(name));
                 }

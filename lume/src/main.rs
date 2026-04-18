@@ -333,6 +333,8 @@ enum Command {
         /// Read input from stdin instead of an interactive terminal
         #[arg(long, short = 's')]
         stdin: bool,
+        /// Optional Lume file to pre-load into the REPL session
+        file: Option<String>,
     },
     /// Compile and execute via the embedded LuaJIT runtime
     Run {
@@ -359,11 +361,11 @@ fn main() {
             true
         }
         Command::Lua { file } => lua_file(&file),
-        Command::Repl { stdin } => {
+        Command::Repl { stdin, file } => {
             if stdin {
-                lume_repl::run_repl_stdin();
+                lume_repl::run_repl_stdin(file.as_deref());
             } else {
-                lume_repl::run_repl();
+                lume_repl::run_repl(file.as_deref());
             }
             true
         }

@@ -49,30 +49,32 @@ macro_rules! ty {
     };
 }
 
-pub struct BuiltinImpl {
-    pub name: &'static str,
-    pub body: &'static str,
-}
-
 pub struct Builtin {
     pub name: &'static str,
     pub ty: fn(&mut Subst) -> Scheme,
-    pub lua: BuiltinImpl,
-    pub js: BuiltinImpl,
+    pub lua: &'static str,
+    pub js: &'static str,
 }
 
-pub static BUILTINS: &[Builtin] = &[Builtin {
-    name: "error",
-    ty: ty!(a. Text -> a),
-    lua: BuiltinImpl {
-        name: "__error",
-        body: "local function __error(msg) error(msg) end\n\n",
+impl Builtin {
+    pub fn lua_name(&self) -> String { format!("__{}", self.name) }
+    pub fn js_name(&self)  -> String { format!("__{}", self.name) }
+}
+
+pub static BUILTINS: &[Builtin] = &[
+    Builtin {
+        name: "error",
+        ty: ty!(a. Text -> a),
+        lua: "function(msg) error(msg) end",
+        js: "(msg) => { throw new Error(msg); }",
     },
-    js: BuiltinImpl {
-        name: "__error",
-        body: "function __error(msg) { throw new Error(msg); }\n\n",
+    Builtin {
+        name: "trim",
+        ty: ty!(Text -> Text),
+        lua: "function(s) return (s:gsub('^%s+', ''):gsub('%s+$', '')) end",
+        js: "(s) => s.trim()",
     },
-}];
+];
 
 pub fn populate_env(s: &mut Subst, env: &mut TypeEnv) {
     for b in BUILTINS {

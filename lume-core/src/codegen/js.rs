@@ -147,7 +147,7 @@ pub fn emit(bundle: &[IrModule], variant_env: VariantEnv) -> String {
     }
     for b in BUILTINS {
         if e.needed_stdlib.contains(b.name) {
-            preamble.push_str(b.js.body);
+            preamble.push_str(&format!("const {} = {};\n\n", b.js_name(), b.js));
         }
     }
     if !preamble.is_empty() {
@@ -330,7 +330,7 @@ impl Emitter {
                     self.needed_stdlib.insert(name.clone());
                 } else if let Some(b) = BUILTINS.iter().find(|b| b.name == name.as_str()) {
                     self.needed_stdlib.insert(name.clone());
-                    self.out.push_str(b.js.name);
+                    self.out.push_str(&b.js_name());
                     return;
                 }
                 self.out.push_str(&js_ident(name));

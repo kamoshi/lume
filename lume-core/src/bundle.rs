@@ -29,6 +29,16 @@ pub fn collect(entry: &Path) -> Result<Vec<BundleModule>, String> {
     Ok(order)
 }
 
+/// Like [`collect`] but accepts a pre-resolved canonical path (including
+/// synthetic stdlib keys like `<lume:math>`).  Does not call `canonicalize()`.
+pub fn collect_dep(canonical: &Path) -> Result<Vec<BundleModule>, String> {
+    let mut visited: HashSet<PathBuf> = HashSet::new();
+    let mut order: Vec<BundleModule> = Vec::new();
+    let mut stems: HashMap<String, usize> = HashMap::new();
+    collect_inner(canonical, &mut visited, &mut order, &mut stems)?;
+    Ok(order)
+}
+
 /// Build a Lua/JS-safe variable name from the module's file stem, deduplicating
 /// with a numeric suffix if the same stem appears more than once.
 fn make_var(canonical: &Path, stems: &mut HashMap<String, usize>) -> String {

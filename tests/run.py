@@ -5,10 +5,11 @@
 #     "tomli",
 # ]
 # ///
-"""Test harness for Lume compiler tests defined in tests/tests.toml."""
+"""Test harness for Lume compiler tests defined in tests/tests.toml and tests/repl.toml."""
 
 import json
 import os
+import re
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -20,7 +21,10 @@ except ModuleNotFoundError:
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TOML_PATH = os.path.join(REPO_ROOT, "tests", "tests.toml")
+REPL_TOML_PATH = os.path.join(REPO_ROOT, "tests", "repl.toml")
 LUAJIT = "luajit"
+
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def build_lume() -> str:
@@ -107,35 +111,103 @@ def run_test(name: str, test: dict, lume_bin: str) -> tuple[bool, str]:
         return False, f"unknown expect value: {expect!r}"
 
 
+def run_repl_test(name: str, test: dict, lume_bin: str) -> tuple[bool, str]:
+    """Run a single REPL test. Returns (passed, message).
+
+    Each test drives `lume repl` via stdin.  Steps are joined with newlines and
+    piped in; stdout is compared against `output` (ANSI codes stripped), and
+    stderr is checked against `error_contains` when present.
+    """
+    steps: list[str] = test.get("steps", [])
+    stdin_text = "\n".join(steps) + "\n"
+
+    result = subprocess.run(
+        [lume_bin, "repl"],
+        input=stdin_text,
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+    )
+
+    stdout = ANSI_RE.sub("", result.stdout)
+    stderr = ANSI_RE.sub("", result.stderr)
+
+    expected_output: str | None = test.get("output")
+    error_contains: str | None = test.get("error_contains")
+
+    if expected_output is not None:
+        actual = stdout.strip()
+        expected = expected_output.strip()
+        if actual != expected:
+            return False, (
+                f"output mismatch:\n"
+                f"  expected: {expected!r}\n"
+                f"  actual:   {actual!r}"
+            )
+
+    if error_contains is not None:
+        if error_contains not in stderr:
+            return False, (
+                f"expected stderr to contain {error_contains!r}\n"
+                f"  got: {stderr.strip()!r}"
+            )
+
+    if expected_output is None and error_contains is None:
+        if result.returncode != 0:
+            return False, f"exited with code {result.returncode}:\n  {stderr.strip()}"
+
+    return True, "ok"
+
+
 def main():
     lume_bin = build_lume()
 
     with open(TOML_PATH, "rb") as f:
         config = tomllib.load(f)
-    tests = config.get("tests", {})
+    compiler_tests = config.get("tests", {})
 
-    results: dict[str, tuple[bool, str]] = {}
+    repl_tests: dict = {}
+    if os.path.exists(REPL_TOML_PATH):
+        with open(REPL_TOML_PATH, "rb") as f:
+            repl_tests = tomllib.load(f).get("tests", {})
+
+    compiler_results: dict[str, tuple[bool, str]] = {}
+    repl_results: dict[str, tuple[bool, str]] = {}
+
     with ThreadPoolExecutor() as executor:
-        futures = {
+        compiler_futures = {
             executor.submit(run_test, name, test, lume_bin): name
-            for name, test in tests.items()
+            for name, test in compiler_tests.items()
         }
-        for future in as_completed(futures):
-            name = futures[future]
-            results[name] = future.result()
+        repl_futures = {
+            executor.submit(run_repl_test, name, test, lume_bin): name
+            for name, test in repl_tests.items()
+        }
+        for future in as_completed(compiler_futures):
+            compiler_results[compiler_futures[future]] = future.result()
+        for future in as_completed(repl_futures):
+            repl_results[repl_futures[future]] = future.result()
 
-    passed = 0
-    failed = 0
-    for name in sorted(results):
-        ok, msg = results[name]
-        if ok:
-            passed += 1
-            print(f"  \033[32m✓\033[0m {name}: {msg}")
-        else:
-            failed += 1
-            print(f"  \033[31m✗\033[0m {name}: {msg}")
+    def print_section(title: str, results: dict[str, tuple[bool, str]]) -> tuple[int, int]:
+        if not results:
+            return 0, 0
+        print(f"\033[1m{title}\033[0m")
+        p = f = 0
+        for name in sorted(results):
+            ok, msg = results[name]
+            if ok:
+                p += 1
+                print(f"  \033[32m✓\033[0m {name}: {msg}")
+            else:
+                f += 1
+                print(f"  \033[31m✗\033[0m {name}: {msg}")
+        print()
+        return p, f
 
-    print()
+    cp, cf = print_section("Compiler tests", compiler_results)
+    rp, rf = print_section("REPL tests", repl_results)
+
+    passed, failed = cp + rp, cf + rf
     print(f"{passed} passed, {failed} failed, {passed + failed} total")
     if failed > 0:
         sys.exit(1)
