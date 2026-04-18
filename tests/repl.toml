@@ -1,0 +1,139 @@
+# REPL regression tests.
+#
+# Each test pipes `steps` as stdin to `lume repl`.
+# - `output`         — expected stdout (ANSI codes stripped, leading/trailing whitespace ignored).
+# - `error_contains` — expected substring in stderr (optional, can combine with output).
+#
+# Stdout = evaluated values (Lua print) + :type results.
+# Stderr = prompts, "bye.", compile/runtime errors.
+
+# ── Basic evaluation ──────────────────────────────────────────────────────────
+
+[tests.literal_num]
+steps = ["42"]
+output = "42"
+
+[tests.literal_text]
+steps = ['"hello"']
+output = '"hello"'
+
+[tests.arithmetic]
+steps = ["1 + 2", "10 * 3 - 5"]
+output = """
+3
+25
+"""
+
+[tests.let_binding]
+steps = ["let x = 99", "x"]
+output = "99"
+
+[tests.multiple_lets]
+steps = ["let a = 10", "let b = 20", "a + b"]
+output = "30"
+
+[tests.let_function]
+steps = ["let double = x -> x * 2", "double 7"]
+output = "14"
+
+# ── Type command ──────────────────────────────────────────────────────────────
+
+[tests.type_literal]
+steps = [":type 42"]
+output = "42 : Num"
+
+[tests.type_let]
+steps = ["let f = x -> x + 1", ":type f"]
+output = "f : Num -> Num"
+
+# ── Imports ───────────────────────────────────────────────────────────────────
+
+[tests.import_stdlib]
+steps = ['use math = "lume:math"', "math.isPrime 7"]
+output = "true"
+
+[tests.import_destructure]
+steps = ['use { isPrime, gcd } = "lume:math"', "isPrime 13", "gcd 12 8"]
+output = """
+true
+4
+"""
+
+[tests.import_after_let]
+# Regression: `use` entered after `let` must not cause a parse error.
+steps = ["let a = 10", 'use math = "lume:math"', "math.clamp a 0.0 100.0"]
+output = "10"
+
+[tests.import_duplicate]
+# Importing the same module twice should not error or double-load.
+steps = [
+  'use math = "lume:math"',
+  'use math = "lume:math"',
+  "math.gcd 12 8",
+]
+output = "4"
+
+[tests.import_type_visible]
+# :type should resolve names from an import.
+steps = ['use math = "lume:math"', ":type math.isPrime"]
+output = "math.isPrime : Num -> Bool"
+
+[tests.import_multiple_stdlib]
+steps = [
+  'use math = "lume:math"',
+  'use { isPrime } = "lume:math"',
+  "math.gcd 6 9",
+  "isPrime 7",
+]
+output = """
+3
+true
+"""
+
+# ── Error cases ───────────────────────────────────────────────────────────────
+
+[tests.unbound_variable]
+steps = ["notDefined"]
+error_contains = "unbound variable 'notDefined'"
+
+[tests.type_error_arithmetic]
+steps = ['"hello" + 1']
+error_contains = "type"
+
+[tests.import_field_not_found]
+steps = ['use math = "lume:math"', "math.nonexistent 1"]
+error_contains = "field 'nonexistent' not found"
+
+# ── Persistence across steps ──────────────────────────────────────────────────
+
+[tests.binding_persists]
+# Bindings defined in earlier steps stay in scope.
+steps = [
+  "let x = 5",
+  "let y = x * 2",
+  "let z = x + y",
+  "z",
+]
+output = "15"
+
+[tests.import_binding_persists]
+# Imported name stays in scope across subsequent steps.
+steps = [
+  'use math = "lume:math"',
+  "let n = 12",
+  "math.isPrime n",
+]
+output = "false"
+
+[tests.type_persists_after_import]
+# Types defined before an import remain usable after it.
+steps = [
+  "let square = x -> x * x",
+  'use math = "lume:math"',
+  "square 5",
+  "math.gcd 12 8",
+]
+output = """
+25
+4
+"""

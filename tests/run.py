@@ -20,7 +20,7 @@ except ModuleNotFoundError:
     import tomli as tomllib
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-TOML_PATH = os.path.join(REPO_ROOT, "tests", "tests.toml")
+TEST_TOML_PATH = os.path.join(REPO_ROOT, "tests", "test.toml")
 REPL_TOML_PATH = os.path.join(REPO_ROOT, "tests", "repl.toml")
 LUAJIT = "luajit"
 
@@ -140,9 +140,7 @@ def run_repl_test(name: str, test: dict, lume_bin: str) -> tuple[bool, str]:
         expected = expected_output.strip()
         if actual != expected:
             return False, (
-                f"output mismatch:\n"
-                f"  expected: {expected!r}\n"
-                f"  actual:   {actual!r}"
+                f"output mismatch:\n  expected: {expected!r}\n  actual:   {actual!r}"
             )
 
     if error_contains is not None:
@@ -162,7 +160,7 @@ def run_repl_test(name: str, test: dict, lume_bin: str) -> tuple[bool, str]:
 def main():
     lume_bin = build_lume()
 
-    with open(TOML_PATH, "rb") as f:
+    with open(TEST_TOML_PATH, "rb") as f:
         config = tomllib.load(f)
     compiler_tests = config.get("tests", {})
 
@@ -188,7 +186,9 @@ def main():
         for future in as_completed(repl_futures):
             repl_results[repl_futures[future]] = future.result()
 
-    def print_section(title: str, results: dict[str, tuple[bool, str]]) -> tuple[int, int]:
+    def print_section(
+        title: str, results: dict[str, tuple[bool, str]]
+    ) -> tuple[int, int]:
         if not results:
             return 0, 0
         print(f"\033[1m{title}\033[0m")

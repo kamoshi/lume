@@ -1,5 +1,5 @@
 [tests.trait_simple_impl]
-path = "tests/trait_simple_impl.lume"
+path = "tests/lume/trait_simple_impl.lume"
 expect = "typecheck"
 output = """
 hello
@@ -7,7 +7,7 @@ hello
 """
 
 [tests.trait_applied_type]
-path = "tests/trait_applied_type.lume"
+path = "tests/lume/trait_applied_type.lume"
 expect = "typecheck"
 output = """
 MyBox(42)
@@ -15,48 +15,48 @@ MyBox(42)
 """
 
 [tests.trait_constrained_fn]
-path = "tests/trait_constrained_fn.lume"
+path = "tests/lume/trait_constrained_fn.lume"
 expect = "typecheck"
 output = """
 42
 """
 
 [tests.trait_list_impl]
-path = "tests/trait_list_impl.lume"
+path = "tests/lume/trait_list_impl.lume"
 expect = "typecheck"
 output = """
 [1, 2, 3]
 """
 
 [tests.trait_missing_method]
-path = "tests/trait_missing_method.lume"
+path = "tests/lume/trait_missing_method.lume"
 expect = "error"
 error_contains = "missing method(s): toText"
 
 [tests.trait_no_impl]
-path = "tests/trait_no_impl.lume"
+path = "tests/lume/trait_no_impl.lume"
 expect = "error"
 error_contains = "no impl of trait 'ToText' for type 'Num'"
 
 [tests.trait_partial_impl]
-path = "tests/trait_partial_impl.lume"
+path = "tests/lume/trait_partial_impl.lume"
 expect = "error"
 error_contains = "missing method(s): fromText"
 
 [tests.trait_missing_impl_at_callsite]
-path = "tests/trait_missing_impl_at_callsite.lume"
+path = "tests/lume/trait_missing_impl_at_callsite.lume"
 expect = "error"
 error_contains = "no impl of trait 'Show' for type 'Bool'"
 
 [tests.trait_constrained_nested]
-path = "tests/trait_constrained_nested.lume"
+path = "tests/lume/trait_constrained_nested.lume"
 expect = "typecheck"
 output = """
 [[1, 2], [3]]
 """
 
 [tests.trait_multiple_constrained]
-path = "tests/trait_multiple_constrained.lume"
+path = "tests/lume/trait_multiple_constrained.lume"
 expect = "typecheck"
 output = """
 [1, 2, 3]
@@ -64,17 +64,17 @@ output = """
 """
 
 [tests.trait_constrained_impl_missing]
-path = "tests/trait_constrained_impl_missing.lume"
+path = "tests/lume/trait_constrained_impl_missing.lume"
 expect = "error"
 error_contains = "no impl of trait 'Show' for type 'List Num'"
 
 [tests.trait_extra_method]
-path = "tests/trait_extra_method.lume"
+path = "tests/lume/trait_extra_method.lume"
 expect = "error"
 error_contains = "unknown method(s) not in trait: goodbye"
 
 [tests.adt_pattern_match]
-path = "tests/adt_pattern_match.lume"
+path = "tests/lume/adt_pattern_match.lume"
 expect = "typecheck"
 output = """
 314.159
@@ -84,7 +84,7 @@ rect 2x7
 """
 
 [tests.records_row_poly]
-path = "tests/records_row_poly.lume"
+path = "tests/lume/records_row_poly.lume"
 expect = "typecheck"
 output = """
 Alice
@@ -95,7 +95,7 @@ Bob
 """
 
 [tests.list_operations]
-path = "tests/list_operations.lume"
+path = "tests/lume/list_operations.lume"
 expect = "typecheck"
 output = """
 2, 4, 6, 8, 10
@@ -106,7 +106,7 @@ output = """
 """
 
 [tests.pipes]
-path = "tests/pipes.lume"
+path = "tests/lume/pipes.lume"
 expect = "typecheck"
 output = """
 11
@@ -115,7 +115,7 @@ output = """
 """
 
 [tests.conditionals]
-path = "tests/conditionals.lume"
+path = "tests/lume/conditionals.lume"
 expect = "typecheck"
 output = """
 42
@@ -129,7 +129,7 @@ equal
 """
 
 [tests.strings]
-path = "tests/strings.lume"
+path = "tests/lume/strings.lume"
 expect = "typecheck"
 output = """
 Hello, world!
@@ -140,7 +140,7 @@ one - two - three
 """
 
 [tests.maybe_type]
-path = "tests/maybe_type.lume"
+path = "tests/lume/maybe_type.lume"
 expect = "typecheck"
 output = """
 10
@@ -149,7 +149,7 @@ output = """
 """
 
 [tests.recursion]
-path = "tests/recursion.lume"
+path = "tests/lume/recursion.lume"
 expect = "typecheck"
 output = """
 120
@@ -158,7 +158,7 @@ output = """
 """
 
 [tests.lambdas_hof]
-path = "tests/lambdas_hof.lume"
+path = "tests/lume/lambdas_hof.lume"
 expect = "typecheck"
 output = """
 42
@@ -169,7 +169,7 @@ output = """
 """
 
 [tests.list_patterns]
-path = "tests/list_patterns.lume"
+path = "tests/lume/list_patterns.lume"
 expect = "typecheck"
 output = """
 empty
@@ -182,7 +182,7 @@ many, starting with 10
 # ── Module tests ───────────────────────────────────────────────
 
 [tests.module_whole_import]
-path = "tests/module_whole_import.lume"
+path = "tests/lume/module_whole_import.lume"
 expect = "typecheck"
 output = """
 78.53975
@@ -192,7 +192,7 @@ circle r=5
 """
 
 [tests.module_destructured]
-path = "tests/module_destructured.lume"
+path = "tests/lume/module_destructured.lume"
 expect = "typecheck"
 output = """
 314.159
@@ -200,7 +200,7 @@ output = """
 """
 
 [tests.module_adt_constructors]
-path = "tests/module_adt_constructors.lume"
+path = "tests/lume/module_adt_constructors.lume"
 expect = "typecheck"
 output = """
 circle
@@ -210,7 +210,7 @@ rect
 """
 
 [tests.module_reexport]
-path = "tests/module_reexport.lume"
+path = "tests/lume/module_reexport.lume"
 expect = "typecheck"
 output = """
 42
@@ -220,7 +220,7 @@ output = """
 """
 
 [tests.module_pipes_compose]
-path = "tests/module_pipes_compose.lume"
+path = "tests/lume/module_pipes_compose.lume"
 expect = "typecheck"
 output = """
 10
@@ -230,7 +230,7 @@ output = """
 """
 
 [tests.module_trait_import]
-path = "tests/module_trait_import.lume"
+path = "tests/lume/module_trait_import.lume"
 expect = "typecheck"
 output = """
 <<num:42>>
@@ -238,7 +238,7 @@ output = """
 """
 
 [tests.module_diamond]
-path = "tests/module_diamond.lume"
+path = "tests/lume/module_diamond.lume"
 expect = "typecheck"
 output = """
 [1] and [2]
@@ -248,29 +248,29 @@ output = """
 """
 
 [tests.module_duplicate_impl]
-path = "tests/module_duplicate_impl.lume"
+path = "tests/lume/module_duplicate_impl.lume"
 expect = "error"
 error_contains = "duplicate impl of trait 'Showable' for type 'Num'"
 
 [tests.trait_impl_open_record]
-path = "tests/trait_impl_open_record.lume"
+path = "tests/lume/trait_impl_open_record.lume"
 expect = "error"
 error_contains = "cannot implement trait"
 
 [tests.trait_impl_closed_record]
-path = "tests/trait_impl_closed_record.lume"
+path = "tests/lume/trait_impl_closed_record.lume"
 expect = "typecheck"
 output = """
 Alice
 """
 
 [tests.trait_param_mismatch]
-path = "tests/trait_param_mismatch.lume"
+path = "tests/lume/trait_param_mismatch.lume"
 expect = "error"
 error_contains = "does not reference type parameter"
 
 [tests.trait_impl_annotation]
-path = "tests/trait_impl_annotation.lume"
+path = "tests/lume/trait_impl_annotation.lume"
 expect = "typecheck"
 output = """
 [10, 20]
@@ -278,7 +278,7 @@ output = """
 """
 
 [tests.trait_param_connected]
-path = "tests/trait_param_connected.lume"
+path = "tests/lume/trait_param_connected.lume"
 expect = "typecheck"
 output = """
 42
@@ -286,7 +286,7 @@ hello
 """
 
 [tests.trait_extra_type_var]
-path = "tests/trait_extra_type_var.lume"
+path = "tests/lume/trait_extra_type_var.lume"
 expect = "typecheck"
 output = """
 42
@@ -294,12 +294,12 @@ output = """
 """
 
 [tests.trait_impl_annotation_mismatch]
-path = "tests/trait_impl_annotation_mismatch.lume"
+path = "tests/lume/trait_impl_annotation_mismatch.lume"
 expect = "error"
 error_contains = "type mismatch"
 
 [tests.trait_multi_method]
-path = "tests/trait_multi_method.lume"
+path = "tests/lume/trait_multi_method.lume"
 expect = "typecheck"
 output = """
 Text
@@ -307,16 +307,16 @@ Text
 """
 
 [tests.trait_partial_param_mismatch]
-path = "tests/trait_partial_param_mismatch.lume"
+path = "tests/lume/trait_partial_param_mismatch.lume"
 expect = "error"
 error_contains = "does not reference type parameter"
 
 [tests.trait_undeclared]
-path = "tests/trait_undeclared.lume"
+path = "tests/lume/trait_undeclared.lume"
 expect = "error"
 error_contains = "undeclared trait 'Test'"
 
 [tests.trait_forward_ref]
-path = "tests/trait_forward_ref.lume"
+path = "tests/lume/trait_forward_ref.lume"
 expect = "error"
 error_contains = "undeclared trait 'Test'"

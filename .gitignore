@@ -48,9 +48,11 @@
 !examples/**
 
 !tests/
-!tests/tests.toml
 !tests/run.py
-!tests/**.lume
+!tests/test.toml
+!tests/repl.toml
+!tests/lume/
+!tests/lume/**.lume
 
 !tools/
 !tools/tree-sitter-lume
