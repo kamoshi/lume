@@ -1,9 +1,6 @@
 #!/usr/bin/env -S uv run --script
 # /// script
-# requires-python = ">=3.10"
-# dependencies = [
-#     "tomli",
-# ]
+# requires-python = ">=3.11"
 # ///
 """Test harness for Lume compiler tests defined in tests/tests.toml and tests/repl.toml."""
 
@@ -14,10 +11,7 @@ import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-try:
-    import tomllib
-except ModuleNotFoundError:
-    import tomli as tomllib
+import tomllib
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEST_TOML_PATH = os.path.join(REPO_ROOT, "tests", "test.toml")
