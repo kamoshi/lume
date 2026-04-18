@@ -414,7 +414,7 @@ pub fn unify(s: &mut Subst, t1: Ty, t2: Ty) -> Result<(), TypeError> {
             Ok(())
         }
 
-        (t1, t2) => Err(TypeError::Mismatch(t1, t2)),
+        (t1, t2) => Err(TypeError::Mismatch(t2, t1)),
     }
 }
 
