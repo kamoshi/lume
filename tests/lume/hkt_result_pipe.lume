@@ -1,0 +1,17 @@
+-- Tests the Result pipe (?>) operator with curried App types.
+-- Ensures the result pipe correctly unifies Result types.
+
+let parse : Text -> Result Num Text =
+  | "one" -> Ok 1
+  | "two" -> Ok 2
+  | other -> Err ("unknown: " ++ other)
+
+let double : Num -> Result Num Text =
+  n -> Ok (n * 2)
+
+let show : Result Num Text -> Text =
+  | Ok n -> "ok: " ++ showNum n
+  | Err msg -> "err: " ++ msg
+
+let _ = parse "two" ?> double |> show |> print
+let _ = parse "nope" ?> double |> show |> print

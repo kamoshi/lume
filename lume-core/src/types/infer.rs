@@ -254,7 +254,7 @@ pub fn builtin_env(s: &mut Subst) -> (TypeEnv, VariantEnv) {
         "toNum".into(),
         Scheme::mono(Ty::Func(
             Box::new(Ty::Text),
-            Box::new(Ty::Con("Maybe".into(), vec![Ty::Num])),
+            Box::new(Ty::mk_con("Maybe", &[Ty::Num])),
         )),
     );
 
@@ -265,14 +265,14 @@ pub fn builtin_env(s: &mut Subst) -> (TypeEnv, VariantEnv) {
             Box::new(Ty::Num),
             Box::new(Ty::Func(
                 Box::new(Ty::Num),
-                Box::new(Ty::List(Box::new(Ty::Num))),
+                Box::new(Ty::mk_con("List", &[Ty::Num])),
             )),
         )),
     );
 
     // List functions - use vars v0, v1
-    let list_a = Ty::List(Box::new(Ty::Var(v0)));
-    let list_b = Ty::List(Box::new(Ty::Var(v1)));
+    let list_a = Ty::mk_con("List", &[Ty::Var(v0)]);
+    let list_b = Ty::mk_con("List", &[Ty::Var(v1)]);
 
     // map : (a -> b) -> List a -> List b
     env.insert(
@@ -335,8 +335,8 @@ pub fn builtin_env(s: &mut Subst) -> (TypeEnv, VariantEnv) {
     env.insert(
         "sort".into(),
         Scheme::mono(Ty::Func(
-            Box::new(Ty::List(Box::new(Ty::Num))),
-            Box::new(Ty::List(Box::new(Ty::Num))),
+            Box::new(Ty::mk_con("List", &[Ty::Num])),
+            Box::new(Ty::mk_con("List", &[Ty::Num])),
         )),
     );
     // take, drop : Num -> List a -> List a
@@ -383,7 +383,7 @@ pub fn builtin_env(s: &mut Subst) -> (TypeEnv, VariantEnv) {
         ),
     );
     // average, sum : List Num -> Num
-    let list_num = Ty::List(Box::new(Ty::Num));
+    let list_num = Ty::mk_con("List", &[Ty::Num]);
     env.insert(
         "average".into(),
         Scheme::mono(Ty::Func(Box::new(list_num.clone()), Box::new(Ty::Num))),
@@ -427,16 +427,16 @@ pub fn builtin_env(s: &mut Subst) -> (TypeEnv, VariantEnv) {
     );
 
     // readFile : Text -> Result Text Text
-    let result_text = Ty::Con("Result".into(), vec![Ty::Text, Ty::Text]);
+    let result_text = Ty::mk_con("Result", &[Ty::Text, Ty::Text]);
     env.insert(
         "readFile".into(),
         Scheme::mono(Ty::Func(Box::new(Ty::Text), Box::new(result_text.clone()))),
     );
 
     // writeFile : Text -> Text -> Result {} Text
-    let result_unit = Ty::Con(
-        "Result".into(),
-        vec![
+    let result_unit = Ty::mk_con(
+        "Result",
+        &[
             Ty::Record(Row {
                 fields: vec![],
                 tail: RowTail::Closed,
@@ -481,7 +481,7 @@ pub fn builtin_env(s: &mut Subst) -> (TypeEnv, VariantEnv) {
             Box::new(Ty::Text),
             Box::new(Ty::Func(
                 Box::new(Ty::Text),
-                Box::new(Ty::List(Box::new(Ty::Text))),
+                Box::new(Ty::mk_con("List", &[Ty::Text])),
             )),
         )),
     );
@@ -491,7 +491,7 @@ pub fn builtin_env(s: &mut Subst) -> (TypeEnv, VariantEnv) {
         Scheme::mono(Ty::Func(
             Box::new(Ty::Text),
             Box::new(Ty::Func(
-                Box::new(Ty::List(Box::new(Ty::Text))),
+                Box::new(Ty::mk_con("List", &[Ty::Text])),
                 Box::new(Ty::Text),
             )),
         )),
@@ -511,7 +511,7 @@ pub fn builtin_env(s: &mut Subst) -> (TypeEnv, VariantEnv) {
         mk_scheme(
             vec![v0, v1],
             Ty::Func(
-                Box::new(Ty::Con("Result".into(), vec![Ty::Var(v0), Ty::Var(v1)])),
+                Box::new(Ty::mk_con("Result", &[Ty::Var(v0), Ty::Var(v1)])),
                 Box::new(Ty::Var(v0)),
             ),
         ),
@@ -524,7 +524,7 @@ pub fn builtin_env(s: &mut Subst) -> (TypeEnv, VariantEnv) {
             Ty::Func(
                 Box::new(Ty::Var(v0)),
                 Box::new(Ty::Func(
-                    Box::new(Ty::Con("Maybe".into(), vec![Ty::Var(v0)])),
+                    Box::new(Ty::mk_con("Maybe", &[Ty::Var(v0)])),
                     Box::new(Ty::Var(v0)),
                 )),
             ),
@@ -538,8 +538,8 @@ pub fn builtin_env(s: &mut Subst) -> (TypeEnv, VariantEnv) {
             Ty::Func(
                 Box::new(Ty::Func(Box::new(Ty::Var(1)), Box::new(Ty::Var(2)))),
                 Box::new(Ty::Func(
-                    Box::new(Ty::Con("Result".into(), vec![Ty::Var(0), Ty::Var(1)])),
-                    Box::new(Ty::Con("Result".into(), vec![Ty::Var(0), Ty::Var(2)])),
+                    Box::new(Ty::mk_con("Result", &[Ty::Var(0), Ty::Var(1)])),
+                    Box::new(Ty::mk_con("Result", &[Ty::Var(0), Ty::Var(2)])),
                 )),
             ),
         ),
@@ -589,6 +589,33 @@ type VariantInstance = (Ty, Option<Ty>);
 
 // ── The typechecker ───────────────────────────────────────────────────────────
 
+// ── Arity environment ─────────────────────────────────────────────────────────
+
+/// Maps type constructor names to their expected number of type parameters.
+/// Used during AST→Ty lowering to catch arity mismatches early (e.g. `Num a`).
+pub type ArityEnv = HashMap<String, usize>;
+
+/// Pre-populate built-in arities and scan user TypeDefs to build the ArityEnv.
+pub fn build_arity_env(items: &[TopItem]) -> ArityEnv {
+    let mut env: ArityEnv = HashMap::new();
+    // Built-in types
+    env.insert("Num".into(), 0);
+    env.insert("Text".into(), 0);
+    env.insert("Bool".into(), 0);
+    env.insert("List".into(), 1);
+    env.insert("Maybe".into(), 1);
+    env.insert("Result".into(), 2);
+    // Scan user-defined ADTs
+    for item in items {
+        if let TopItem::TypeDef(td) = item {
+            env.insert(td.name.clone(), td.params.len());
+        }
+    }
+    env
+}
+
+// ── Checker ──────────────────────────────────────────────────────────────────
+
 // Checker owns the mutable state for one type-checking session (one module).
 //
 // `subst`       - the live substitution; grows as constraints are solved.
@@ -602,6 +629,7 @@ type VariantInstance = (Ty, Option<Ty>);
 pub struct Checker {
     pub subst: Subst,
     pub variant_env: VariantEnv,
+    pub arity_env: ArityEnv,
     pub trait_env: HashMap<String, TraitDef>,
     /// Maps each expression's NodeId to its inferred type (with type vars, resolved at end).
     pub node_types: HashMap<NodeId, Ty>,
@@ -624,6 +652,7 @@ impl Checker {
         Checker {
             subst: Subst::new(),
             variant_env,
+            arity_env: ArityEnv::new(),
             trait_env: HashMap::new(),
             node_types: HashMap::new(),
             constraint_map: Vec::new(),
@@ -642,6 +671,7 @@ impl Checker {
         Checker {
             subst,
             variant_env,
+            arity_env: ArityEnv::new(),
             trait_env: HashMap::new(),
             node_types: HashMap::new(),
             constraint_map: Vec::new(),
@@ -800,9 +830,13 @@ impl Checker {
         let (env_tvs, env_rvs) = env.free_vars(&self.subst);
         let ty_tvs = free_type_vars(&ty);
         let ty_rvs = free_row_vars(&ty);
+        let mut vars: Vec<TyVar> = ty_tvs.difference(&env_tvs).copied().collect();
+        vars.sort();
+        let mut row_vars: Vec<TyVar> = ty_rvs.difference(&env_rvs).copied().collect();
+        row_vars.sort();
         Scheme {
-            vars: ty_tvs.difference(&env_tvs).copied().collect(),
-            row_vars: ty_rvs.difference(&env_rvs).copied().collect(),
+            vars,
+            row_vars,
             constraints: {
                 let generalised: HashSet<TyVar> = ty_tvs.difference(&env_tvs).copied().collect();
                 let mut seen = std::collections::HashSet::new();
@@ -853,20 +887,47 @@ impl Checker {
     ) -> Result<Ty, TypeError> {
         use ast::Type;
         match ty {
-            Type::Named { name, args } => match name.as_str() {
+            Type::Constructor(name) => match name.as_str() {
                 "Num" => Ok(Ty::Num),
                 "Text" => Ok(Ty::Text),
                 "Bool" => Ok(Ty::Bool),
-                "List" if args.len() == 1 => {
-                    let inner = self.lower_ty(&args[0], param_vars)?;
-                    Ok(Ty::List(Box::new(inner)))
-                }
-                _ => {
-                    let conv: Result<Vec<_>, _> =
-                        args.iter().map(|a| self.lower_ty(a, param_vars)).collect();
-                    Ok(Ty::Con(name.clone(), conv?))
-                }
+                _ => Ok(Ty::Con(name.clone())),
             },
+            Type::App { .. } => {
+                // Flatten the left-associative App tree to find the base and
+                // all arguments. E.g. `App(App(Con("Result"), Con("Num")), Con("Text"))`
+                // flattens to base=Constructor("Result"), args=[Constructor("Num"), Constructor("Text")].
+                let (base, args) = flatten_ast_app(ty);
+                match base {
+                    // Known constructor: check arity, then lower.
+                    Type::Constructor(name) => {
+                        // If this constructor is in the ArityEnv, verify its arity.
+                        if let Some(&expected) = self.arity_env.get(name.as_str()) {
+                            if args.len() != expected {
+                                return Err(TypeError::ArityMismatch {
+                                    name: name.clone(),
+                                    expected,
+                                    actual: args.len(),
+                                });
+                            }
+                        }
+                        // Lower the constructor and each argument, building a curried App chain.
+                        let base_ty = self.lower_ty(base, param_vars)?;
+                        args.iter().try_fold(base_ty, |acc, arg| {
+                            let arg_ty = self.lower_ty(arg, param_vars)?;
+                            Ok(Ty::App(Box::new(acc), Box::new(arg_ty)))
+                        })
+                    }
+                    // Variable base (HKT): `f a` — no arity check, just lower.
+                    _ => {
+                        let base_ty = self.lower_ty(base, param_vars)?;
+                        args.iter().try_fold(base_ty, |acc, arg| {
+                            let arg_ty = self.lower_ty(arg, param_vars)?;
+                            Ok(Ty::App(Box::new(acc), Box::new(arg_ty)))
+                        })
+                    }
+                }
+            }
             Type::Var(name) => {
                 let v = param_vars
                     .entry(name.clone())
@@ -932,7 +993,7 @@ impl Checker {
             })
             .collect();
 
-        let result_ty = Ty::Con(info.type_name.clone(), fresh_args);
+        let result_ty = Ty::mk_con(&info.type_name, &fresh_args);
 
         let wraps_ty = if let Some(wt) = &info.wraps {
             Some(self.lower_ty(wt, &mut param_vars)?)
@@ -996,7 +1057,7 @@ impl Checker {
                     let elem_c = self.subst.apply(&elem);
                     self.unify_at(t, elem_c, &e.span)?;
                 }
-                Ok(Ty::List(Box::new(self.subst.apply(&elem))))
+                Ok(Ty::mk_con("List", &[self.subst.apply(&elem)]))
             }
 
             // Variable reference: look up the scheme and instantiate it.
@@ -1409,10 +1470,12 @@ impl Checker {
                 self.check(env, right, Ty::Text)?;
                 Ok(Ty::Text)
             }
-            Ty::List(elem) => {
-                let elem = *elem.clone();
-                self.check(env, right, Ty::List(Box::new(elem.clone())))?;
-                Ok(Ty::List(Box::new(self.subst.apply(&elem))))
+            _ if tl.con_name() == Some("List") => {
+                let (_, args) = tl.flatten_app();
+                let elem = (*args.first().expect("List must have exactly 1 type argument")).clone();
+                let list_ty = Ty::mk_con("List", &[elem.clone()]);
+                self.check(env, right, list_ty)?;
+                Ok(Ty::mk_con("List", &[self.subst.apply(&elem)]))
             }
             Ty::Record(_) => {
                 let tr = self.infer(env, right)?;
@@ -1457,7 +1520,7 @@ impl Checker {
         let e = self.fresh_ty();
         let b = self.fresh_ty();
         let tl_c = tl.clone();
-        self.unify(tl, Ty::Con("Result".into(), vec![a.clone(), e.clone()]))
+        self.unify(tl, Ty::mk_con("Result", &[a.clone(), e.clone()]))
             .map_err(|_| {
                 TypeErrorAt::new(TypeError::ResultPipeNonResult(tl_c), left.span.clone())
             })?;
@@ -1470,13 +1533,13 @@ impl Checker {
             tr,
             Ty::Func(
                 Box::new(a),
-                Box::new(Ty::Con("Result".into(), vec![b, e.clone()])),
+                Box::new(Ty::mk_con("Result", &[b, e.clone()])),
             ),
             &right.span,
         )?;
         let b = self.subst.apply(&b_c);
         let e = self.subst.apply(&e);
-        Ok(Ty::Con("Result".into(), vec![b, e]))
+        Ok(Ty::mk_con("Result", &[b, e]))
     }
 
     // A top-level `| pat -> body` chain is treated as a lambda:
@@ -1575,9 +1638,9 @@ impl Checker {
         arms: &[MatchArm],
         span: &Span,
     ) -> Result<(), TypeErrorAt> {
-        let type_name = match scrutinee_ty {
-            Ty::Con(name, _) => name,
-            _ => return Ok(()),
+        let type_name = match scrutinee_ty.con_name() {
+            Some(name) => name,
+            None => return Ok(()),
         };
 
         let all_variants = self.variant_env.variants_of_type(type_name);
@@ -1791,7 +1854,7 @@ impl Checker {
         expected: Ty,
     ) -> Result<Vec<(String, Ty)>, TypeError> {
         let elem = self.fresh_ty();
-        self.unify(expected, Ty::List(Box::new(elem.clone())))?;
+        self.unify(expected, Ty::mk_con("List", &[elem.clone()]))?;
         let elem = self.subst.apply(&elem);
 
         let mut bindings = Vec::new();
@@ -1800,7 +1863,7 @@ impl Checker {
             bindings.extend(self.infer_pattern(p, elem_c)?);
         }
         if let Some(Some(rest)) = &lp.rest {
-            bindings.push((rest.clone(), Ty::List(Box::new(self.subst.apply(&elem)))));
+            bindings.push((rest.clone(), Ty::mk_con("List", &[self.subst.apply(&elem)])));
         }
         Ok(bindings)
     }
@@ -2365,6 +2428,7 @@ pub fn check_program(program: &Program, path: Option<&Path>) -> Result<Ty, TypeE
     let prog_vars = build_variant_env(&program.items);
     var_env.merge(prog_vars);
     let mut checker = Checker::with_subst(var_env, subst);
+    checker.arity_env = build_arity_env(&program.items);
     let mut loader = crate::loader::Loader::new();
     let ty = checker.check_program(program, env, path, &mut loader)?;
     // Report the first typed hole as an error (holes are intentional placeholders).
@@ -2420,14 +2484,16 @@ pub fn ty_canonical_name(ty: &Ty) -> Option<String> {
         Ty::Num => Some("Num".to_string()),
         Ty::Text => Some("Text".to_string()),
         Ty::Bool => Some("Bool".to_string()),
-        Ty::Con(name, args) if args.is_empty() => Some(name.clone()),
-        Ty::Con(name, args) => {
-            let arg_strs: Option<Vec<String>> = args.iter().map(ty_canonical_name).collect();
-            Some(format!("{} {}", name, arg_strs?.join(" ")))
-        }
-        Ty::List(inner) => {
-            let inner_name = ty_canonical_name(inner)?;
-            Some(format!("List {}", inner_name))
+        Ty::Con(name) => Some(name.clone()),
+        Ty::App(..) => {
+            let (head, args) = ty.flatten_app();
+            let head_name = ty_canonical_name(head)?;
+            if args.is_empty() {
+                Some(head_name)
+            } else {
+                let arg_strs: Option<Vec<String>> = args.iter().map(|a| ty_canonical_name(a)).collect();
+                Some(format!("{} {}", head_name, arg_strs?.join(" ")))
+            }
         }
         Ty::Record(row) => {
             if !matches!(row.tail, RowTail::Closed) {
@@ -2523,11 +2589,28 @@ fn synth_impl_binding(id: &ImplDef, trait_def: Option<&TraitDef>) -> Binding {
     }
 }
 
+/// Flatten a left-associative AST `App` tree into the base type and a list of arguments.
+/// `App(App(Constructor("Result"), Constructor("Num")), Constructor("Text"))`
+/// → `(Constructor("Result"), [Constructor("Num"), Constructor("Text")])`.
+fn flatten_ast_app(ty: &Type) -> (&Type, Vec<&Type>) {
+    let mut args = Vec::new();
+    let mut current = ty;
+    while let Type::App { callee, arg } = current {
+        args.push(arg.as_ref());
+        current = callee.as_ref();
+    }
+    args.reverse();
+    (current, args)
+}
+
 /// Check whether an AST `Type` references a given type-variable name.
 fn ast_type_contains_var(ty: &Type, var_name: &str) -> bool {
     match ty {
         Type::Var(v) => v == var_name,
-        Type::Named { args, .. } => args.iter().any(|a| ast_type_contains_var(a, var_name)),
+        Type::Constructor(_) => false,
+        Type::App { callee, arg } => {
+            ast_type_contains_var(callee, var_name) || ast_type_contains_var(arg, var_name)
+        }
         Type::Func { param, ret } => {
             ast_type_contains_var(param, var_name) || ast_type_contains_var(ret, var_name)
         }
@@ -2543,12 +2626,10 @@ fn subst_type_var(ty: &Type, var_name: &str, replacement: &Type) -> Type {
     match ty {
         Type::Var(v) if v == var_name => replacement.clone(),
         Type::Var(_) => ty.clone(),
-        Type::Named { name, args } => Type::Named {
-            name: name.clone(),
-            args: args
-                .iter()
-                .map(|a| subst_type_var(a, var_name, replacement))
-                .collect(),
+        Type::Constructor(_) => ty.clone(),
+        Type::App { callee, arg } => Type::App {
+            callee: Box::new(subst_type_var(callee, var_name, replacement)),
+            arg: Box::new(subst_type_var(arg, var_name, replacement)),
         },
         Type::Func { param, ret } => Type::Func {
             param: Box::new(subst_type_var(param, var_name, replacement)),
@@ -2589,19 +2670,28 @@ fn match_ast_inner_tc(pattern: &Type, concrete: &Ty, bindings: &mut HashMap<Stri
                 true
             }
         }
-        (Type::Named { name, args }, _) => match (name.as_str(), concrete) {
-            ("Num", Ty::Num) if args.is_empty() => true,
-            ("Text", Ty::Text) if args.is_empty() => true,
-            ("Bool", Ty::Bool) if args.is_empty() => true,
-            ("List", Ty::List(inner)) if args.len() == 1 => {
-                match_ast_inner_tc(&args[0], inner, bindings)
-            }
-            (_, Ty::Con(c_name, c_args)) if name == c_name && args.len() == c_args.len() => args
-                .iter()
-                .zip(c_args.iter())
-                .all(|(p, c)| match_ast_inner_tc(p, c, bindings)),
+        (Type::Constructor(name), _) => match (name.as_str(), concrete) {
+            ("Num", Ty::Num) => true,
+            ("Text", Ty::Text) => true,
+            ("Bool", Ty::Bool) => true,
+            (_, Ty::Con(c_name)) => name == c_name,
             _ => false,
         },
+        (Type::App { .. }, _) => {
+            // Flatten both the AST App tree and the Ty App tree, then match pairwise.
+            let (ast_base, ast_args) = flatten_ast_app(pattern);
+            let (ty_head, ty_args) = concrete.flatten_app();
+            if ast_args.len() != ty_args.len() {
+                return false;
+            }
+            if !match_ast_inner_tc(ast_base, ty_head, bindings) {
+                return false;
+            }
+            ast_args
+                .iter()
+                .zip(ty_args.iter())
+                .all(|(p, c)| match_ast_inner_tc(p, c, bindings))
+        }
         (Type::Func { param, ret }, Ty::Func(cp, cr)) => {
             match_ast_inner_tc(param, cp, bindings) && match_ast_inner_tc(ret, cr, bindings)
         }
@@ -2702,6 +2792,7 @@ pub fn elaborate_bindings(
     let prog_vars = build_variant_env(&program.items);
     var_env.merge(prog_vars);
     let mut checker = Checker::with_subst(var_env, subst);
+    checker.arity_env = build_arity_env(&program.items);
     let mut loader = crate::loader::Loader::new();
     let mut env = env;
 
@@ -2808,6 +2899,7 @@ pub fn elaborate(
     let prog_vars = build_variant_env(&program.items);
     var_env.merge(prog_vars);
     let mut checker = Checker::with_subst(var_env, subst);
+    checker.arity_env = build_arity_env(&program.items);
     let mut loader = crate::loader::Loader::new();
     let mut env = env;
 
@@ -2868,6 +2960,7 @@ pub fn elaborate_with_env(
     let prog_vars = build_variant_env(&program.items);
     var_env.merge(prog_vars);
     let mut checker = Checker::with_subst(var_env, subst);
+    checker.arity_env = build_arity_env(&program.items);
     let mut loader = crate::loader::Loader::new();
     let mut env = base_env;
 
@@ -2970,6 +3063,7 @@ pub fn elaborate_with_env_partial(
     let prog_vars = build_variant_env(&program.items);
     var_env.merge(prog_vars);
     let mut checker = Checker::with_subst(var_env, subst);
+    checker.arity_env = build_arity_env(&program.items);
     let mut loader = crate::loader::Loader::new();
     let mut env = base_env;
 

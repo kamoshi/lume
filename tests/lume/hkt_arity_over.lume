@@ -1,0 +1,8 @@
+-- Tests that over-application is caught: Maybe takes 1 arg, not 2.
+-- `Maybe Num Text` should be rejected as arity mismatch.
+
+let bad : Maybe Num Text -> Num =
+  | Some x -> x
+  | None -> 0
+
+pub { bad }

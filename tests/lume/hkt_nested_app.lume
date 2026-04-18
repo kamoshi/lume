@@ -1,0 +1,30 @@
+-- Tests nested type application: Maybe (List Num), List (Maybe Num), etc.
+-- Ensures that nested App trees are correctly constructed and unified.
+
+let headOr : a -> List a -> a =
+  default ->
+    | [] -> default
+    | [x, ..] -> x
+
+let safeHead : List a -> Maybe a =
+  | [] -> None
+  | [x, ..] -> Some x
+
+let mapMaybe : (a -> b) -> Maybe a -> Maybe b = f ->
+  | None -> None
+  | Some value -> Some (f value)
+
+-- Maybe (List Num): wrapping a list inside Maybe
+let maybeLists : Maybe (List Num) = Some [1, 2, 3]
+
+let _ = match maybeLists in
+  | None -> print "none"
+  | Some xs -> xs |> headOr 0 |> showNum |> print
+
+-- List (Maybe Num): a list of Maybe values
+let optionalNums : List (Maybe Num) = [Some 10, None, Some 30]
+
+let r = optionalNums |> headOr None |> mapMaybe (x -> x + 1)
+let _ = match r in
+  | None -> print "none"
+  | Some v -> v |> showNum |> print

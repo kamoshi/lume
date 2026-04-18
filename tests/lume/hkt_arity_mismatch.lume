@@ -1,0 +1,6 @@
+-- Tests that arity mismatch is caught for a 0-arity type applied to an arg.
+-- `Num` takes 0 type arguments, so `Num a` should be rejected.
+
+let bad : Num Num -> Num = x -> x
+
+pub { bad }

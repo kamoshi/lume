@@ -137,3 +137,72 @@ output = """
 25
 4
 """
+
+# ── HKT / Kind checking ──────────────────────────────────────────────────────
+
+[tests.kind_maybe]
+steps = [":kind Maybe"]
+output = "Maybe : * -> *"
+
+[tests.kind_result]
+steps = [":kind Result"]
+output = "Result : * -> * -> *"
+
+[tests.kind_list]
+steps = [":kind List"]
+output = "List : * -> *"
+
+[tests.kind_num]
+steps = [":kind Num"]
+output = "Num : *"
+
+[tests.kind_bool]
+steps = [":kind Bool"]
+output = "Bool : *"
+
+[tests.kind_text]
+steps = [":kind Text"]
+output = "Text : *"
+
+[tests.kind_user_adt]
+steps = [
+  "type Pair a b = | MkPair a b",
+  ":k Pair",
+]
+output = "Pair : * -> * -> *"
+
+[tests.kind_shorthand]
+steps = [":k Maybe"]
+output = "Maybe : * -> *"
+
+[tests.type_some_constructor]
+steps = [":type Some"]
+output = "Some : a -> Maybe a"
+
+[tests.type_none_constructor]
+steps = [":type None"]
+output = "None : Maybe a"
+
+[tests.type_ok_constructor]
+steps = [":type Ok"]
+output = "Ok : a -> Result a b"
+
+[tests.type_err_constructor]
+steps = [":type Err"]
+output = "Err : b -> Result a b"
+
+[tests.type_some_applied]
+steps = [":type Some 42"]
+output = "Some 42 : Maybe Num"
+
+[tests.type_list_applied]
+steps = [":type [1, 2, 3]"]
+output = "[1, 2, 3] : List Num"
+
+[tests.type_ok_applied]
+steps = [":type Ok 1"]
+output = "Ok 1 : Result Num a"
+
+[tests.type_map_builtin]
+steps = [":type map"]
+output = "map : (a -> b) -> List a -> List b"

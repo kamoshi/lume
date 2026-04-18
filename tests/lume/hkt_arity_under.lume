@@ -1,0 +1,8 @@
+-- Tests that under-application is caught: Result takes 2 args, but only 1 given
+-- in a position where a fully-applied type is needed.
+
+let bad : Result Num -> Num =
+  | Ok x -> x
+  | Err _ -> 0
+
+pub { bad }

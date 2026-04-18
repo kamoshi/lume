@@ -76,14 +76,18 @@ pub fn extract_trait_param(ast_ty: &Type, resolved: &Ty, param: &str) -> Option<
             extract_trait_param(ap, rp, param)
                 .or_else(|| extract_trait_param(ar, rr, param))
         }
-        (Type::Named { name, args }, Ty::List(inner)) if name == "List" && args.len() == 1 => {
-            extract_trait_param(&args[0], inner, param)
-        }
-        (Type::Named { name: n1, args }, Ty::Con(n2, targs))
-            if n1 == n2 && args.len() == targs.len() =>
-        {
+        (Type::App { .. }, _) | (Type::Constructor(_), _) => {
+            // Flatten AST App tree and match against Ty App tree.
+            let mut current: &Type = ast_ty;
+            let mut args = Vec::new();
+            while let Type::App { callee, arg } = current {
+                args.push(arg.as_ref());
+                current = callee.as_ref();
+            }
+            args.reverse();
+            let (_, ty_args) = resolved.flatten_app();
             args.iter()
-                .zip(targs.iter())
+                .zip(ty_args.iter())
                 .find_map(|(a, t)| extract_trait_param(a, t, param))
         }
         _ => None,
@@ -92,8 +96,7 @@ pub fn extract_trait_param(ast_ty: &Type, resolved: &Ty, param: &str) -> Option<
 
 /// Format a trait constraint with proper parenthesisation, e.g. `Show (List Num)`.
 pub fn format_constraint(trait_name: &str, param_ty: &Ty) -> String {
-    let needs_parens = matches!(param_ty, Ty::Func(..) | Ty::List(..))
-        || matches!(param_ty, Ty::Con(_, args) if !args.is_empty());
+    let needs_parens = matches!(param_ty, Ty::Func(..) | Ty::App(..));
     if needs_parens {
         format!("{} ({})", trait_name, param_ty)
     } else {

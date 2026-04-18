@@ -1,0 +1,15 @@
+-- Tests that using a HKT trait method on a non-matching type fails.
+-- Here we define Functor for Maybe but try to use it on a Num.
+
+trait Functor f {
+  let fmap : (a -> b) -> f a -> f b
+}
+
+use Functor in Maybe {
+  let fmap = f ->
+    | None -> None
+    | Some x -> Some (f x)
+}
+
+-- This should fail: 42 is not `f a` for any type constructor f.
+let _ = Functor.fmap (x -> x + 1) 42 |> showNum |> print

@@ -1,0 +1,13 @@
+-- Tests that implementing Functor for Bool fails.
+-- Bool has kind * (arity 0), but Functor's method signature `f a -> f b`
+-- requires f to be a type constructor (kind * -> *).
+
+trait Functor f {
+  let fmap : (a -> b) -> f a -> f b
+}
+
+use Functor in Bool {
+  let fmap = f -> x -> f x
+}
+
+pub { }

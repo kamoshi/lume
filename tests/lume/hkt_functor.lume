@@ -1,0 +1,26 @@
+-- Tests higher-kinded Functor trait: f is a type constructor (* -> *).
+-- This is the canonical HKT test: `f a` unifies with `Maybe Num` to bind f=Maybe, a=Num.
+
+trait Functor f {
+  let fmap : (a -> b) -> f a -> f b
+}
+
+use Functor in Maybe {
+  let fmap = f ->
+    | None -> None
+    | Some x -> Some (f x)
+}
+
+use Functor in List {
+  let fmap = f -> xs -> map f xs
+}
+
+let doubled = Functor.fmap (x -> x * 2) (Some 21)
+let _ = match doubled in
+  | Some n -> n |> showNum |> print
+  | None -> print "none"
+
+let nums = Functor.fmap (x -> x + 10) [1, 2, 3]
+let _ = match nums in
+  | [a, b, c, ..] -> showNum a ++ " " ++ showNum b ++ " " ++ showNum c |> print
+  | _ -> print "wrong"

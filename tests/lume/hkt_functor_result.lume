@@ -1,0 +1,15 @@
+-- Tests that implementing Functor for Result fails.
+-- Result has kind * -> * -> * (arity 2), but Functor expects * -> * (arity 1).
+-- Substituting f=Result in `f a` produces `Result a` — arity mismatch.
+
+trait Functor f {
+  let fmap : (a -> b) -> f a -> f b
+}
+
+use Functor in Result {
+  let fmap = f ->
+    | Ok x -> Ok (f x)
+    | Err e -> Err e
+}
+
+pub { }

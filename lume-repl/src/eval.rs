@@ -73,6 +73,14 @@ pub(crate) fn eval_input(
         eprintln!("  usage: :type <expression>");
         return EvalAction::None;
     }
+    if let Some(name) = trimmed.strip_prefix(":kind ").or_else(|| trimmed.strip_prefix(":k ")) {
+        kind_of(name.trim(), defs, base_dir);
+        return EvalAction::None;
+    }
+    if trimmed == ":kind" || trimmed == ":k" {
+        eprintln!("  usage: :kind <TypeName>");
+        return EvalAction::None;
+    }
 
     let first_line = input.lines().find(|l| !l.trim().is_empty()).unwrap_or(input);
     let is_definition = first_line.starts_with("let ")
@@ -211,6 +219,55 @@ pub(crate) fn type_of(expr: &str, defs: &str, base_dir: &Path) {
         }
         Err(e) => eprintln!("  type error: {e}"),
     }
+}
+
+/// Print the kind of a type constructor.
+///
+/// Parses the accumulated REPL definitions to build the arity environment,
+/// then looks up the requested type name and prints its kind using star notation
+/// (e.g., `Maybe : * -> *`, `Result : * -> * -> *`, `Num : *`).
+pub(crate) fn kind_of(name: &str, defs: &str, base_dir: &Path) {
+    use lume_core::lexer::Lexer;
+    use lume_core::parser;
+    use lume_core::types::infer::build_arity_env;
+
+    let src = if defs.is_empty() { "let _x = 0\n".to_string() } else {
+        let sep = if defs.ends_with('\n') { "" } else { "\n" };
+        format!("{}{}", defs, sep)
+    };
+
+    let tokens = match Lexer::new(&src).tokenize() {
+        Ok(t) => t,
+        Err(e) => { eprintln!("  parse error: {e}"); return; }
+    };
+    let program = match parser::parse_program(&tokens) {
+        Ok(p) => p,
+        Err(e) => { eprintln!("  parse error: {e}"); return; }
+    };
+
+    let _ = base_dir; // available for future use (e.g., resolving imports)
+    let arity_env = build_arity_env(&program.items);
+
+    match arity_env.get(name) {
+        Some(&arity) => {
+            let kind = arity_to_kind_string(arity);
+            println!("  {name} :{DIM} {kind}{RESET}");
+        }
+        None => eprintln!("  unknown type '{name}'"),
+    }
+}
+
+/// Convert an arity number to a star-notation kind string.
+/// 0 → `*`, 1 → `* -> *`, 2 → `* -> * -> *`, etc.
+fn arity_to_kind_string(arity: usize) -> String {
+    if arity == 0 {
+        return "*".to_string();
+    }
+    let mut parts: Vec<&str> = Vec::with_capacity(arity + 1);
+    for _ in 0..=arity {
+        parts.push("*");
+    }
+    parts.join(" -> ")
 }
 
 /// Load a Lume file into the REPL Lua environment.

@@ -1,0 +1,18 @@
+-- Tests user-defined ADTs with type parameters and curried application.
+-- Defines a 2-parameter type Pair a b and pattern-matches on it.
+
+type Pair a b =
+  | MkPair { fst: a, snd: b }
+
+let swap : Pair a b -> Pair b a =
+  | MkPair { fst, snd } -> MkPair { fst: snd, snd: fst }
+
+let showPair : Pair Num Text -> Text =
+  | MkPair { fst, snd } -> "(" ++ showNum fst ++ ", " ++ snd ++ ")"
+
+let p = MkPair { fst: 42, snd: "hello" }
+let _ = p |> showPair |> print
+
+let swapped = swap p
+let _ = match swapped in
+  | MkPair { fst, snd } -> fst ++ ": " ++ showNum snd |> print

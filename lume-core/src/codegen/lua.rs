@@ -323,7 +323,7 @@ pub fn full_prelude() -> String {
     // Internal helpers — written directly without `local`.
     out.push_str(
         "function _resultBind(r, f)\n\
-         \x20 if r._tag == \"Ok\" then return f(r.value) else return r end\n\
+         \x20 if r._tag == \"Ok\" then return f(r._0) else return r end\n\
          end\n\n",
     );
     out.push_str(
@@ -484,7 +484,7 @@ pub fn emit(bundle: &[IrModule], variant_env: VariantEnv) -> String {
     if e.needs_result_bind {
         preamble.push_str(
             "local function _resultBind(r, f)\n\
-             \x20 if r._tag == \"Ok\" then return f(r.value) else return r end\n\
+             \x20 if r._tag == \"Ok\" then return f(r._0) else return r end\n\
              end\n\n",
         );
     }

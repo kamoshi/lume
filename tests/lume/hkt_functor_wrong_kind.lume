@@ -1,0 +1,13 @@
+-- Tests that implementing a HKT trait with a non-constructor type fails.
+-- Num is kind *, not kind * -> *, so `Functor in Num` should fail because
+-- the method signature `f a -> f b` can't be satisfied when f=Num (arity 0).
+
+trait Functor f {
+  let fmap : (a -> b) -> f a -> f b
+}
+
+use Functor in Num {
+  let fmap = f -> x -> f x
+}
+
+pub { fmap }

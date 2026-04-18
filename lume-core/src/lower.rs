@@ -575,6 +575,19 @@ pub fn dict_name(trait_name: &str, type_name: &str) -> String {
 
 // ── Type helpers ─────────────────────────────────────────────────────────────
 
+/// Flatten a left-associative AST App tree into (base, [args]).
+/// `App(App(Constructor("Result"), Var("a")), Var("b"))` → `(Constructor("Result"), [Var("a"), Var("b")])`
+fn flatten_ast_app_lower(ty: &Type) -> (&Type, Vec<&Type>) {
+    let mut cur = ty;
+    let mut args = Vec::new();
+    while let Type::App { callee, arg } = cur {
+        args.push(arg.as_ref());
+        cur = callee.as_ref();
+    }
+    args.reverse();
+    (cur, args)
+}
+
 fn find_type_param_in_ast_type(ast_ty: &Type, param_name: &str, concrete: &Ty) -> Option<String> {
     match ast_ty {
         Type::Var(v) if v == param_name => ty_canonical_name(concrete),
@@ -586,15 +599,17 @@ fn find_type_param_in_ast_type(ast_ty: &Type, param_name: &str, concrete: &Ty) -
                 None
             }
         }
-        Type::Named { args, .. } => {
-            let concrete_args = match concrete {
-                Ty::Con(_, args) => args.as_slice(),
-                Ty::List(inner) => std::slice::from_ref(inner.as_ref()),
-                _ => return None,
-            };
-            args.iter()
-                .zip(concrete_args.iter())
-                .find_map(|(a, c)| find_type_param_in_ast_type(a, param_name, c))
+        Type::Constructor(_) => None, // Concrete constructors can't be the trait param.
+        Type::App { .. } => {
+            let (ast_base, ast_args) = flatten_ast_app_lower(ast_ty);
+            let (ty_head, ty_args) = concrete.flatten_app();
+            // Check the base (e.g. `f` matching `Con("List")` for HKTs)
+            find_type_param_in_ast_type(ast_base, param_name, ty_head)
+                .or_else(|| {
+                    ast_args.iter()
+                        .zip(ty_args.iter())
+                        .find_map(|(a, c)| find_type_param_in_ast_type(a, param_name, c))
+                })
         }
         Type::Record(rt) => {
             if let Ty::Record(row) = concrete {
@@ -623,15 +638,17 @@ fn find_ty_at_param(ast_ty: &Type, param_name: &str, concrete: &Ty) -> Option<Ty
                 None
             }
         }
-        Type::Named { args, .. } => {
-            let concrete_args = match concrete {
-                Ty::Con(_, args) => args.as_slice(),
-                Ty::List(inner) => std::slice::from_ref(inner.as_ref()),
-                _ => return None,
-            };
-            args.iter()
-                .zip(concrete_args.iter())
-                .find_map(|(a, c)| find_ty_at_param(a, param_name, c))
+        Type::Constructor(_) => None, // Concrete constructors can't be the trait param.
+        Type::App { .. } => {
+            let (ast_base, ast_args) = flatten_ast_app_lower(ast_ty);
+            let (ty_head, ty_args) = concrete.flatten_app();
+            // Check the base (e.g. `f` matching `Con("List")` for HKTs)
+            find_ty_at_param(ast_base, param_name, ty_head)
+                .or_else(|| {
+                    ast_args.iter()
+                        .zip(ty_args.iter())
+                        .find_map(|(a, c)| find_ty_at_param(a, param_name, c))
+                })
         }
         Type::Record(rt) => {
             if let Ty::Record(row) = concrete {
@@ -658,14 +675,11 @@ fn match_types(scheme_ty: &Ty, concrete_ty: &Ty, out: &mut HashMap<TyVar, Ty>) {
             match_types(sp, cp, out);
             match_types(sr, cr, out);
         }
-        (Ty::List(si), Ty::List(ci)) => {
-            match_types(si, ci, out);
+        (Ty::App(sc, sa), Ty::App(cc, ca)) => {
+            match_types(sc, cc, out);
+            match_types(sa, ca, out);
         }
-        (Ty::Con(sn, sa), Ty::Con(cn, ca)) if sn == cn && sa.len() == ca.len() => {
-            for (s, c) in sa.iter().zip(ca.iter()) {
-                match_types(s, c, out);
-            }
-        }
+        (Ty::Con(sn), Ty::Con(cn)) if sn == cn => {}
         (Ty::Record(sr), Ty::Record(cr)) => {
             for (sname, sty) in &sr.fields {
                 if let Some((_, cty)) = cr.fields.iter().find(|(n, _)| n == sname) {
@@ -682,14 +696,15 @@ fn ty_canonical_name(ty: &Ty) -> Option<String> {
         Ty::Num => Some("Num".to_string()),
         Ty::Text => Some("Text".to_string()),
         Ty::Bool => Some("Bool".to_string()),
-        Ty::Con(name, args) if args.is_empty() => Some(name.clone()),
-        Ty::Con(name, args) => {
-            let arg_strs: Option<Vec<String>> = args.iter().map(ty_canonical_name).collect();
-            Some(format!("{} {}", name, arg_strs?.join(" ")))
-        }
-        Ty::List(inner) => {
-            let inner_name = ty_canonical_name(inner)?;
-            Some(format!("List {}", inner_name))
+        Ty::Con(name) => Some(name.clone()),
+        Ty::App(..) => {
+            let (head, args) = ty.flatten_app();
+            let head_name = ty_canonical_name(head)?;
+            if args.is_empty() {
+                return Some(head_name);
+            }
+            let arg_strs: Option<Vec<String>> = args.iter().map(|a| ty_canonical_name(a)).collect();
+            Some(format!("{} {}", head_name, arg_strs?.join(" ")))
         }
         Ty::Record(row) => {
             if !matches!(row.tail, crate::types::RowTail::Closed) {
@@ -730,20 +745,26 @@ fn match_ast_inner(
                 true
             }
         }
-        (Type::Named { name, args }, _) => match (name.as_str(), concrete) {
-            ("Num", Ty::Num) if args.is_empty() => true,
-            ("Text", Ty::Text) if args.is_empty() => true,
-            ("Bool", Ty::Bool) if args.is_empty() => true,
-            ("List", Ty::List(inner)) if args.len() == 1 => {
-                match_ast_inner(&args[0], inner, bindings)
-            }
-            (_, Ty::Con(c_name, c_args)) if name == c_name && args.len() == c_args.len() => {
-                args.iter()
-                    .zip(c_args.iter())
-                    .all(|(p, c)| match_ast_inner(p, c, bindings))
-            }
+        (Type::Constructor(name), _) => match (name.as_str(), concrete) {
+            ("Num", Ty::Num) => true,
+            ("Text", Ty::Text) => true,
+            ("Bool", Ty::Bool) => true,
+            (n, Ty::Con(cn)) => n == cn,
             _ => false,
         },
+        (Type::App { .. }, _) => {
+            let (ast_base, ast_args) = flatten_ast_app_lower(pattern);
+            let (ty_head, ty_args) = concrete.flatten_app();
+            if ast_args.len() != ty_args.len() {
+                return false;
+            }
+            if !match_ast_inner(ast_base, ty_head, bindings) {
+                return false;
+            }
+            ast_args.iter()
+                .zip(ty_args.iter())
+                .all(|(p, c)| match_ast_inner(p, c, bindings))
+        }
         (Type::Func { param, ret }, Ty::Func(cp, cr)) => {
             match_ast_inner(param, cp, bindings) && match_ast_inner(ret, cr, bindings)
         }

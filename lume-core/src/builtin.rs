@@ -16,12 +16,18 @@ macro_rules! type_def {
     };
 
     // List sugar: [Num] instead of List Num
-    ([$($inner:tt)+]) => { Ty::List(Box::new(type_def!($($inner)+))) };
+    ([$($inner:tt)+]) => { Ty::App(Box::new(Ty::Con("List".into())), Box::new(type_def!($($inner)+))) };
 
-    // Generic constructors: Maybe[a], Result[a, e]
+    // Generic constructors: Maybe[a], Result[a, e] → curried App chain
     ($con:ident [ $($arg:tt),* ]) => {
-        Ty::Con(stringify!($con).into(), vec![ $( type_def!($arg) ),* ])
+        type_def!(@app Ty::Con(stringify!($con).into()), $( $arg ),* )
     };
+
+    // Internal: fold arguments into a left-associative App chain.
+    (@app $acc:expr, $head:tt $( , $rest:tt )*) => {
+        type_def!(@app Ty::App(Box::new($acc), Box::new(type_def!($head))) $( , $rest )* )
+    };
+    (@app $acc:expr $(,)?) => { $acc };
 
     // Variable fallback: a Rust variable holding a TyVar
     ($v:ident) => { Ty::Var($v) };

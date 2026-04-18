@@ -60,6 +60,12 @@ pub enum TypeError {
     UndeclaredTrait {
         trait_name: String,
     },
+    /// A type constructor was applied to the wrong number of arguments.
+    ArityMismatch {
+        name: String,
+        expected: usize,
+        actual: usize,
+    },
 }
 
 impl fmt::Display for TypeError {
@@ -145,6 +151,13 @@ impl fmt::Display for TypeError {
                     f,
                     "undeclared trait '{}' — trait must be defined before it is implemented",
                     trait_name
+                )
+            }
+            TypeError::ArityMismatch { name, expected, actual } => {
+                write!(
+                    f,
+                    "type '{}' expects {} type argument(s) but was given {}",
+                    name, expected, actual
                 )
             }
         }

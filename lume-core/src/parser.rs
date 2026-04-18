@@ -513,7 +513,7 @@ fn parse_impl_target_type(tokens: &[Spanned]) -> Result<(usize, String, Type), P
     loop {
         match first_token(&tokens[ptr..]) {
             Some(Token::TypeIdent(s)) => {
-                args.push(Type::Named { name: s.clone(), args: vec![] });
+                args.push(Type::Constructor(s.clone()));
                 ptr += 1;
             }
             Some(Token::Ident(s)) => {
@@ -531,7 +531,12 @@ fn parse_impl_target_type(tokens: &[Spanned]) -> Result<(usize, String, Type), P
         }
     }
 
-    let target_type = Type::Named { name: head, args };
+    // Build a left-associative App chain: `Result Num Text` →
+    // `App(App(Constructor("Result"), Constructor("Num")), Constructor("Text"))`.
+    let target_type = args.into_iter().fold(
+        Type::Constructor(head),
+        |acc, arg| Type::App { callee: Box::new(acc), arg: Box::new(arg) },
+    );
     let type_name = type_to_canonical_string(&target_type);
     Ok((ptr, type_name, target_type))
 }
@@ -539,20 +544,16 @@ fn parse_impl_target_type(tokens: &[Spanned]) -> Result<(usize, String, Type), P
 /// Convert an AST `Type` to a canonical string for use in impl keys.
 fn type_to_canonical_string(ty: &Type) -> String {
     match ty {
-        Type::Named { name, args } if args.is_empty() => name.clone(),
-        Type::Named { name, args } => {
-            let arg_strs: Vec<String> = args.iter().map(|a| {
-                let s = type_to_canonical_string(a);
-                // Parenthesise applied types when they appear as arguments
-                if matches!(a, Type::Named { args, .. } if !args.is_empty())
-                    || matches!(a, Type::Func { .. })
-                {
-                    format!("({})", s)
-                } else {
-                    s
-                }
-            }).collect();
-            format!("{} {}", name, arg_strs.join(" "))
+        Type::Constructor(name) => name.clone(),
+        Type::App { callee, arg } => {
+            let callee_s = type_to_canonical_string(callee);
+            let arg_s = type_to_canonical_string(arg);
+            // Parenthesise the argument if it is an application or function.
+            let arg_str = match arg.as_ref() {
+                Type::App { .. } | Type::Func { .. } => format!("({})", arg_s),
+                _ => arg_s,
+            };
+            format!("{} {}", callee_s, arg_str)
         }
         Type::Var(v) => v.clone(),
         Type::Func { param, ret } => {
@@ -1688,14 +1689,8 @@ pub fn parse_type(tokens: &[Spanned]) -> Result<(usize, Type), ParseError> {
 fn parse_type_arg(tokens: &[Spanned]) -> Result<(usize, Type), ParseError> {
     match first_token(tokens) {
         Some(Token::TypeIdent(name)) => {
-            // Bare type name, no arguments collected here.
-            Ok((
-                1,
-                Type::Named {
-                    name: name.clone(),
-                    args: vec![],
-                },
-            ))
+            // Bare type constructor, no arguments collected here.
+            Ok((1, Type::Constructor(name.clone())))
         }
         Some(Token::Ident(s)) => Ok((1, Type::Var(s.clone()))),
         Some(Token::LBrace) => {
@@ -1726,22 +1721,33 @@ fn parse_type_atom(tokens: &[Spanned]) -> Result<(usize, Type), ParseError> {
             let name = name.clone();
             let mut ptr = 1;
             // Collect type arguments using parse_type_arg (shallow) so that
-            // `Result Num Text` = Con("Result", [Num, Text]) rather than
-            // Con("Result", [Con("Num", [Text])]).
-            let mut args = Vec::new();
+            // `Result Num Text` is parsed as left-associative applications:
+            // App(App(Constructor("Result"), Constructor("Num")), Constructor("Text"))
+            let mut ty = Type::Constructor(name);
             while let Some(Token::Ident(_) | Token::TypeIdent(_) | Token::LBrace | Token::LParen) =
                 first_token(&tokens[ptr..])
             {
                 let (n, arg) = parse_type_arg(&tokens[ptr..])?;
                 ptr += n;
-                args.push(arg);
+                ty = Type::App { callee: Box::new(ty), arg: Box::new(arg) };
             }
-            Ok((ptr, Type::Named { name, args }))
+            Ok((ptr, ty))
         }
 
         Some(Token::Ident(s)) => {
-            // Type variable (single lowercase letter or name)
-            Ok((1, Type::Var(s.clone())))
+            let s = s.clone();
+            let mut ptr = 1;
+            // A type variable followed by arguments: `f a` → App(Var("f"), Var("a")).
+            // This enables HKTs: the variable `f` is applied to arguments.
+            let mut ty = Type::Var(s);
+            while let Some(Token::Ident(_) | Token::TypeIdent(_) | Token::LBrace | Token::LParen) =
+                first_token(&tokens[ptr..])
+            {
+                let (n, arg) = parse_type_arg(&tokens[ptr..])?;
+                ptr += n;
+                ty = Type::App { callee: Box::new(ty), arg: Box::new(arg) };
+            }
+            Ok((ptr, ty))
         }
 
         Some(Token::LBrace) => {

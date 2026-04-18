@@ -488,22 +488,28 @@ fn fmt_type(ty: &Type) -> Doc {
 fn fmt_type_prec(ty: &Type, ctx: u8) -> Doc {
     match ty {
         Type::Var(name) => text(name.clone()),
-        Type::Named { name, args } => {
-            if args.is_empty() {
-                text(name.clone())
+        Type::Constructor(name) => text(name.clone()),
+        Type::App { .. } => {
+            // Flatten left-associative App tree into base + args.
+            let mut current: &Type = ty;
+            let mut args = Vec::new();
+            while let Type::App { callee, arg } = current {
+                args.push(arg.as_ref());
+                current = callee.as_ref();
+            }
+            args.reverse();
+            let base_doc = fmt_type_prec(current, 10);
+            let args_doc = join(
+                space(),
+                args.iter()
+                    .map(|a| fmt_type_prec(a, 10))
+                    .collect::<Vec<_>>(),
+            );
+            let d = concat(concat(base_doc, space()), args_doc);
+            if ctx >= 10 {
+                wrap("(", ")", d)
             } else {
-                let args_doc = join(
-                    space(),
-                    args.iter()
-                        .map(|a| fmt_type_prec(a, 10))
-                        .collect::<Vec<_>>(),
-                );
-                let d = concat(text(format!("{} ", name)), args_doc);
-                if ctx >= 10 {
-                    wrap("(", ")", d)
-                } else {
-                    d
-                }
+                d
             }
         }
         Type::Record(rt) => fmt_record_type(rt),

@@ -1,0 +1,34 @@
+-- Tests trait implementations on applied types with multi-param ADTs.
+-- Implements Show for Maybe Num and Result Num Text.
+
+trait Show a {
+  let show : a -> Text
+}
+
+use Show in Num {
+  let show = x -> showNum x
+}
+
+use Show in Maybe Num {
+  let show =
+    | None -> "Nothing"
+    | Some x -> "Just(" ++ Show.show x ++ ")"
+}
+
+use Show in Result Num Text {
+  let show =
+    | Ok n -> "Ok(" ++ Show.show n ++ ")"
+    | Err msg -> "Err(" ++ msg ++ ")"
+}
+
+let a : Maybe Num = Some 42
+let _ = Show.show a |> print
+
+let b : Maybe Num = None
+let _ = Show.show b |> print
+
+let c : Result Num Text = Ok 99
+let _ = Show.show c |> print
+
+let d : Result Num Text = Err "fail"
+let _ = Show.show d |> print

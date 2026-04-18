@@ -25,17 +25,56 @@ pub enum Ty {
     Num,
     Text,
     Bool,
-    List(Box<Ty>),
     /// Single-argument functions only; multi-argument functions are curried:
     /// `a -> b -> c` is stored as `Func(a, Func(b, c))`.
     Func(Box<Ty>, Box<Ty>),
     Record(Row),
-    /// User-defined type constructor with type arguments.
-    /// `Shape` → `Con("Shape", [])`, `Tree Num` → `Con("Tree", [Num])`.
-    Con(String, Vec<Ty>),
+    /// A bare type constructor (no arguments).
+    /// `Shape` → `Con("Shape")`, `List` → `Con("List")`, `Maybe` → `Con("Maybe")`.
+    Con(String),
+    /// A type-level application.
+    /// `Maybe Num` → `App(Con("Maybe"), Num)`.
+    /// Multi-arg constructors are curried:
+    /// `Result Num Text` → `App(App(Con("Result"), Num), Text)`.
+    App(Box<Ty>, Box<Ty>),
     /// An unsolved unification variable.  Once the solver binds it via
     /// `Subst::bind_ty`, every future call to `apply` replaces it.
     Var(TyVar),
+}
+
+impl Ty {
+    /// Build a curried `App` chain from a constructor name and arguments:
+    /// `mk_con("Result", &[Ty::Num, Ty::Text])` → `App(App(Con("Result"), Num), Text)`.
+    pub fn mk_con(name: &str, args: &[Ty]) -> Ty {
+        let mut result = Ty::Con(name.to_string());
+        for arg in args {
+            result = Ty::App(Box::new(result), Box::new(arg.clone()));
+        }
+        result
+    }
+
+    /// Extract the root constructor name from a (possibly applied) type.
+    /// Returns `Some("Maybe")` for both `Con("Maybe")` and `App(Con("Maybe"), Num)`.
+    pub fn con_name(&self) -> Option<&str> {
+        match self {
+            Ty::Con(n) => Some(n),
+            Ty::App(c, _) => c.con_name(),
+            _ => None,
+        }
+    }
+
+    /// Flatten a left-associative `App` tree into the head type and collected arguments.
+    /// `App(App(Con("Result"), Num), Text)` → `(Con("Result"), [Num, Text])`.
+    pub fn flatten_app(&self) -> (&Ty, Vec<&Ty>) {
+        let mut args = Vec::new();
+        let mut current = self;
+        while let Ty::App(callee, arg) = current {
+            args.push(arg.as_ref());
+            current = callee.as_ref();
+        }
+        args.reverse();
+        (current, args)
+    }
 }
 
 // Row types are the mechanism behind record / structural typing.
@@ -205,10 +244,10 @@ impl Subst {
                 Some(t) => self.apply(t),
                 None => Ty::Var(*v),
             },
-            Ty::List(t) => Ty::List(Box::new(self.apply(t))),
             Ty::Func(a, b) => Ty::Func(Box::new(self.apply(a)), Box::new(self.apply(b))),
             Ty::Record(row) => Ty::Record(self.apply_row(row)),
-            Ty::Con(n, args) => Ty::Con(n.clone(), args.iter().map(|a| self.apply(a)).collect()),
+            Ty::Con(_) => ty.clone(),
+            Ty::App(c, a) => Ty::App(Box::new(self.apply(c)), Box::new(self.apply(a))),
             _ => ty.clone(),
         }
     }
@@ -318,13 +357,16 @@ fn collect_ftv(ty: &Ty, set: &mut HashSet<TyVar>) {
         Ty::Var(v) => {
             set.insert(*v);
         }
-        Ty::List(t) => collect_ftv(t, set),
         Ty::Func(a, b) => {
             collect_ftv(a, set);
             collect_ftv(b, set);
         }
         Ty::Record(r) => r.fields.iter().for_each(|(_, t)| collect_ftv(t, set)),
-        Ty::Con(_, args) => args.iter().for_each(|a| collect_ftv(a, set)),
+        Ty::Con(_) => {}
+        Ty::App(c, a) => {
+            collect_ftv(c, set);
+            collect_ftv(a, set);
+        }
         _ => {}
     }
 }
@@ -333,7 +375,6 @@ fn collect_ftv(ty: &Ty, set: &mut HashSet<TyVar>) {
 // in a different part of the scheme: `Scheme::row_vars` vs `Scheme::vars`.
 fn collect_frv(ty: &Ty, set: &mut HashSet<TyVar>) {
     match ty {
-        Ty::List(t) => collect_frv(t, set),
         Ty::Func(a, b) => {
             collect_frv(a, set);
             collect_frv(b, set);
@@ -344,7 +385,11 @@ fn collect_frv(ty: &Ty, set: &mut HashSet<TyVar>) {
                 set.insert(v);
             }
         }
-        Ty::Con(_, args) => args.iter().for_each(|a| collect_frv(a, set)),
+        Ty::Con(_) => {}
+        Ty::App(c, a) => {
+            collect_frv(c, set);
+            collect_frv(a, set);
+        }
         _ => {}
     }
 }
@@ -393,8 +438,6 @@ pub fn unify(s: &mut Subst, t1: Ty, t2: Ty) -> Result<(), TypeError> {
             Ok(())
         }
 
-        (Ty::List(a), Ty::List(b)) => unify(s, *a, *b),
-
         // Functions unify contra-co-variantly: param types must match and
         // return types must match.  (Lume has no subtyping so both are
         // invariant in practice.)
@@ -405,13 +448,15 @@ pub fn unify(s: &mut Subst, t1: Ty, t2: Ty) -> Result<(), TypeError> {
 
         (Ty::Record(r1), Ty::Record(r2)) => unify_rows(s, r1, r2),
 
-        // Nominal: two Con types unify only if they have the same constructor
-        // name and the same arity, then their arguments are unified pairwise.
-        (Ty::Con(n1, a1), Ty::Con(n2, a2)) if n1 == n2 && a1.len() == a2.len() => {
-            for (t1, t2) in a1.into_iter().zip(a2.into_iter()) {
-                unify(s, t1, t2)?;
-            }
-            Ok(())
+        // Nominal: two bare Con types unify only if they share the same name.
+        (Ty::Con(n1), Ty::Con(n2)) if n1 == n2 => Ok(()),
+
+        // Structural App unification: unify callee and arg pairwise.
+        // This is the key rule enabling HKTs: `App(f, a)` unifying with
+        // `App(Con("Maybe"), Num)` binds `f=Maybe, a=Num`.
+        (Ty::App(c1, a1), Ty::App(c2, a2)) => {
+            unify(s, *c1, *c2)?;
+            unify(s, *a1, *a2)
         }
 
         (t1, t2) => Err(TypeError::Mismatch(t2, t1)),
@@ -547,12 +592,12 @@ fn unify_rows(s: &mut Subst, r1: Row, r2: Row) -> Result<(), TypeError> {
 fn ty_occurs(v: TyVar, ty: &Ty) -> bool {
     match ty {
         Ty::Var(u) => *u == v,
-        Ty::List(t) => ty_occurs(v, t),
         Ty::Func(a, b) => ty_occurs(v, a) || ty_occurs(v, b),
         Ty::Record(r) => {
             r.fields.iter().any(|(_, t)| ty_occurs(v, t)) || r.tail == RowTail::Open(v)
         }
-        Ty::Con(_, args) => args.iter().any(|a| ty_occurs(v, a)),
+        Ty::Con(_) => false,
+        Ty::App(c, a) => ty_occurs(v, c) || ty_occurs(v, a),
         _ => false,
     }
 }
@@ -586,7 +631,6 @@ fn collect_pretty_vars(ty: &Ty, tvs: &mut Vec<TyVar>, rvs: &mut Vec<TyVar>) {
                 tvs.push(*v);
             }
         }
-        Ty::List(t) => collect_pretty_vars(t, tvs, rvs),
         Ty::Func(a, b) => {
             collect_pretty_vars(a, tvs, rvs);
             collect_pretty_vars(b, tvs, rvs);
@@ -601,10 +645,10 @@ fn collect_pretty_vars(ty: &Ty, tvs: &mut Vec<TyVar>, rvs: &mut Vec<TyVar>) {
                 }
             }
         }
-        Ty::Con(_, args) => {
-            for a in args {
-                collect_pretty_vars(a, tvs, rvs);
-            }
+        Ty::Con(_) => {}
+        Ty::App(c, a) => {
+            collect_pretty_vars(c, tvs, rvs);
+            collect_pretty_vars(a, tvs, rvs);
         }
         _ => {}
     }
@@ -616,10 +660,6 @@ fn fmt_named(ty: &Ty, tvs: &[TyVar], rvs: &[TyVar], f: &mut fmt::Formatter<'_>) 
         Ty::Num => write!(f, "Num"),
         Ty::Text => write!(f, "Text"),
         Ty::Bool => write!(f, "Bool"),
-        Ty::List(t) => {
-            write!(f, "List ")?;
-            fmt_named_atomic(t, tvs, rvs, f)
-        }
         Ty::Func(a, b) => {
             if matches!(a.as_ref(), Ty::Func(..)) {
                 write!(f, "(")?;
@@ -653,9 +693,19 @@ fn fmt_named(ty: &Ty, tvs: &[TyVar], rvs: &[TyVar], f: &mut fmt::Formatter<'_>) 
             }
             write!(f, " }}")
         }
-        Ty::Con(name, args) if args.is_empty() => write!(f, "{}", name),
-        Ty::Con(name, args) => {
-            write!(f, "{}", name)?;
+        Ty::Con(name) => write!(f, "{}", name),
+        Ty::App(..) => {
+            // Flatten the App tree to print `Con arg1 arg2 …` cleanly.
+            let (head, args) = flatten_app(ty);
+            // Parenthesise the head if it's a function type (theoretical safety).
+            match head {
+                Ty::Func(..) => {
+                    write!(f, "(")?;
+                    fmt_named(head, tvs, rvs, f)?;
+                    write!(f, ")")?;
+                }
+                _ => fmt_named(head, tvs, rvs, f)?,
+            }
             for a in args {
                 write!(f, " ")?;
                 fmt_named_atomic(a, tvs, rvs, f)?;
@@ -673,14 +723,26 @@ fn fmt_named(ty: &Ty, tvs: &[TyVar], rvs: &[TyVar], f: &mut fmt::Formatter<'_>) 
     }
 }
 
+/// Flatten a left-associative `App` tree into the head and a list of arguments.
+/// `App(App(Con("Result"), Num), Text)` → `(Con("Result"), [Num, Text])`.
+fn flatten_app(ty: &Ty) -> (&Ty, Vec<&Ty>) {
+    let mut args = Vec::new();
+    let mut current = ty;
+    while let Ty::App(callee, arg) = current {
+        args.push(arg.as_ref());
+        current = callee.as_ref();
+    }
+    args.reverse();
+    (current, args)
+}
+
 fn fmt_named_atomic(
     ty: &Ty,
     tvs: &[TyVar],
     rvs: &[TyVar],
     f: &mut fmt::Formatter<'_>,
 ) -> fmt::Result {
-    let needs_parens =
-        matches!(ty, Ty::Func(..)) || matches!(ty, Ty::Con(_, args) if !args.is_empty());
+    let needs_parens = matches!(ty, Ty::Func(..) | Ty::App(..));
     if needs_parens {
         write!(f, "(")?;
         fmt_named(ty, tvs, rvs, f)?;

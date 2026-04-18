@@ -332,8 +332,12 @@ pub enum Literal {
 
 #[derive(Debug, Clone)]
 pub enum Type {
-    /// `Num`, `Text`, `List a`, `Tree a`
-    Named { name: String, args: Vec<Type> },
+    /// A bare type constructor name: `Num`, `Text`, `List`, `Maybe`, `Result`.
+    Constructor(String),
+    /// A type application: `List Num` → `App(Constructor("List"), Constructor("Num"))`.
+    /// Applications are left-associative, so `Result Num Text` →
+    /// `App(App(Constructor("Result"), Constructor("Num")), Constructor("Text"))`.
+    App { callee: Box<Type>, arg: Box<Type> },
     /// Type variable: `a`, `b`, `r`
     Var(String),
     /// `{ name: Text, age: Num, .. }`
@@ -358,13 +362,18 @@ pub struct FieldType {
 impl std::fmt::Display for Type {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Type::Named { name, args } if args.is_empty() => write!(f, "{}", name),
-            Type::Named { name, args } => {
-                write!(f, "{}", name)?;
-                for a in args {
-                    write!(f, " {}", a)?;
+            Type::Constructor(name) => write!(f, "{}", name),
+            Type::App { callee, arg } => {
+                // Parenthesise the callee if it is a function type.
+                match callee.as_ref() {
+                    Type::Func { .. } => write!(f, "({})", callee)?,
+                    _ => write!(f, "{}", callee)?,
                 }
-                Ok(())
+                // Parenthesise the argument if it is itself an application or function.
+                match arg.as_ref() {
+                    Type::App { .. } | Type::Func { .. } => write!(f, " ({})", arg),
+                    _ => write!(f, " {}", arg),
+                }
             }
             Type::Var(v) => write!(f, "{}", v),
             Type::Record(rt) => {

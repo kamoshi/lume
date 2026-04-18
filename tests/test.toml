@@ -320,3 +320,90 @@ error_contains = "undeclared trait 'Test'"
 path = "tests/lume/trait_forward_ref.lume"
 expect = "error"
 error_contains = "undeclared trait 'Test'"
+
+# ── HKT / Curried Type Application tests ──────────────────────────────────────
+
+[tests.hkt_curried_adt]
+path = "tests/lume/hkt_curried_adt.lume"
+expect = "typecheck"
+output = """
+ok: 5
+err: division by zero
+"""
+
+[tests.hkt_nested_app]
+path = "tests/lume/hkt_nested_app.lume"
+expect = "typecheck"
+output = """
+1
+11
+"""
+
+[tests.hkt_trait_on_adt]
+path = "tests/lume/hkt_trait_on_adt.lume"
+expect = "typecheck"
+output = """
+Just(42)
+Nothing
+Ok(99)
+Err(fail)
+"""
+
+[tests.hkt_result_pipe]
+path = "tests/lume/hkt_result_pipe.lume"
+expect = "typecheck"
+output = """
+ok: 4
+err: unknown: nope
+"""
+
+[tests.hkt_user_adt]
+path = "tests/lume/hkt_user_adt.lume"
+expect = "typecheck"
+output = """
+(42, hello)
+hello: 42
+"""
+
+[tests.hkt_functor]
+path = "tests/lume/hkt_functor.lume"
+expect = "typecheck"
+output = """
+42
+11 12 13
+"""
+
+[tests.hkt_arity_mismatch]
+path = "tests/lume/hkt_arity_mismatch.lume"
+expect = "error"
+error_contains = "expects 0 type argument(s) but was given 1"
+
+[tests.hkt_arity_over]
+path = "tests/lume/hkt_arity_over.lume"
+expect = "error"
+error_contains = "expects 1 type argument(s) but was given 2"
+
+[tests.hkt_arity_under]
+path = "tests/lume/hkt_arity_under.lume"
+expect = "error"
+error_contains = "expects 2 type argument(s) but was given 1"
+
+[tests.hkt_functor_wrong_kind]
+path = "tests/lume/hkt_functor_wrong_kind.lume"
+expect = "error"
+error_contains = "expects 0 type argument(s) but was given 1"
+
+[tests.hkt_functor_not_applied]
+path = "tests/lume/hkt_functor_not_applied.lume"
+expect = "error"
+error_contains = "type mismatch"
+
+[tests.hkt_functor_bool]
+path = "tests/lume/hkt_functor_bool.lume"
+expect = "error"
+error_contains = "expects 0 type argument(s) but was given 1"
+
+[tests.hkt_functor_result]
+path = "tests/lume/hkt_functor_result.lume"
+expect = "error"
+error_contains = "expects 2 type argument(s) but was given 1"
