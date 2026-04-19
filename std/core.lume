@@ -1,5 +1,45 @@
 -- lume internal no_prelude
 
+let id = x -> x
+
+-- ToString
+
+trait ToText a {
+  let to_text : a -> Text
+}
+
+use ToText in Num {
+  let to_text = x -> showNum x
+}
+
+use ToText in Text {
+  let to_text = id
+}
+
+use ToText in Bool {
+  let to_text = x -> if x then "true" else "false"
+}
+
+use ToText in ToText a => List a {
+  let to_text = xs ->
+    let text = list_map to_text xs |> join ", " in
+      "[" ++ text ++ "]"
+}
+
+use ToText in ToText a => Maybe a {
+  let to_text = mx -> match mx in
+    | None -> "None"
+    | Some x -> "Some(" ++ to_text x ++ ")"
+}
+
+use ToText in ToText a, ToText b => Result a b {
+  let to_text = r -> match r in
+    | Ok x -> "Ok(" ++ to_text x ++ ")"
+    | Err x -> "Err(" ++ to_text x ++ ")"
+}
+
+-- Functor
+
 trait Functor f {
   let map : (a -> b) -> f a -> f b
 }
@@ -13,6 +53,8 @@ use Functor in Maybe {
 use Functor in List {
   let map = list_map
 }
+
+-- Applicative
 
 trait Applicative f {
   let wrap : a -> f a
@@ -34,6 +76,8 @@ use Applicative in List {
       Functor.map f xs ++ apply fs xs
 }
 
+-- Monad
+
 trait Monad m {
   let and_then : m a -> (a -> m b) -> m b
 }
@@ -50,4 +94,6 @@ use Monad in List {
     | [x, ..xs] -> f x ++ and_then xs f
 }
 
-pub { }
+pub {
+  id
+}

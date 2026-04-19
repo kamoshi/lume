@@ -1,14 +1,14 @@
 -- Tests that using a trait method without a corresponding impl causes a type error.
 -- Expected: type error about missing impl of 'ToText' for 'Num'
 
-trait ToText a {
-  let toText : a -> Text
+trait SomeTrait a {
+  let frobnicate : a -> Text
 }
 
 type Box a = MyBox { inner: a }
 
 let box = MyBox { inner: 2 }
 
-let hmm = MyBox { inner } -> ToText.toText inner
+let hmm = MyBox { inner } -> SomeTrait.frobnicate inner
 
 let _ = hmm box |> print

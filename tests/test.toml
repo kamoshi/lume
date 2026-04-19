@@ -36,7 +36,7 @@ error_contains = "missing method(s): toText"
 [tests.trait_no_impl]
 path = "tests/lume/trait_no_impl.lume"
 expect = "error"
-error_contains = "no impl of trait 'ToText' for type 'Num'"
+error_contains = "no impl of trait 'SomeTrait' for type 'Num'"
 
 [tests.trait_partial_impl]
 path = "tests/lume/trait_partial_impl.lume"
