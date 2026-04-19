@@ -211,7 +211,7 @@ pub(crate) fn type_of(expr: &str, defs: &str, base_dir: &Path) {
     };
 
     match types::infer::elaborate_with_env(&program, Some(base_dir)) {
-        Ok((_, type_env, _)) => {
+        Ok((_, type_env, _, _)) => {
             match type_env.lookup("_repl_type") {
                 Some(scheme) => println!("  {expr} :{DIM} {scheme}{RESET}"),
                 None => eprintln!("  (could not determine type)"),

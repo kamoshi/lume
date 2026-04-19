@@ -151,14 +151,14 @@ fn lower_bundle(b: &[bundle::BundleModule]) -> Option<(Vec<codegen::IrModule>, t
         };
 
         let module_path = Some(m.canonical.as_path());
-        let (node_types, type_env) = match types::infer::elaborate_with_env(&m.program, module_path) {
-            Ok((nt, env, _)) => (nt, env),
+        let (node_types, type_env, resolved_trait_methods) = match types::infer::elaborate_with_env(&m.program, module_path) {
+            Ok((nt, env, _, rtm)) => (nt, env, rtm),
             Err(e) => {
                 eprintln!("{}: type error: {e}", m.canonical.display());
                 return None;
             }
         };
-        let ir_mod = lower::lower(m.program.clone(), &node_types, &type_env, &local_global);
+        let ir_mod = lower::lower(m.program.clone(), &node_types, &type_env, &local_global, &resolved_trait_methods);
         ir_modules.push(codegen::IrModule {
             canonical: m.canonical.clone(),
             module: ir_mod,

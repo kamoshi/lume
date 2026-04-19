@@ -66,6 +66,12 @@ pub enum TypeError {
         expected: usize,
         actual: usize,
     },
+    /// A bare method name refers to methods in multiple traits; use qualified
+    /// syntax (e.g. `Functor.fmap`) to disambiguate.
+    AmbiguousTraitMethod {
+        name: String,
+        options: Vec<String>,
+    },
 }
 
 impl fmt::Display for TypeError {
@@ -158,6 +164,14 @@ impl fmt::Display for TypeError {
                     f,
                     "type '{}' expects {} type argument(s) but was given {}",
                     name, expected, actual
+                )
+            }
+            TypeError::AmbiguousTraitMethod { name, options } => {
+                write!(
+                    f,
+                    "ambiguous trait method '{}': could be {}; use qualified syntax to disambiguate",
+                    name,
+                    options.join(" or ")
                 )
             }
         }

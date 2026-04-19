@@ -407,3 +407,30 @@ error_contains = "expects 0 type argument(s) but was given 1"
 path = "tests/lume/hkt_functor_result.lume"
 expect = "error"
 error_contains = "expects 2 type argument(s) but was given 1"
+
+[tests.trait_bare_method]
+path = "tests/lume/trait_bare_method.lume"
+expect = "typecheck"
+output = """
+42
+hello
+"""
+
+[tests.trait_bare_method_ambiguous]
+path = "tests/lume/trait_bare_method_ambiguous.lume"
+expect = "error"
+error_contains = "ambiguous trait method"
+
+[tests.trait_bare_method_shadowed]
+path = "tests/lume/trait_bare_method_shadowed.lume"
+expect = "typecheck"
+output = """
+always this
+"""
+
+[tests.trait_bare_method_constrained]
+path = "tests/lume/trait_bare_method_constrained.lume"
+expect = "typecheck"
+output = """
+42
+"""

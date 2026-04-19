@@ -47,16 +47,24 @@ pub struct GlobalCtx {
 
 /// Lower a typed `Program` into an `ir::Module`.
 ///
-/// * `node_types` — concrete types from `elaborate`, keyed by `NodeId`.
-/// * `type_env`   — top-level type schemes (for detecting constrained bindings).
-/// * `global`     — trait/impl index from the whole bundle.
+/// * `node_types`             — concrete types from `elaborate`, keyed by `NodeId`.
+/// * `type_env`               — top-level type schemes (for detecting constrained bindings).
+/// * `global`                 — trait/impl index from the whole bundle.
+/// * `resolved_trait_methods` — `Ident` nodes resolved via unambiguous trait lookup.
 pub fn lower(
     program: Program,
     node_types: &HashMap<NodeId, Ty>,
     type_env: &TypeEnv,
     global: &GlobalCtx,
+    resolved_trait_methods: &HashMap<NodeId, (String, String)>,
 ) -> ir::Module {
-    let cx = Cx { node_types, type_env, global, dict_params: HashMap::new() };
+    let cx = Cx {
+        node_types,
+        type_env,
+        global,
+        dict_params: HashMap::new(),
+        resolved_trait_methods,
+    };
 
     // Collect impl dict names before consuming items — these must be exported.
     let impl_dict_names: Vec<String> = program
@@ -128,6 +136,8 @@ struct Cx<'a> {
     global: &'a GlobalCtx,
     /// Inside a constrained binding: maps each TyVar to `(dict_param_name, trait_name)`.
     dict_params: HashMap<TyVar, (String, String)>,
+    /// Ident nodes that the type checker resolved to an unambiguous trait method.
+    resolved_trait_methods: &'a HashMap<NodeId, (String, String)>,
 }
 
 impl<'a> Cx<'a> {
@@ -137,6 +147,7 @@ impl<'a> Cx<'a> {
             type_env: self.type_env,
             global: self.global,
             dict_params,
+            resolved_trait_methods: self.resolved_trait_methods,
         }
     }
 
@@ -266,8 +277,22 @@ impl<'a> Cx<'a> {
             }
 
             ExprKind::Ident(ref name) => {
+                // insert_dict_args returns None here for resolved trait methods
+                // because they are never added to type_env — only to
+                // resolved_trait_methods.
                 if let Some(ir) = self.insert_dict_args(id, name) {
                     return ir;
+                }
+                // An Ident that the type checker resolved to a single unambiguous
+                // trait method is lowered the same way as an explicit TraitCall.
+                if let Some((trait_name, method_name)) = self.resolved_trait_methods.get(&id) {
+                    if let Some(ir) = self.resolve_trait_call_via_dict(id, trait_name, method_name) {
+                        return ir;
+                    }
+                    if let Some(ir) = self.resolve_trait_call(id, trait_name, method_name) {
+                        return ir;
+                    }
+                    return ir::Expr::Var(format!("__unresolved_{}_{}", trait_name, method_name));
                 }
                 ir::Expr::Var(name.clone())
             }

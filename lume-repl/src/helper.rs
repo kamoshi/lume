@@ -316,7 +316,7 @@ fn record_fields_for(defs: &str, var_name: &str, base_dir: &std::path::Path) -> 
         Err(_) => return vec![],
     };
 
-    let (_, type_env, _) = match infer::elaborate_with_env(&program, Some(base_dir)) {
+    let (_, type_env, _, _) = match infer::elaborate_with_env(&program, Some(base_dir)) {
         Ok(r) => r,
         Err(_) => return vec![],
     };
@@ -356,7 +356,7 @@ impl rustyline::hint::Hinter for LumeHelper {
 
         let tokens = Lexer::new(&src).tokenize().ok()?;
         let program = parser::parse_program(&tokens).ok()?;
-        let (_, type_env, _) = types::infer::elaborate_with_env(&program, Some(&self.base_dir)).ok()?;
+        let (_, type_env, _, _) = types::infer::elaborate_with_env(&program, Some(&self.base_dir)).ok()?;
         let scheme = type_env.lookup("_repl_hint")?;
 
         Some(TypeHint(format!("{DIM} : {scheme}{RESET}")))

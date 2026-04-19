@@ -645,6 +645,10 @@ pub struct Checker {
     /// Trait calls that need impl validation: `(trait_name, fresh_var, span)`.
     /// Only populated by TraitCall inference (not by instantiate).
     trait_call_constraints: Vec<(String, TyVar, Span)>,
+    /// Ident nodes resolved to a trait method via unambiguous lookup.
+    /// Maps `NodeId` → `(trait_name, method_name)` so the lowerer can emit
+    /// the correct dict field access instead of a bare variable reference.
+    pub resolved_trait_methods: HashMap<NodeId, (String, String)>,
 }
 
 impl Checker {
@@ -660,6 +664,7 @@ impl Checker {
             impl_env: HashMap::new(),
             param_impl_env: Vec::new(),
             trait_call_constraints: Vec::new(),
+            resolved_trait_methods: HashMap::new(),
         }
     }
 
@@ -679,6 +684,7 @@ impl Checker {
             impl_env: HashMap::new(),
             param_impl_env: Vec::new(),
             trait_call_constraints: Vec::new(),
+            resolved_trait_methods: HashMap::new(),
         }
     }
 
@@ -1065,10 +1071,61 @@ impl Checker {
             // this particular use of the variable gets its own type variables.
             ExprKind::Ident(name) => match env.lookup(name) {
                 Some(scheme) => Ok(self.instantiate(scheme)),
-                None => Err(TypeErrorAt::new(
-                    TypeError::UnboundVariable(name.clone()),
-                    span.clone(),
-                )),
+                None => {
+                    // Unambiguous trait method shorthand: if exactly one trait
+                    // defines a method with this name, resolve it automatically.
+                    let mut matches: Vec<(&str, &ast::TraitMethod)> = self
+                        .trait_env
+                        .values()
+                        .filter_map(|td| {
+                            td.methods
+                                .iter()
+                                .find(|m| m.name == *name)
+                                .map(|m| (td.name.as_str(), m))
+                        })
+                        .collect();
+                    // Collect the trait names for the Checker lookup below (avoid
+                    // borrow conflict when we later call self.lower_ty).
+                    if matches.len() == 1 {
+                        let (trait_name, method) = matches.remove(0);
+                        let td = self.trait_env.get(trait_name).unwrap();
+                        let trait_param = td.type_param.clone();
+                        let trait_name = trait_name.to_string();
+                        let method_ty = method.ty.clone();
+                        let trait_param_var = self.subst.fresh_var();
+                        let mut param_vars: HashMap<String, TyVar> =
+                            HashMap::from([(trait_param, trait_param_var)]);
+                        let ty = self
+                            .lower_ty(&method_ty, &mut param_vars)
+                            .map_err(|e| TypeErrorAt::new(e, span.clone()))?;
+                        self.constraint_map.push((trait_name.clone(), trait_param_var));
+                        self.trait_call_constraints.push((
+                            trait_name.clone(),
+                            trait_param_var,
+                            span.clone(),
+                        ));
+                        self.resolved_trait_methods.insert(expr.id, (trait_name, name.clone()));
+                        Ok(ty)
+                    } else if matches.len() > 1 {
+                        let mut options: Vec<String> = matches
+                            .iter()
+                            .map(|(tn, m)| format!("{}.{}", tn, m.name))
+                            .collect();
+                        options.sort();
+                        Err(TypeErrorAt::new(
+                            TypeError::AmbiguousTraitMethod {
+                                name: name.clone(),
+                                options,
+                            },
+                            span.clone(),
+                        ))
+                    } else {
+                        Err(TypeErrorAt::new(
+                            TypeError::UnboundVariable(name.clone()),
+                            span.clone(),
+                        ))
+                    }
+                }
             },
 
             // Variant used without a payload (e.g. bare `None` or `Some` as
@@ -2893,7 +2950,7 @@ fn collect_binding_info(
 pub fn elaborate(
     program: &Program,
     path: Option<&Path>,
-) -> Result<(HashMap<NodeId, Ty>, Ty), TypeErrorAt> {
+) -> Result<(HashMap<NodeId, Ty>, Ty, HashMap<NodeId, (String, String)>), TypeErrorAt> {
     let mut subst = Subst::new();
     let (env, mut var_env) = builtin_env(&mut subst);
     let prog_vars = build_variant_env(&program.items);
@@ -2940,13 +2997,14 @@ pub fn elaborate(
 
     // Apply the final substitution to every recorded type so all type variables
     // are resolved to their concrete types.
+    let resolved_trait_methods = checker.resolved_trait_methods;
     let node_types: HashMap<NodeId, Ty> = checker
         .node_types
         .into_iter()
         .map(|(id, ty)| (id, checker.subst.apply(&ty)))
         .collect();
 
-    Ok((node_types, export_ty))
+    Ok((node_types, export_ty, resolved_trait_methods))
 }
 
 /// Like [`elaborate`] but also returns the final top-level [`TypeEnv`] so
@@ -2954,7 +3012,7 @@ pub fn elaborate(
 pub fn elaborate_with_env(
     program: &Program,
     path: Option<&Path>,
-) -> Result<(HashMap<NodeId, Ty>, TypeEnv, Ty), TypeErrorAt> {
+) -> Result<(HashMap<NodeId, Ty>, TypeEnv, Ty, HashMap<NodeId, (String, String)>), TypeErrorAt> {
     let mut subst = Subst::new();
     let (base_env, mut var_env) = builtin_env(&mut subst);
     let prog_vars = build_variant_env(&program.items);
@@ -3029,6 +3087,7 @@ pub fn elaborate_with_env(
     // Report the first typed hole as an error (must happen before node_types is moved).
     let mut hole_errors = drain_holes_to_errors(&checker);
 
+    let resolved_trait_methods = checker.resolved_trait_methods;
     let node_types: HashMap<NodeId, Ty> = checker
         .node_types
         .into_iter()
@@ -3039,7 +3098,7 @@ pub fn elaborate_with_env(
         return Err(hole_errors.remove(0));
     }
 
-    Ok((node_types, resolved_env, export_ty))
+    Ok((node_types, resolved_env, export_ty, resolved_trait_methods))
 }
 
 /// Like [`elaborate_with_env`] but never fails - type errors are collected and

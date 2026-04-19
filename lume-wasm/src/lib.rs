@@ -356,10 +356,11 @@ fn lower_bundle(
         };
 
         let module_path = Some(m.canonical.as_path());
-        let (node_types, type_env) = types::infer::elaborate_with_env(&m.program, module_path)
-            .map(|(nt, env, _)| (nt, env))
-            .map_err(|e| format!("{}: type error: {e}", m.canonical.display()))?;
-        let ir_mod = lower::lower(m.program.clone(), &node_types, &type_env, &local_global);
+        let (node_types, type_env, resolved_trait_methods) =
+            types::infer::elaborate_with_env(&m.program, module_path)
+                .map(|(nt, env, _, rtm)| (nt, env, rtm))
+                .map_err(|e| format!("{}: type error: {e}", m.canonical.display()))?;
+        let ir_mod = lower::lower(m.program.clone(), &node_types, &type_env, &local_global, &resolved_trait_methods);
         ir_modules.push(codegen::IrModule {
             canonical: m.canonical.clone(),
             module: ir_mod,

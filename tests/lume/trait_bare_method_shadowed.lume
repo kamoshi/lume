@@ -1,0 +1,16 @@
+-- Tests that a local binding shadows a unique trait method name.
+-- The local `stringify` should take precedence over `Stringify.stringify`.
+-- Expected output:
+--   always this
+
+trait Stringify a {
+  let stringify : a -> Text
+}
+
+use Stringify in Num {
+  let stringify = x -> showNum x
+}
+
+let stringify = _ -> "always this"
+
+let _ = stringify 42 |> print

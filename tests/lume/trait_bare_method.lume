@@ -1,0 +1,20 @@
+-- Tests that a bare trait method name resolves when only one trait
+-- defines it (unambiguous trait method shorthand).
+-- Expected output:
+--   42
+--   hello
+
+trait Stringify a {
+  let stringify : a -> Text
+}
+
+use Stringify in Num {
+  let stringify = x -> showNum x
+}
+
+use Stringify in Text {
+  let stringify = x -> x
+}
+
+let _ = stringify 42 |> print
+let _ = stringify "hello" |> print

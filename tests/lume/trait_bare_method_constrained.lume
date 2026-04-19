@@ -1,0 +1,16 @@
+-- Tests that a bare trait method used inside a polymorphic function
+-- correctly generates the trait constraint.
+-- Expected output:
+--   42
+
+trait Show a {
+  let show : a -> Text
+}
+
+use Show in Num {
+  let show = x -> showNum x
+}
+
+let display : (Show a) => a -> Text = x -> show x
+
+let _ = display 42 |> print

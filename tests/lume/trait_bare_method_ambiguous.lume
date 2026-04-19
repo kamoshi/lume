@@ -1,0 +1,12 @@
+-- Tests that using a bare method name that exists in multiple traits
+-- produces a clear ambiguity error.
+
+trait Show a {
+  let display : a -> Text
+}
+
+trait Render a {
+  let display : a -> Text
+}
+
+let _ = display 42
