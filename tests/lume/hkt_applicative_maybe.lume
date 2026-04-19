@@ -1,0 +1,30 @@
+-- lume internal no_prelude
+-- Tests Applicative for Maybe:
+--   wrap lifts a value into Some
+--   apply maps Some f over Some x, and short-circuits on None
+
+use core = "lume:core"
+
+-- wrap: lift a value
+let wrapped = Applicative.wrap 42
+let _ = match wrapped in
+  | Some n -> showNum n |> print
+  | None -> print "none"
+
+-- apply Some f to Some x
+let r1 = Applicative.apply (Some (x -> x + 1)) (Some 41)
+let _ = match r1 in
+  | Some n -> showNum n |> print
+  | None -> print "none"
+
+-- apply None (missing function) to Some x -> None
+let r2 = Applicative.apply None (Some 10)
+let _ = match r2 in
+  | Some n -> showNum n |> print
+  | None -> print "none"
+
+-- apply Some f to None (missing value) -> None
+let r3 = Applicative.apply (Some (x -> x * 2)) None
+let _ = match r3 in
+  | Some n -> showNum n |> print
+  | None -> print "none"

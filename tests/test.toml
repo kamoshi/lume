@@ -373,6 +373,47 @@ output = """
 11 12 13
 """
 
+[tests.hkt_applicative_maybe]
+path = "tests/lume/hkt_applicative_maybe.lume"
+expect = "typecheck"
+output = """
+42
+42
+none
+none
+"""
+
+[tests.hkt_applicative_list]
+path = "tests/lume/hkt_applicative_list.lume"
+expect = "typecheck"
+output = """
+7
+13 14 6 8
+empty
+empty
+"""
+
+[tests.hkt_monad_maybe]
+path = "tests/lume/hkt_monad_maybe.lume"
+expect = "typecheck"
+output = """
+42
+none
+none
+25
+none
+"""
+
+[tests.hkt_monad_list]
+path = "tests/lume/hkt_monad_list.lume"
+expect = "typecheck"
+output = """
+1 10 2 20 3 30
+empty
+empty
+2 6
+"""
+
 [tests.hkt_arity_mismatch]
 path = "tests/lume/hkt_arity_mismatch.lume"
 expect = "error"

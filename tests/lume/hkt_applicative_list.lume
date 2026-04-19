@@ -1,0 +1,31 @@
+-- lume internal no_prelude
+-- Tests Applicative for List:
+--   wrap lifts a value into a singleton list
+--   apply applies each function to each value (cartesian product)
+
+use core = "lume:core"
+
+-- wrap: singleton list
+let w = Applicative.wrap 7
+let _ = match w in
+  | [x] -> showNum x |> print
+  | _ -> print "wrong"
+
+-- apply [f, g] [a, b] = [f a, f b, g a, g b]
+let r1 = Applicative.apply [x -> x + 10, x -> x * 2] [3, 4]
+let _ = match r1 in
+  | [a, b, c, d, ..] ->
+    showNum a ++ " " ++ showNum b ++ " " ++ showNum c ++ " " ++ showNum d |> print
+  | _ -> print "wrong"
+
+-- apply [] xs = []
+let r2 = Applicative.apply [] [1, 2, 3]
+let _ = match r2 in
+  | [] -> print "empty"
+  | _ -> print "wrong"
+
+-- apply fs [] = []
+let r3 = Applicative.apply [x -> x + 1] []
+let _ = match r3 in
+  | [] -> print "empty"
+  | _ -> print "wrong"

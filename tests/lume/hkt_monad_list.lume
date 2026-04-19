@@ -1,0 +1,33 @@
+-- lume internal no_prelude
+-- Tests Monad for List (and_then / flatMap):
+--   and_then xs f = concat (map f xs)
+-- Each element is expanded by f and the results are concatenated.
+
+use core = "lume:core"
+
+-- and_then: each element expands to two elements
+let r1 = Monad.and_then [1, 2, 3] (x -> [x, x * 10])
+let _ = match r1 in
+  | [a, b, c, d, e, f, ..] ->
+    showNum a ++ " " ++ showNum b ++ " " ++
+    showNum c ++ " " ++ showNum d ++ " " ++
+    showNum e ++ " " ++ showNum f |> print
+  | _ -> print "wrong"
+
+-- and_then on empty list -> empty
+let r2 = Monad.and_then [] (x -> [x, x])
+let _ = match r2 in
+  | [] -> print "empty"
+  | _ -> print "wrong"
+
+-- and_then where f returns [] (filter-like, all removed)
+let r3 = Monad.and_then [1, 2, 3] (x -> [])
+let _ = match r3 in
+  | [] -> print "empty"
+  | _ -> print "wrong"
+
+-- and_then: keep only positives doubled
+let r4 = Monad.and_then [1, 0, 3] (x -> if x == 0 then [] else [x * 2])
+let _ = match r4 in
+  | [a, b, ..] -> showNum a ++ " " ++ showNum b |> print
+  | _ -> print "wrong"

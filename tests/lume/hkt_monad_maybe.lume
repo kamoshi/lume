@@ -1,0 +1,40 @@
+-- lume internal no_prelude
+-- Tests Monad for Maybe (and_then / flatMap):
+--   and_then (Some x) f = f x
+--   and_then None f = None
+-- Models safe chaining where any None short-circuits the rest.
+
+use core = "lume:core"
+
+-- and_then Some -> applies the function
+let r1 = Monad.and_then (Some 21) (x -> Some (x * 2))
+let _ = match r1 in
+  | Some n -> showNum n |> print
+  | None -> print "none"
+
+-- and_then None -> always None
+let r2 = Monad.and_then None (x -> Some (x * 2))
+let _ = match r2 in
+  | Some n -> showNum n |> print
+  | None -> print "none"
+
+-- and_then Some -> function returns None (failure inside the chain)
+let r3 = Monad.and_then (Some 5) (x -> None)
+let _ = match r3 in
+  | Some n -> showNum n |> print
+  | None -> print "none"
+
+-- safe division: safeDiv num den = num / den (or None if den == 0)
+-- and_then (Some 4) (safeDiv 100) = safeDiv 100 4 = Some 25
+let safeDiv = num -> den -> if den == 0 then None else Some (num / den)
+
+let r4 = Monad.and_then (Some 4) (safeDiv 100)
+let _ = match r4 in
+  | Some n -> showNum n |> print
+  | None -> print "none"
+
+-- and_then (Some 0) (safeDiv 100) = safeDiv 100 0 = None
+let r5 = Monad.and_then (Some 0) (safeDiv 100)
+let _ = match r5 in
+  | Some n -> showNum n |> print
+  | None -> print "none"

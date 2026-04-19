@@ -1,5 +1,4 @@
 -- lume internal no_prelude
--- Core abstractions: Functor, map, and their standard instances.
 
 trait Functor f {
   let map : (a -> b) -> f a -> f b
@@ -16,25 +15,39 @@ use Functor in List {
 }
 
 trait Applicative f {
-  let pure : a -> f a
+  let wrap : a -> f a
   let apply : f (a -> b) -> f a -> f b
 }
 
 use Applicative in Maybe {
-  let pure = x -> Some x
+  let wrap = x -> Some x
   let apply = f -> x -> match f in
     | None -> None
     | Some f -> Functor.map f x
 }
 
 use Applicative in List {
-  let pure = x -> [x]
+  let wrap = x -> [x]
   let apply = fs -> xs -> match fs in
     | [] -> []
     | [f, ..fs] ->
-      let mapped = Functor.map f xs in
-      let others = apply fs xs in
-      mapped ++ others
+      Functor.map f xs ++ apply fs xs
+}
+
+trait Monad m {
+  let and_then : m a -> (a -> m b) -> m b
+}
+
+use Monad in Maybe {
+  let and_then = mx -> f -> match mx in
+    | None -> None
+    | Some x -> f x
+}
+
+use Monad in List {
+  let and_then = xs -> f -> match xs in
+    | [] -> []
+    | [x, ..xs] -> f x ++ and_then xs f
 }
 
 pub { }
