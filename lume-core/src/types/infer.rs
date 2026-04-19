@@ -670,6 +670,10 @@ pub struct Checker {
     /// Maps `NodeId` → `(trait_name, method_name)` so the lowerer can emit
     /// the correct dict field access instead of a bare variable reference.
     pub resolved_trait_methods: HashMap<NodeId, (String, String)>,
+    /// Preferred display names for type variables introduced by annotations.
+    /// Maps TyVar → name (e.g. "a", "b") so hover types of sub-expressions
+    /// use consistent naming with the enclosing type signature.
+    pub var_name_hints: HashMap<TyVar, String>,
 }
 
 impl Checker {
@@ -686,6 +690,7 @@ impl Checker {
             param_impl_env: Vec::new(),
             trait_call_constraints: Vec::new(),
             resolved_trait_methods: HashMap::new(),
+            var_name_hints: HashMap::new(),
         }
     }
 
@@ -706,6 +711,7 @@ impl Checker {
             param_impl_env: Vec::new(),
             trait_call_constraints: Vec::new(),
             resolved_trait_methods: HashMap::new(),
+            var_name_hints: HashMap::new(),
         }
     }
 
@@ -1795,6 +1801,79 @@ impl Checker {
                     self.unify_at(inferred, expected, span)
                 }
             }
+            // ── Record in check mode: propagate expected field types ────────
+            ExprKind::Record { base: None, fields, .. } => {
+                if let Ty::Record(row) = &expected {
+                    if matches!(row.tail, RowTail::Closed) {
+                        let mut row_fields: Vec<(String, Ty)> = Vec::new();
+                        for f in fields {
+                            let expected_field_ty = row.fields.iter().find(|(n, _)| n == &f.name).map(|(_, t)| t);
+                            let ty = if let Some(val) = &f.value {
+                                if let Some(ety) = expected_field_ty {
+                                    self.check(env, val, ety.clone())?;
+                                    self.subst.apply(ety)
+                                } else {
+                                    self.infer(env, val)?
+                                }
+                            } else {
+                                match env.lookup(&f.name) {
+                                    Some(s) => self.instantiate(s),
+                                    None => {
+                                        return Err(TypeErrorAt::new(
+                                            TypeError::UnboundVariable(f.name.clone()),
+                                            span.clone(),
+                                        ))
+                                    }
+                                }
+                            };
+                            let ty = self.subst.apply(&ty);
+                            self.node_types.insert(f.name_node_id, ty.clone());
+                            row_fields.push((f.name.clone(), ty));
+                        }
+                        row_fields.sort_by(|a, b| a.0.cmp(&b.0));
+                        let inferred = Ty::Record(Row {
+                            fields: row_fields,
+                            tail: RowTail::Closed,
+                        });
+                        self.node_types.insert(expr.id, self.subst.apply(&inferred));
+                        self.unify_at(inferred, expected, span)
+                    } else {
+                        let inferred = self.infer(env, expr)?;
+                        let inferred = self.subst.apply(&inferred);
+                        self.unify_at(inferred, expected, span)
+                    }
+                } else {
+                    let inferred = self.infer(env, expr)?;
+                    let inferred = self.subst.apply(&inferred);
+                    self.unify_at(inferred, expected, span)
+                }
+            }
+            // ── LetIn in check mode: propagate expected type to body ──────
+            ExprKind::LetIn { pattern, value, body } => {
+                let val_ty = self.infer(env, value)?;
+                let bindings = self
+                    .infer_pattern(pattern, val_ty)
+                    .map_err(|e| TypeErrorAt::new(e, span.clone()))?;
+                let new_env = env.extend_many(bindings);
+                self.check(&new_env, body, expected)
+            }
+            // ── Match in check mode: propagate expected type to arm bodies ──
+            ExprKind::MatchExpr { scrutinee, arms } => {
+                let scrut_ty = self.infer(env, scrutinee)?;
+                for arm in arms {
+                    let bindings = self
+                        .infer_pattern(&arm.pattern, scrut_ty.clone())
+                        .map_err(|e| TypeErrorAt::new(e, span.clone()))?;
+                    let arm_env = env.extend_many(bindings);
+                    if let Some(guard) = &arm.guard {
+                        let guard_ty = self.infer(&arm_env, guard)?;
+                        self.unify_at(guard_ty, Ty::Bool, &guard.span)?;
+                    }
+                    self.check(&arm_env, &arm.body, expected.clone())?;
+                }
+                self.node_types.insert(expr.id, self.subst.apply(&expected));
+                Ok(())
+            }
             // All other forms: infer + unify.
             _ => {
                 let inferred = self.infer(env, expr)?;
@@ -2453,6 +2532,10 @@ impl Checker {
             let ann_ty = self
                 .lower_ty(ann, &mut param_vars)
                 .map_err(|e| TypeErrorAt::new(e, value_span.clone()))?;
+            // Record annotation variable names as hints for consistent hover display.
+            for (name, &var) in &param_vars {
+                self.var_name_hints.insert(var, name.clone());
+            }
             if let Some(ph) = placeholder {
                 self.unify_at(ph, ann_ty.clone(), value_span)?;
             }
@@ -3213,6 +3296,7 @@ pub fn elaborate_with_env_partial(
     TypeEnv,
     HashMap<String, TraitDef>,
     Vec<TypeErrorAt>,
+    HashMap<TyVar, String>,
 ) {
     let mut subst = Subst::new();
     let (base_env, mut var_env) = builtin_env(&mut subst);
@@ -3327,9 +3411,22 @@ pub fn elaborate_with_env_partial(
         .map(|(id, ty)| (*id, checker.subst.apply(ty)))
         .collect();
 
+    // Resolve var_name_hints through the substitution so hints follow
+    // unification chains to whichever TyVar remains free.
+    let var_name_hints: HashMap<TyVar, String> = checker
+        .var_name_hints
+        .iter()
+        .filter_map(|(&var, name)| {
+            match checker.subst.apply(&Ty::Var(var)) {
+                Ty::Var(resolved) => Some((resolved, name.clone())),
+                _ => None, // variable was resolved to a concrete type, no hint needed
+            }
+        })
+        .collect();
+
     // Include typed holes as diagnostics so the LSP can report them.
     let mut hole_errors = drain_holes_to_errors(&checker);
     errors.append(&mut hole_errors);
 
-    (node_types, resolved_env, checker.trait_env, errors)
+    (node_types, resolved_env, checker.trait_env, errors, var_name_hints)
 }

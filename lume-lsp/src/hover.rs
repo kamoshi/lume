@@ -1,7 +1,7 @@
 use lume_core::{
     ast::{TraitDef, Type},
     ast::NodeId,
-    types::{unify, Scheme, Subst, Ty},
+    types::{format_ty_with_hints, unify, Scheme, Subst, Ty},
     types::infer::TypeEnv,
 };
 use tower_lsp::lsp_types::*;
@@ -186,10 +186,11 @@ pub fn hover_label(pos: Position, text: &str, doc: &DocInfo) -> Option<String> {
         }
 
         // Regular expression — show word : type.
+        let ty_str = format_ty_with_hints(&ty, &doc.var_name_hints);
         match word_at(text, pos.line, pos.character) {
             Some("_") => {
                 // Typed hole: show the expected type and suggest fitting bindings.
-                let mut label = format!("_ : {ty}");
+                let mut label = format!("_ : {ty_str}");
                 let suggestions = suggest_for_hole(&ty, &doc.top_env, 5);
                 if !suggestions.is_empty() {
                     label.push_str("\n\n**Fits:**");
@@ -203,10 +204,10 @@ pub fn hover_label(pos: Position, text: &str, doc: &DocInfo) -> Option<String> {
                 if let Some(scheme) = doc.top_env.lookup(w) {
                     Some(format!("{w} : {scheme}"))
                 } else {
-                    Some(format!("{w} : {ty}"))
+                    Some(format!("{w} : {ty_str}"))
                 }
             }
-            _ => Some(ty.to_string()),
+            _ => Some(ty_str),
         }
     } else {
         // No type in node_types — try extra_hovers (trait methods, etc.)

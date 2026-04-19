@@ -799,6 +799,22 @@ fn fmt_named_atomic(
 
 // ── Display impls ─────────────────────────────────────────────────────────────
 
+/// Format a `Ty` using external naming hints for type variables.
+/// Hints map TyVar → preferred name (e.g. from a type annotation).
+pub fn format_ty_with_hints(ty: &Ty, hints: &HashMap<TyVar, String>) -> String {
+    let names = build_var_names(ty, hints);
+    struct FmtHelper<'a> {
+        ty: &'a Ty,
+        names: HashMap<TyVar, String>,
+    }
+    impl<'a> fmt::Display for FmtHelper<'a> {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            fmt_named(self.ty, &self.names, f)
+        }
+    }
+    FmtHelper { ty, names }.to_string()
+}
+
 impl fmt::Display for Ty {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let names = build_var_names(self, &HashMap::new());

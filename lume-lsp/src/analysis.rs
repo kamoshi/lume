@@ -8,7 +8,7 @@ use lume_core::{
     parser,
     types::{
         infer::{elaborate_with_env_partial, TypeEnv},
-        Ty,
+        Ty, TyVar,
     },
 };
 use tower_lsp::lsp_types::*;
@@ -35,6 +35,8 @@ pub struct DocInfo {
     pub doc_comments: HashMap<String, String>,
     /// Name → definition Span for go-to-definition.
     pub definitions: HashMap<String, Span>,
+    /// Preferred display names for type variables from annotations.
+    pub var_name_hints: HashMap<TyVar, String>,
 }
 
 // ── Conversion helpers ───────────────────────────────────────────────────────
@@ -99,7 +101,7 @@ pub fn analyse(uri: &Url, src: &str) -> (Option<DocInfo>, Vec<Diagnostic>) {
     let (pragmas, pragma_warnings) = parse_pragmas(src);
     program.pragmas = pragmas;
     let path = uri.to_file_path().ok();
-    let (node_types, top_env, trait_env, type_errors) =
+    let (node_types, top_env, trait_env, type_errors, var_name_hints) =
         elaborate_with_env_partial(&program, path.as_deref());
     let span_index = collect_spans(&program);
     let trait_calls = collect_trait_calls(&program);
@@ -115,6 +117,7 @@ pub fn analyse(uri: &Url, src: &str) -> (Option<DocInfo>, Vec<Diagnostic>) {
         extra_hovers,
         doc_comments,
         definitions,
+        var_name_hints,
     });
     let mut diagnostics: Vec<Diagnostic> = pragma_warnings
         .iter()
