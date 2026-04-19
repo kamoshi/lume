@@ -216,6 +216,22 @@ fn collect_embedded_bundle(
         return Ok(());
     }
 
+    // Auto-include the prelude (and its transitive deps) unless the module
+    // opts out via `-- lume no_prelude`, mirroring the native bundler.
+    if !program.pragmas.no_prelude {
+        let prelude_path = stdlib_path("lume:prelude");
+        if let Some(prelude_src) = stdlib_source("lume:prelude") {
+            let prelude_program = Loader::parse(prelude_src)?;
+            collect_embedded_bundle(
+                prelude_path,
+                stdlib_var("lume:prelude"),
+                prelude_program,
+                visited,
+                bundle,
+            )?;
+        }
+    }
+
     for use_decl in &program.uses {
         let dep_src = stdlib_source(&use_decl.path).ok_or_else(|| {
             format!(
