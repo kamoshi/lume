@@ -1,8 +1,8 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use lume_core::{
-    ast::{Expr, ExprKind, MatchArm, NodeId, Pattern, Program, TopItem},
+    ast::{Expr, ExprKind, MatchArm, NodeId, Pattern, Program, TopItem, Type},
     bundle::BundleModule,
     codegen,
     error::Span,
@@ -10,7 +10,7 @@ use lume_core::{
     loader::{parse_pragmas, stdlib_path, stdlib_source, use_path_context, Loader, UsePathKind, STDLIB_MODULES},
     lower,
     parser,
-    types::{self, infer::builtin_env, infer::elaborate_with_env_partial, Ty},
+    types::{self, format_ty_with_hints, infer::builtin_env, infer::elaborate_with_env_partial, Ty},
 };
 use wasm_bindgen::prelude::*;
 
@@ -663,6 +663,111 @@ fn field_completions(src: &str, dot_pos: usize, cursor: usize, prefix: &str) -> 
     }
 }
 
+// ── Hover helpers ─────────────────────────────────────────────────────────────
+
+/// Return the identifier word at a byte offset in `src`.
+fn word_at_offset(src: &str, offset: usize) -> Option<&str> {
+    if offset > src.len() {
+        return None;
+    }
+    let is_ident = |c: char| c.is_alphanumeric() || c == '_';
+    let start = src[..offset]
+        .rfind(|c: char| !is_ident(c))
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    let end = src[offset..]
+        .find(|c: char| !is_ident(c))
+        .map(|i| i + offset)
+        .unwrap_or(src.len());
+    if start >= end {
+        None
+    } else {
+        Some(&src[start..end])
+    }
+}
+
+/// Collect NodeId → (trait_name, method_name) for all `TraitCall` expressions.
+fn collect_trait_calls(program: &Program) -> HashMap<NodeId, (String, String)> {
+    let mut out = HashMap::new();
+    fn walk(expr: &Expr, out: &mut HashMap<NodeId, (String, String)>) {
+        if let ExprKind::TraitCall { trait_name, method_name } = &expr.kind {
+            out.insert(expr.id, (trait_name.clone(), method_name.clone()));
+        }
+        match &expr.kind {
+            ExprKind::List(es) => es.iter().for_each(|e| walk(e, out)),
+            ExprKind::Record { base, fields, .. } => {
+                if let Some(b) = base { walk(b, out); }
+                for f in fields { if let Some(v) = &f.value { walk(v, out); } }
+            }
+            ExprKind::FieldAccess { record, .. } => walk(record, out),
+            ExprKind::Variant { payload: Some(p), .. } => walk(p, out),
+            ExprKind::Lambda { body, .. } => walk(body, out),
+            ExprKind::Apply { func, arg } => { walk(func, out); walk(arg, out); }
+            ExprKind::Binary { left, right, .. } => { walk(left, out); walk(right, out); }
+            ExprKind::Unary { operand, .. } => walk(operand, out),
+            ExprKind::If { cond, then_branch, else_branch } => {
+                walk(cond, out); walk(then_branch, out); walk(else_branch, out);
+            }
+            ExprKind::Match(arms) | ExprKind::MatchExpr { arms, .. } => {
+                if let ExprKind::MatchExpr { scrutinee, .. } = &expr.kind {
+                    walk(scrutinee, out);
+                }
+                for arm in arms {
+                    if let Some(g) = &arm.guard { walk(g, out); }
+                    walk(&arm.body, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    for item in &program.items {
+        match item {
+            TopItem::Binding(b) => walk(&b.value, &mut out),
+            TopItem::BindingGroup(bs) => bs.iter().for_each(|b| walk(&b.value, &mut out)),
+            TopItem::ImplDef(id) => id.methods.iter().for_each(|m| walk(&m.value, &mut out)),
+            _ => {}
+        }
+    }
+    walk(&program.exports, &mut out);
+    out
+}
+
+/// Walk a generic AST `Type` and a resolved `Ty` in parallel to find the
+/// concrete type that the trait's type parameter unified to at a call site.
+fn extract_trait_param(ast_ty: &Type, resolved: &Ty, param: &str) -> Option<Ty> {
+    match (ast_ty, resolved) {
+        (Type::Var(v), _) if v == param => Some(resolved.clone()),
+        (Type::Func { param: ap, ret: ar }, Ty::Func(rp, rr)) => {
+            extract_trait_param(ap, rp, param)
+                .or_else(|| extract_trait_param(ar, rr, param))
+        }
+        (Type::App { .. }, _) | (Type::Constructor(_), _) => {
+            let mut current: &Type = ast_ty;
+            let mut args = Vec::new();
+            while let Type::App { callee, arg } = current {
+                args.push(arg.as_ref());
+                current = callee.as_ref();
+            }
+            args.reverse();
+            let (_, ty_args) = resolved.flatten_app();
+            args.iter()
+                .zip(ty_args.iter())
+                .find_map(|(a, t)| extract_trait_param(a, t, param))
+        }
+        _ => None,
+    }
+}
+
+/// Format a trait constraint with proper parenthesisation, e.g. `Show (List Num)`.
+fn format_constraint(trait_name: &str, param_ty: &Ty) -> String {
+    let needs_parens = matches!(param_ty, Ty::Func(..) | Ty::App(..));
+    if needs_parens {
+        format!("{} ({})", trait_name, param_ty)
+    } else {
+        format!("{} {}", trait_name, param_ty)
+    }
+}
+
 /// Returns the inferred type of the expression under `offset` (byte offset),
 /// or `null` if no type information is available at that position.
 /// Designed for use with `hoverTooltip` in CodeMirror.
@@ -671,7 +776,10 @@ pub fn type_at(src: &str, offset: usize) -> Option<String> {
     let tokens = Lexer::new(src).tokenize().ok()?;
     let mut program = parser::parse_program(&tokens).ok()?;
     program.pragmas = parse_pragmas(src).0;
-    let (node_types, _, _, _, _) = elaborate_with_env_partial(&program, Some(Path::new(WASM_ENTRY_PATH)));
+    let (node_types, top_env, trait_env, _, var_name_hints) =
+        elaborate_with_env_partial(&program, Some(Path::new(WASM_ENTRY_PATH)));
+
+    let trait_calls = collect_trait_calls(&program);
 
     let mut spans: Vec<(usize, usize, NodeId)> = Vec::new();
     collect_program(src, &program, &mut spans);
@@ -686,8 +794,42 @@ pub fn type_at(src: &str, offset: usize) -> Option<String> {
 
     for (_, _, id) in &spans {
         if let Some(ty) = node_types.get(id) {
-            return Some(ty.to_string());
+            // Trait method call: show resolved type with constraint prefix.
+            if let Some((trait_name, method_name)) = trait_calls.get(id) {
+                if let Some(trait_def) = trait_env.get(trait_name) {
+                    if let Some(method) = trait_def.methods.iter().find(|m| &m.name == method_name) {
+                        let param_ty = extract_trait_param(&method.ty, ty, &trait_def.type_param);
+                        let constraint = match &param_ty {
+                            Some(pt) => format_constraint(trait_name, pt),
+                            None => format!("{} {}", trait_name, trait_def.type_param),
+                        };
+                        let ty_str = format_ty_with_hints(ty, &var_name_hints);
+                        return Some(format!("{method_name} : {constraint} => {ty_str}"));
+                    }
+                }
+            }
+
+            // Identifier: look up Scheme in TypeEnv for constraint info.
+            if let Some(w) = word_at_offset(src, offset) {
+                if w.starts_with(|c: char| c.is_alphabetic() || c == '_') {
+                    if let Some(scheme) = top_env.lookup(w) {
+                        return Some(format!("{w} : {scheme}"));
+                    }
+                }
+            }
+
+            return Some(format_ty_with_hints(ty, &var_name_hints));
         }
     }
+
+    // No type in node_types — try TypeEnv by word under cursor as last resort.
+    if let Some(w) = word_at_offset(src, offset) {
+        if w.starts_with(|c: char| c.is_alphabetic() || c == '_') {
+            if let Some(scheme) = top_env.lookup(w) {
+                return Some(format!("{w} : {scheme}"));
+            }
+        }
+    }
+
     None
 }
