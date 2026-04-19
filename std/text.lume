@@ -1,4 +1,4 @@
--- std/string.lume
+-- lume no_prelude
 -- Text utilities built on preamble primitives.
 
 -- lines : Text -> List Text

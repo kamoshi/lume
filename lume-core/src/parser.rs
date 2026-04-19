@@ -293,6 +293,7 @@ pub fn parse_program(tokens: &[Spanned]) -> Result<Program, ParseError> {
         uses,
         items,
         exports,
+        pragmas: Default::default(),
     };
     ast::assign_node_ids(&mut program);
     Ok(program)

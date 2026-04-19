@@ -80,19 +80,25 @@ pub fn lower(
         .collect();
 
     // Lower imports.
-    let imports: Vec<ir::Import> = program
-        .uses
-        .iter()
-        .map(|u| ir::Import {
-            binding: match &u.binding {
-                UseBinding::Ident(name, _, _) => ir::ImportBinding::Name(name.clone()),
-                UseBinding::Record(rp) => {
-                    ir::ImportBinding::Destructure(rp.fields.iter().map(|f| f.name.clone()).collect())
-                }
-            },
-            path: u.path.clone(),
-        })
-        .collect();
+    let mut imports: Vec<ir::Import> = Vec::new();
+
+    // Synthesize a prelude import so codegen emits `local map = _mod_prelude_.map`.
+    if !program.pragmas.no_prelude {
+        imports.push(ir::Import {
+            binding: ir::ImportBinding::Destructure(vec!["map".into()]),
+            path: "lume:prelude".into(),
+        });
+    }
+
+    imports.extend(program.uses.iter().map(|u| ir::Import {
+        binding: match &u.binding {
+            UseBinding::Ident(name, _, _) => ir::ImportBinding::Name(name.clone()),
+            UseBinding::Record(rp) => {
+                ir::ImportBinding::Destructure(rp.fields.iter().map(|f| f.name.clone()).collect())
+            }
+        },
+        path: u.path.clone(),
+    }));
 
     // Lower items.
     let mut items = Vec::new();

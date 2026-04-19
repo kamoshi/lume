@@ -4,6 +4,16 @@ use crate::error::Span;
 /// Assigned by `assign_node_ids` immediately after parsing.
 pub type NodeId = u32;
 
+/// Module-level pragmas declared via `-- lume <directive>` comment lines
+/// at the top of a source file.
+#[derive(Debug, Clone, Default)]
+pub struct ModulePragmas {
+    /// Module receives internal-only builtins (e.g. `list_map`).
+    pub internal: bool,
+    /// Module skips the automatic prelude import.
+    pub no_prelude: bool,
+}
+
 /// The complete AST for a Lume source file.
 ///
 /// ```text
@@ -16,6 +26,8 @@ pub struct Program {
     /// The module's public interface. When `pub` is omitted, this is a
     /// synthetic empty record expression (`{}`).
     pub exports: Expr,
+    /// Pragmas parsed from leading `-- lume …` comment lines.
+    pub pragmas: ModulePragmas,
 }
 
 // ── Top-level items ───────────────────────────────────────────────────────────

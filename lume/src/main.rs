@@ -11,7 +11,8 @@ use lume_core::types;
 
 fn parse(src: &str) -> Result<ast::Program, LumeError> {
     let tokens = Lexer::new(src).tokenize()?;
-    let program = parser::parse_program(&tokens)?;
+    let mut program = parser::parse_program(&tokens)?;
+    program.pragmas = lume_core::loader::parse_pragmas(src).0;
     Ok(program)
 }
 

@@ -124,6 +124,8 @@ pub struct Scheme {
     pub row_vars: Vec<TyVar>,
     /// Trait constraints on quantified type variables: `(trait_name, var)`.
     pub constraints: Vec<(String, TyVar)>,
+    /// Preferred display names for constrained type variables, e.g. `f` for Functor's param.
+    pub constraint_names: HashMap<TyVar, String>,
     pub ty: Ty,
 }
 
@@ -133,6 +135,7 @@ impl Scheme {
             vars: vec![],
             row_vars: vec![],
             constraints: vec![],
+            constraint_names: HashMap::new(),
             ty,
         }
     }
@@ -325,6 +328,7 @@ impl Subst {
             vars: scheme.vars.clone(),
             row_vars: scheme.row_vars.clone(),
             constraints: scheme.constraints.clone(),
+            constraint_names: scheme.constraint_names.clone(),
             ty: restricted.apply(&scheme.ty),
         }
     }
@@ -654,8 +658,54 @@ fn collect_pretty_vars(ty: &Ty, tvs: &mut Vec<TyVar>, rvs: &mut Vec<TyVar>) {
     }
 }
 
-/// Render a `Ty` using caller-supplied name tables for type-vars and row-vars.
-fn fmt_named(ty: &Ty, tvs: &[TyVar], rvs: &[TyVar], f: &mut fmt::Formatter<'_>) -> fmt::Result {
+/// Build a name map for all type/row vars in a type, respecting preferred names
+/// for constrained variables (e.g. `f` for Functor's type param).
+fn build_var_names(ty: &Ty, hints: &HashMap<TyVar, String>) -> HashMap<TyVar, String> {
+    let mut tvs = Vec::new();
+    let mut rvs = Vec::new();
+    collect_pretty_vars(ty, &mut tvs, &mut rvs);
+    assign_var_names(&tvs, &rvs, hints)
+}
+
+fn assign_var_names(
+    tvs: &[TyVar],
+    rvs: &[TyVar],
+    hints: &HashMap<TyVar, String>,
+) -> HashMap<TyVar, String> {
+    let reserved: HashSet<&str> = hints.values().map(|s| s.as_str()).collect();
+    let mut names = HashMap::new();
+    let mut next_idx = 0usize;
+
+    let mut next_name = |reserved: &HashSet<&str>| -> String {
+        loop {
+            let name = pretty_var_name(next_idx);
+            next_idx += 1;
+            if !reserved.contains(name.as_str()) {
+                return name;
+            }
+        }
+    };
+
+    for &v in tvs {
+        if let Some(hint) = hints.get(&v) {
+            names.insert(v, hint.clone());
+        } else {
+            names.insert(v, next_name(&reserved));
+        }
+    }
+    for &v in rvs {
+        if let Some(hint) = hints.get(&v) {
+            names.insert(v, hint.clone());
+        } else {
+            names.insert(v, next_name(&reserved));
+        }
+    }
+
+    names
+}
+
+/// Render a `Ty` using a pre-computed name map for type-vars and row-vars.
+fn fmt_named(ty: &Ty, names: &HashMap<TyVar, String>, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match ty {
         Ty::Num => write!(f, "Num"),
         Ty::Text => write!(f, "Text"),
@@ -663,13 +713,13 @@ fn fmt_named(ty: &Ty, tvs: &[TyVar], rvs: &[TyVar], f: &mut fmt::Formatter<'_>) 
         Ty::Func(a, b) => {
             if matches!(a.as_ref(), Ty::Func(..)) {
                 write!(f, "(")?;
-                fmt_named(a, tvs, rvs, f)?;
+                fmt_named(a, names, f)?;
                 write!(f, ")")?;
             } else {
-                fmt_named(a, tvs, rvs, f)?;
+                fmt_named(a, names, f)?;
             }
             write!(f, " -> ")?;
-            fmt_named(b, tvs, rvs, f)
+            fmt_named(b, names, f)
         }
         Ty::Record(row) => {
             write!(f, "{{ ")?;
@@ -678,16 +728,15 @@ fn fmt_named(ty: &Ty, tvs: &[TyVar], rvs: &[TyVar], f: &mut fmt::Formatter<'_>) 
                     write!(f, ", ")?;
                 }
                 write!(f, "{}: ", name)?;
-                fmt_named(ty, tvs, rvs, f)?;
+                fmt_named(ty, names, f)?;
             }
             if let RowTail::Open(v) = row.tail {
                 if !row.fields.is_empty() {
                     write!(f, ", ")?;
                 }
-                let name = rvs
-                    .iter()
-                    .position(|x| x == &v)
-                    .map(|i| pretty_var_name(tvs.len() + i))
+                let name = names
+                    .get(&v)
+                    .cloned()
                     .unwrap_or_else(|| format!("?{}", v));
                 write!(f, "..{}", name)?;
             }
@@ -695,28 +744,25 @@ fn fmt_named(ty: &Ty, tvs: &[TyVar], rvs: &[TyVar], f: &mut fmt::Formatter<'_>) 
         }
         Ty::Con(name) => write!(f, "{}", name),
         Ty::App(..) => {
-            // Flatten the App tree to print `Con arg1 arg2 …` cleanly.
             let (head, args) = flatten_app(ty);
-            // Parenthesise the head if it's a function type (theoretical safety).
             match head {
                 Ty::Func(..) => {
                     write!(f, "(")?;
-                    fmt_named(head, tvs, rvs, f)?;
+                    fmt_named(head, names, f)?;
                     write!(f, ")")?;
                 }
-                _ => fmt_named(head, tvs, rvs, f)?,
+                _ => fmt_named(head, names, f)?,
             }
             for a in args {
                 write!(f, " ")?;
-                fmt_named_atomic(a, tvs, rvs, f)?;
+                fmt_named_atomic(a, names, f)?;
             }
             Ok(())
         }
         Ty::Var(v) => {
-            let name = tvs
-                .iter()
-                .position(|x| x == v)
-                .map(pretty_var_name)
+            let name = names
+                .get(v)
+                .cloned()
                 .unwrap_or_else(|| format!("?{}", v));
             write!(f, "{}", name)
         }
@@ -738,17 +784,16 @@ fn flatten_app(ty: &Ty) -> (&Ty, Vec<&Ty>) {
 
 fn fmt_named_atomic(
     ty: &Ty,
-    tvs: &[TyVar],
-    rvs: &[TyVar],
+    names: &HashMap<TyVar, String>,
     f: &mut fmt::Formatter<'_>,
 ) -> fmt::Result {
     let needs_parens = matches!(ty, Ty::Func(..) | Ty::App(..));
     if needs_parens {
         write!(f, "(")?;
-        fmt_named(ty, tvs, rvs, f)?;
+        fmt_named(ty, names, f)?;
         write!(f, ")")
     } else {
-        fmt_named(ty, tvs, rvs, f)
+        fmt_named(ty, names, f)
     }
 }
 
@@ -756,10 +801,8 @@ fn fmt_named_atomic(
 
 impl fmt::Display for Ty {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut tvs = Vec::new();
-        let mut rvs = Vec::new();
-        collect_pretty_vars(self, &mut tvs, &mut rvs);
-        fmt_named(self, &tvs, &rvs, f)
+        let names = build_var_names(self, &HashMap::new());
+        fmt_named(self, &names, f)
     }
 }
 
@@ -772,22 +815,21 @@ impl fmt::Display for Row {
 
 impl fmt::Display for Scheme {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let names = build_var_names(&self.ty, &self.constraint_names);
         if !self.constraints.is_empty() {
             write!(f, "(")?;
             for (i, (trait_name, var)) in self.constraints.iter().enumerate() {
                 if i > 0 {
                     write!(f, ", ")?;
                 }
-                let var_name = self
-                    .vars
-                    .iter()
-                    .position(|v| v == var)
-                    .map(pretty_var_name)
+                let var_name = names
+                    .get(var)
+                    .cloned()
                     .unwrap_or_else(|| format!("?{}", var));
                 write!(f, "{} {}", trait_name, var_name)?;
             }
             write!(f, ") => ")?;
         }
-        fmt_named(&self.ty, &self.vars, &self.row_vars, f)
+        fmt_named(&self.ty, &names, f)
     }
 }

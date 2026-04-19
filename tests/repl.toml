@@ -189,7 +189,7 @@ output = "Ok : a -> Result a b"
 
 [tests.type_err_constructor]
 steps = [":type Err"]
-output = "Err : b -> Result a b"
+output = "Err : a -> Result b a"
 
 [tests.type_some_applied]
 steps = [":type Some 42"]
@@ -205,4 +205,4 @@ output = "Ok 1 : Result Num a"
 
 [tests.type_map_builtin]
 steps = [":type map"]
-output = "map : (a -> b) -> List a -> List b"
+output = "map : (Functor f) => (a -> b) -> f a -> f b"

@@ -4,6 +4,7 @@ use lume_core::{
     ast::{self, Expr, ExprKind, NodeId, Program, TopItem, TraitDef},
     error::{LumeError, Span},
     lexer::Lexer,
+    loader::{parse_pragmas, PragmaWarning},
     parser,
     types::{
         infer::{elaborate_with_env_partial, TypeEnv},
@@ -68,6 +69,21 @@ pub fn error_to_diagnostic(err: LumeError) -> Diagnostic {
     }
 }
 
+fn pragma_warning_to_diagnostic(w: &PragmaWarning) -> Diagnostic {
+    let line = w.line.saturating_sub(1) as u32;
+    let col = w.col.saturating_sub(1) as u32;
+    Diagnostic {
+        range: Range {
+            start: Position { line, character: col },
+            end: Position { line, character: col + w.len as u32 },
+        },
+        severity: Some(DiagnosticSeverity::WARNING),
+        source: Some("pragma".to_string()),
+        message: format!("unknown pragma directive '{}'", w.directive),
+        ..Default::default()
+    }
+}
+
 // ── Full analysis pipeline ───────────────────────────────────────────────────
 
 /// Run the full pipeline on `src`, returning a `DocInfo` and any diagnostics.
@@ -76,10 +92,12 @@ pub fn analyse(uri: &Url, src: &str) -> (Option<DocInfo>, Vec<Diagnostic>) {
         Ok(t) => t,
         Err(e) => return (None, vec![error_to_diagnostic(LumeError::Lex(e))]),
     };
-    let program = match parser::parse_program(&tokens) {
+    let mut program = match parser::parse_program(&tokens) {
         Ok(p) => p,
         Err(e) => return (None, vec![error_to_diagnostic(LumeError::Parse(e))]),
     };
+    let (pragmas, pragma_warnings) = parse_pragmas(src);
+    program.pragmas = pragmas;
     let path = uri.to_file_path().ok();
     let (node_types, top_env, trait_env, type_errors) =
         elaborate_with_env_partial(&program, path.as_deref());
@@ -98,10 +116,15 @@ pub fn analyse(uri: &Url, src: &str) -> (Option<DocInfo>, Vec<Diagnostic>) {
         doc_comments,
         definitions,
     });
-    let diagnostics = type_errors
-        .into_iter()
-        .map(|e| error_to_diagnostic(LumeError::Type(e)))
+    let mut diagnostics: Vec<Diagnostic> = pragma_warnings
+        .iter()
+        .map(pragma_warning_to_diagnostic)
         .collect();
+    diagnostics.extend(
+        type_errors
+            .into_iter()
+            .map(|e| error_to_diagnostic(LumeError::Type(e))),
+    );
     (doc_info, diagnostics)
 }
 

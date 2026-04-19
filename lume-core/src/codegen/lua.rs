@@ -145,8 +145,8 @@ static STDLIB: &[(&str, &str, &str)] = &[
     // ── List ───────────────────────────────────────────────────────────────
     // All implemented with O(n) Lua loops so they are safe on large lists
     // regardless of LuaJIT's call-stack depth.
-    ("map", "map", concat!(
-        "local map = function(f) return function(xs)\n",
+    ("list_map", "list_map", concat!(
+        "local list_map = function(f) return function(xs)\n",
         "  local r = {}\n",
         "  for i = 1, #xs do r[i] = f(xs[i]) end\n",
         "  return r\n",

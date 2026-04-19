@@ -1,4 +1,4 @@
--- std/result.lume
+-- lume no_prelude
 -- Helpers for the built-in Result type.
 
 -- mapOk : (a -> b) -> Result a e -> Result b e

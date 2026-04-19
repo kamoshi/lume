@@ -1,3 +1,4 @@
+-- lume no_prelude
 -- Tests that using a HKT trait method on a non-matching type fails.
 -- Here we define Functor for Maybe but try to use it on a Num.
 

@@ -178,6 +178,7 @@ pub fn builtin_env(s: &mut Subst) -> (TypeEnv, VariantEnv) {
         vars,
         row_vars: vec![],
         constraints: vec![],
+        constraint_names: HashMap::new(),
         ty,
     };
 
@@ -207,6 +208,7 @@ pub fn builtin_env(s: &mut Subst) -> (TypeEnv, VariantEnv) {
             vars: vec![],
             row_vars: vec![rv],
             constraints: vec![],
+            constraint_names: HashMap::new(),
             ty: Ty::Func(
                 Box::new(Ty::Record(Row {
                     fields: vec![],
@@ -272,19 +274,6 @@ pub fn builtin_env(s: &mut Subst) -> (TypeEnv, VariantEnv) {
 
     // List functions - use vars v0, v1
     let list_a = Ty::mk_con("List", &[Ty::Var(v0)]);
-    let list_b = Ty::mk_con("List", &[Ty::Var(v1)]);
-
-    // map : (a -> b) -> List a -> List b
-    env.insert(
-        "map".into(),
-        mk_scheme(
-            vec![v0, v1],
-            Ty::Func(
-                Box::new(Ty::Func(Box::new(Ty::Var(v0)), Box::new(Ty::Var(v1)))),
-                Box::new(Ty::Func(Box::new(list_a.clone()), Box::new(list_b.clone()))),
-            ),
-        ),
-    );
 
     // filter : (a -> Bool) -> List a -> List a
     env.insert(
@@ -584,6 +573,38 @@ pub fn builtin_env(s: &mut Subst) -> (TypeEnv, VariantEnv) {
     (env, var_env)
 }
 
+/// Inject internal-only builtins into `env`.
+///
+/// These are efficient primitives that back the prelude's abstractions but
+/// are not directly visible to user code.  Injected when a module has the
+/// `-- lume internal` pragma.
+pub fn inject_internal_builtins(s: &mut Subst, env: &mut TypeEnv) {
+    let mk_scheme = |vars: Vec<TyVar>, ty: Ty| Scheme {
+        vars,
+        row_vars: vec![],
+        constraints: vec![],
+        constraint_names: HashMap::new(),
+        ty,
+    };
+
+    let v0 = s.fresh_var();
+    let v1 = s.fresh_var();
+    let list_a = Ty::mk_con("List", &[Ty::Var(v0)]);
+    let list_b = Ty::mk_con("List", &[Ty::Var(v1)]);
+
+    // list_map : (a -> b) -> List a -> List b
+    env.insert(
+        "list_map".into(),
+        mk_scheme(
+            vec![v0, v1],
+            Ty::Func(
+                Box::new(Ty::Func(Box::new(Ty::Var(v0)), Box::new(Ty::Var(v1)))),
+                Box::new(Ty::Func(Box::new(list_a), Box::new(list_b))),
+            ),
+        ),
+    );
+}
+
 /// Return type of `instantiate_variant`: (result_type, optional wraps type).
 type VariantInstance = (Ty, Option<Ty>);
 
@@ -840,29 +861,36 @@ impl Checker {
         vars.sort();
         let mut row_vars: Vec<TyVar> = ty_rvs.difference(&env_rvs).copied().collect();
         row_vars.sort();
+        let generalised: HashSet<TyVar> = ty_tvs.difference(&env_tvs).copied().collect();
+        let mut seen = std::collections::HashSet::new();
+        let constraints: Vec<(String, TyVar)> = self.constraint_map
+            .iter()
+            .filter_map(|(trait_name, fresh_var)| {
+                match self.subst.apply(&Ty::Var(*fresh_var)) {
+                    Ty::Var(v) if generalised.contains(&v) => {
+                        let pair = (trait_name.clone(), v);
+                        if seen.insert(pair.clone()) {
+                            Some(pair)
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                }
+            })
+            .collect();
+        // Use the trait definition's type param name for constrained variables
+        let mut constraint_names = HashMap::new();
+        for (trait_name, var) in &constraints {
+            if let Some(td) = self.trait_env.get(trait_name) {
+                constraint_names.insert(*var, td.type_param.clone());
+            }
+        }
         Scheme {
             vars,
             row_vars,
-            constraints: {
-                let generalised: HashSet<TyVar> = ty_tvs.difference(&env_tvs).copied().collect();
-                let mut seen = std::collections::HashSet::new();
-                self.constraint_map
-                    .iter()
-                    .filter_map(|(trait_name, fresh_var)| {
-                        match self.subst.apply(&Ty::Var(*fresh_var)) {
-                            Ty::Var(v) if generalised.contains(&v) => {
-                                let pair = (trait_name.clone(), v);
-                                if seen.insert(pair.clone()) {
-                                    Some(pair)
-                                } else {
-                                    None
-                                }
-                            }
-                            _ => None,
-                        }
-                    })
-                    .collect()
-            },
+            constraints,
+            constraint_names,
             ty,
         }
     }
@@ -1951,12 +1979,26 @@ impl Checker {
         base: Option<&Path>,
         loader: &mut crate::loader::Loader,
         env: &mut TypeEnv,
+        auto_prelude: bool,
     ) -> Vec<TypeErrorAt> {
         let base = match base {
             Some(b) => b,
             None => return vec![],
         };
         let mut errors = Vec::new();
+
+        if auto_prelude {
+            match loader.load("lume:prelude", base) {
+                Ok(prelude_exports) => {
+                    self.merge_module_exports_partial(&prelude_exports);
+                    let module_ty = self.instantiate(&prelude_exports.scheme);
+                    let module_ty = self.subst.apply(&module_ty);
+                    self.extract_all_fields(&module_ty, env);
+                }
+                Err(e) => errors.push(e),
+            }
+        }
+
         for u in uses {
             let exports = match loader.load(&u.path, base) {
                 Ok(e) => e,
@@ -2032,34 +2074,28 @@ impl Checker {
         base: Option<&Path>,
         loader: &mut crate::loader::Loader,
         env: &mut TypeEnv,
+        auto_prelude: bool,
     ) -> Result<(), TypeErrorAt> {
         let base = match base {
             Some(b) => b,
             None => return Ok(()),
         };
+
+        // Auto-import the prelude unless the module opts out via `-- lume no_prelude`.
+        if auto_prelude {
+            let prelude_exports = loader.load("lume:prelude", base)?;
+            self.merge_module_exports(&prelude_exports)?;
+            // Extract value-level bindings (e.g. `map`) from the prelude's
+            // export record into the environment.
+            let module_ty = self.instantiate(&prelude_exports.scheme);
+            let module_ty = self.subst.apply(&module_ty);
+            self.extract_all_fields(&module_ty, env);
+        }
+
         for u in uses {
             let exports = loader.load(&u.path, base)?;
+            self.merge_module_exports(&exports)?;
             let scheme = exports.scheme;
-            self.variant_env.merge(exports.variant_env);
-            self.trait_env.extend(exports.trait_env);
-            // Merge impl_env with duplicate detection: allow diamond imports
-            // (same source module) but reject independent duplicates.
-            for (key, source) in exports.impl_env {
-                if let Some(existing) = self.impl_env.get(&key) {
-                    if existing != &source {
-                        return Err(TypeErrorAt::new(
-                            TypeError::DuplicateImpl {
-                                trait_name: key.0,
-                                type_name: key.1,
-                            },
-                            crate::error::Span::default(),
-                        ));
-                    }
-                } else {
-                    self.impl_env.insert(key, source);
-                }
-            }
-            self.param_impl_env.extend(exports.param_impl_env);
 
             match &u.binding {
                 UseBinding::Ident(name, _, node_id) => {
@@ -2098,6 +2134,55 @@ impl Checker {
         Ok(())
     }
 
+    /// Merge a module's trait/impl environments into this checker.
+    fn merge_module_exports(
+        &mut self,
+        exports: &crate::loader::ModuleExports,
+    ) -> Result<(), TypeErrorAt> {
+        self.variant_env.merge(exports.variant_env.clone());
+        self.trait_env.extend(exports.trait_env.clone());
+        for (key, source) in &exports.impl_env {
+            if let Some(existing) = self.impl_env.get(key) {
+                if existing != source {
+                    return Err(TypeErrorAt::new(
+                        TypeError::DuplicateImpl {
+                            trait_name: key.0.clone(),
+                            type_name: key.1.clone(),
+                        },
+                        crate::error::Span::default(),
+                    ));
+                }
+            } else {
+                self.impl_env.insert(key.clone(), source.clone());
+            }
+        }
+        self.param_impl_env.extend(exports.param_impl_env.clone());
+        Ok(())
+    }
+
+    /// Merge a module's trait/impl environments into this checker (non-failing).
+    fn merge_module_exports_partial(
+        &mut self,
+        exports: &crate::loader::ModuleExports,
+    ) {
+        self.variant_env.merge(exports.variant_env.clone());
+        self.trait_env.extend(exports.trait_env.clone());
+        for (key, source) in &exports.impl_env {
+            self.impl_env.entry(key.clone()).or_insert_with(|| source.clone());
+        }
+        self.param_impl_env.extend(exports.param_impl_env.clone());
+    }
+
+    /// Extract all fields from a record type and insert them into `env`.
+    fn extract_all_fields(&mut self, record_ty: &Ty, env: &mut TypeEnv) {
+        if let Ty::Record(row) = record_ty {
+            for (name, ty) in &row.fields {
+                let s = self.generalise(env, ty);
+                env.insert(name.clone(), s);
+            }
+        }
+    }
+
     /// Type-check a full program, returning the type of the export expression.
     pub fn check_program(
         &mut self,
@@ -2106,7 +2191,7 @@ impl Checker {
         base: Option<&Path>,
         loader: &mut crate::loader::Loader,
     ) -> Result<Ty, TypeErrorAt> {
-        self.apply_imports(&program.uses, base, loader, &mut env)?;
+        self.apply_imports(&program.uses, base, loader, &mut env, !program.pragmas.no_prelude)?;
 
         // Validate trait definitions up front (method must reference type param),
         // but do NOT register them yet — traits are registered sequentially so
@@ -2481,7 +2566,10 @@ impl Checker {
 /// paths.  Pass `None` when checking an in-memory buffer (imports are skipped).
 pub fn check_program(program: &Program, path: Option<&Path>) -> Result<Ty, TypeErrorAt> {
     let mut subst = Subst::new();
-    let (env, mut var_env) = builtin_env(&mut subst);
+    let (mut env, mut var_env) = builtin_env(&mut subst);
+    if program.pragmas.internal {
+        inject_internal_builtins(&mut subst, &mut env);
+    }
     let prog_vars = build_variant_env(&program.items);
     var_env.merge(prog_vars);
     let mut checker = Checker::with_subst(var_env, subst);
@@ -2846,14 +2934,17 @@ pub fn elaborate_bindings(
 ) -> Result<(Vec<BindingInfo>, Ty), TypeErrorAt> {
     let mut subst = Subst::new();
     let (env, mut var_env) = builtin_env(&mut subst);
+    let mut env = env;
+    if program.pragmas.internal {
+        inject_internal_builtins(&mut subst, &mut env);
+    }
     let prog_vars = build_variant_env(&program.items);
     var_env.merge(prog_vars);
     let mut checker = Checker::with_subst(var_env, subst);
     checker.arity_env = build_arity_env(&program.items);
     let mut loader = crate::loader::Loader::new();
-    let mut env = env;
 
-    checker.apply_imports(&program.uses, path, &mut loader, &mut env)?;
+    checker.apply_imports(&program.uses, path, &mut loader, &mut env, !program.pragmas.no_prelude)?;
 
     let mut bindings = Vec::new();
     for item in &program.items {
@@ -2953,14 +3044,17 @@ pub fn elaborate(
 ) -> Result<(HashMap<NodeId, Ty>, Ty, HashMap<NodeId, (String, String)>), TypeErrorAt> {
     let mut subst = Subst::new();
     let (env, mut var_env) = builtin_env(&mut subst);
+    let mut env = env;
+    if program.pragmas.internal {
+        inject_internal_builtins(&mut subst, &mut env);
+    }
     let prog_vars = build_variant_env(&program.items);
     var_env.merge(prog_vars);
     let mut checker = Checker::with_subst(var_env, subst);
     checker.arity_env = build_arity_env(&program.items);
     let mut loader = crate::loader::Loader::new();
-    let mut env = env;
 
-    checker.apply_imports(&program.uses, path, &mut loader, &mut env)?;
+    checker.apply_imports(&program.uses, path, &mut loader, &mut env, !program.pragmas.no_prelude)?;
 
     for item in &program.items {
         match item {
@@ -3015,14 +3109,17 @@ pub fn elaborate_with_env(
 ) -> Result<(HashMap<NodeId, Ty>, TypeEnv, Ty, HashMap<NodeId, (String, String)>), TypeErrorAt> {
     let mut subst = Subst::new();
     let (base_env, mut var_env) = builtin_env(&mut subst);
+    let mut env = base_env;
+    if program.pragmas.internal {
+        inject_internal_builtins(&mut subst, &mut env);
+    }
     let prog_vars = build_variant_env(&program.items);
     var_env.merge(prog_vars);
     let mut checker = Checker::with_subst(var_env, subst);
     checker.arity_env = build_arity_env(&program.items);
     let mut loader = crate::loader::Loader::new();
-    let mut env = base_env;
 
-    checker.apply_imports(&program.uses, path, &mut loader, &mut env)?;
+    checker.apply_imports(&program.uses, path, &mut loader, &mut env, !program.pragmas.no_prelude)?;
 
     // Validate trait definitions up front (method must reference type param),
     // but do NOT register them yet — traits are registered sequentially.
@@ -3119,14 +3216,17 @@ pub fn elaborate_with_env_partial(
 ) {
     let mut subst = Subst::new();
     let (base_env, mut var_env) = builtin_env(&mut subst);
+    let mut env = base_env;
+    if program.pragmas.internal {
+        inject_internal_builtins(&mut subst, &mut env);
+    }
     let prog_vars = build_variant_env(&program.items);
     var_env.merge(prog_vars);
     let mut checker = Checker::with_subst(var_env, subst);
     checker.arity_env = build_arity_env(&program.items);
     let mut loader = crate::loader::Loader::new();
-    let mut env = base_env;
 
-    let mut errors = checker.apply_imports_partial(&program.uses, path, &mut loader, &mut env);
+    let mut errors = checker.apply_imports_partial(&program.uses, path, &mut loader, &mut env, !program.pragmas.no_prelude);
 
     // Validate trait definitions up front (method must reference type param),
     // but do NOT register them yet — traits are registered sequentially.

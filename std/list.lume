@@ -1,4 +1,4 @@
--- std/list.lume
+-- lume no_prelude
 -- List operations expressible in Lume itself.
 --
 -- map, filter, reverse, take, sort, sortBy are NOT here: they build new lists

@@ -11,7 +11,7 @@ use std::sync::{Arc, RwLock};
 use lume_core::bundle;
 use lume_core::codegen;
 
-use compile::lower_bundle;
+use compile::{compile_prelude_deps, lower_bundle};
 use eval::{load_file_into_repl, EvalAction, SHOW_HELPER};
 use helper::{refresh_completions, LumeHelper};
 
@@ -56,6 +56,20 @@ pub fn run_repl(file: Option<&str>) {
     let mut defs = String::new();
     let base_dir: PathBuf = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let mut loaded_modules: HashMap<PathBuf, String> = HashMap::new();
+
+    // Auto-load prelude (Functor, map, etc.) into the Lua runtime.
+    match compile_prelude_deps(&loaded_modules) {
+        Ok(deps) => {
+            if !deps.lua_src.is_empty() {
+                lua.load(&deps.lua_src).set_name("prelude_deps").exec()
+                    .expect("failed to load prelude deps");
+                for (canonical, var_name) in deps.mods {
+                    loaded_modules.insert(canonical, var_name);
+                }
+            }
+        }
+        Err(e) => eprintln!("warning: prelude load failed: {e}"),
+    }
 
     if let Some(path) = file {
         match load_file_into_repl(path, &lua, &repl_env, &mut loaded_modules) {
@@ -132,6 +146,20 @@ pub fn run_repl_stdin(file: Option<&str>) {
     let mut defs = String::new();
     let base_dir: PathBuf = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let mut loaded_modules: HashMap<PathBuf, String> = HashMap::new();
+
+    // Auto-load prelude (Functor, map, etc.) into the Lua runtime.
+    match compile_prelude_deps(&loaded_modules) {
+        Ok(deps) => {
+            if !deps.lua_src.is_empty() {
+                lua.load(&deps.lua_src).set_name("prelude_deps").exec()
+                    .expect("failed to load prelude deps");
+                for (canonical, var_name) in deps.mods {
+                    loaded_modules.insert(canonical, var_name);
+                }
+            }
+        }
+        Err(e) => eprintln!("warning: prelude load failed: {e}"),
+    }
 
     if let Some(path) = file {
         match load_file_into_repl(path, &lua, &repl_env, &mut loaded_modules) {

@@ -1,4 +1,4 @@
--- std/maybe.lume
+-- lume no_prelude
 -- Helpers for the built-in Maybe type.
 
 -- withDefault : a -> Maybe a -> a

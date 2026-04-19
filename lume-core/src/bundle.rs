@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::ast::Program;
-use crate::loader::{resolve_path, stdlib_path, stdlib_source, Loader};
+use crate::loader::{prelude_path, resolve_path, stdlib_path, stdlib_source, Loader};
 
 pub struct BundleModule {
     /// Canonical (absolute) path of this module.
@@ -87,6 +87,11 @@ fn collect_inner(
     };
 
     let program = Loader::parse(src)?;
+
+    // Auto-include the prelude unless the module opts out via `-- lume no_prelude`.
+    if !program.pragmas.no_prelude {
+        collect_inner(&prelude_path(), visited, order, stems)?;
+    }
 
     // Recurse into dependencies first (post-order).
     // For stdlib modules the synthetic key is used as the base; they can't

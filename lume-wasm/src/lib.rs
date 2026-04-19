@@ -7,7 +7,7 @@ use lume_core::{
     codegen,
     error::Span,
     lexer::Lexer,
-    loader::{stdlib_path, stdlib_source, use_path_context, Loader, UsePathKind, STDLIB_MODULES},
+    loader::{parse_pragmas, stdlib_path, stdlib_source, use_path_context, Loader, UsePathKind, STDLIB_MODULES},
     lower,
     parser,
     types::{self, infer::builtin_env, infer::elaborate_with_env_partial, Ty},
@@ -449,7 +449,7 @@ pub fn lint(src: &str) -> String {
     };
 
     // Parse
-    let program = match parser::parse_program(&tokens) {
+    let mut program = match parser::parse_program(&tokens) {
         Err(e) => {
             let (from, to) = span_to_range(src, &e.span);
             let to = to.max(from + 1);
@@ -457,6 +457,7 @@ pub fn lint(src: &str) -> String {
         }
         Ok(p) => p,
     };
+    program.pragmas = parse_pragmas(src).0;
 
     // Type-check
     match types::infer::check_program(&program, Some(Path::new(WASM_ENTRY_PATH))) {
@@ -487,7 +488,8 @@ fn ident_start_at(bytes: &[u8], end: usize) -> usize {
 /// Always succeeds - type errors are ignored so completions work even with errors.
 fn try_elaborate_env(src: &str) -> Option<Vec<(String, String)>> {
     let tokens = Lexer::new(src).tokenize().ok()?;
-    let program = parser::parse_program(&tokens).ok()?;
+    let mut program = parser::parse_program(&tokens).ok()?;
+    program.pragmas = parse_pragmas(src).0;
     let (_, env, _, _) = elaborate_with_env_partial(&program, Some(Path::new(WASM_ENTRY_PATH)));
     Some(
         env.iter()
@@ -622,7 +624,8 @@ fn field_completions(src: &str, dot_pos: usize, cursor: usize, prefix: &str) -> 
 
     let get_record_fields = |s: &str| -> Option<Vec<(String, String)>> {
         let tokens = Lexer::new(s).tokenize().ok()?;
-        let program = parser::parse_program(&tokens).ok()?;
+        let mut program = parser::parse_program(&tokens).ok()?;
+        program.pragmas = parse_pragmas(s).0;
         let (_, env, _, _) = elaborate_with_env_partial(&program, Some(Path::new(WASM_ENTRY_PATH)));
         let scheme = env.lookup(record_name)?;
         if let Ty::Record(row) = &scheme.ty {
@@ -650,7 +653,8 @@ fn field_completions(src: &str, dot_pos: usize, cursor: usize, prefix: &str) -> 
 #[wasm_bindgen]
 pub fn type_at(src: &str, offset: usize) -> Option<String> {
     let tokens = Lexer::new(src).tokenize().ok()?;
-    let program = parser::parse_program(&tokens).ok()?;
+    let mut program = parser::parse_program(&tokens).ok()?;
+    program.pragmas = parse_pragmas(src).0;
     let (node_types, _, _, _) = elaborate_with_env_partial(&program, Some(Path::new(WASM_ENTRY_PATH)));
 
     let mut spans: Vec<(usize, usize, NodeId)> = Vec::new();

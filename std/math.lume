@@ -1,4 +1,4 @@
--- std/math.lume
+-- lume no_prelude
 -- Number theory and math utilities.
 
 -- gcd : Num -> Num -> Num  (Euclidean algorithm)

@@ -226,6 +226,44 @@ pub(crate) fn collect_new_dep_modules(
     Ok(NewDeps { mods, lua_src })
 }
 
+/// Compile and return the prelude (and its transitive deps) so the REPL can
+/// load them into the Lua runtime at startup.
+pub(crate) fn compile_prelude_deps(
+    loaded: &HashMap<PathBuf, String>,
+) -> Result<NewDeps, String> {
+    let prelude_canonical = lume_core::loader::prelude_path();
+    let dep_bundle = bundle::collect_dep(&prelude_canonical)?;
+
+    let has_new = dep_bundle.iter().any(|m| !loaded.contains_key(&m.canonical));
+    if !has_new {
+        return Ok(NewDeps { mods: vec![], lua_src: String::new() });
+    }
+
+    let (ir_modules, variant_env) =
+        lower_bundle(&dep_bundle).ok_or_else(|| "prelude compilation failed".to_string())?;
+
+    let mut module_vars: HashMap<PathBuf, String> = loaded.clone();
+    for ir_mod in &ir_modules {
+        module_vars
+            .entry(ir_mod.canonical.clone())
+            .or_insert_with(|| ir_mod.var.clone());
+    }
+
+    let new_ir_mods: Vec<&codegen::IrModule> = ir_modules
+        .iter()
+        .filter(|m| !loaded.contains_key(&m.canonical))
+        .collect();
+
+    let mods: Vec<(PathBuf, String)> = new_ir_mods
+        .iter()
+        .map(|m| (m.canonical.clone(), m.var.clone()))
+        .collect();
+
+    let lua_src = codegen::lua::emit_dep_modules(&new_ir_mods, module_vars, variant_env);
+
+    Ok(NewDeps { mods, lua_src })
+}
+
 /// Compile a new REPL input to Lua.
 ///
 /// `defs` is the accumulated source from previous evals (used for type
@@ -306,6 +344,36 @@ pub(crate) fn compile_repl(
         let (_, builtin_variants) = types::infer::builtin_env(&mut scratch);
         for (name, info) in builtin_variants.all() {
             global.variants.insert(name.clone(), info.clone());
+        }
+    }
+
+    // Inject prelude traits/impls so the lowerer can resolve Functor etc.
+    if let Ok(prelude_bundle) = bundle::collect_dep(&lume_core::loader::prelude_path()) {
+        for m in &prelude_bundle {
+            for item in &m.program.items {
+                match item {
+                    TopItem::TraitDef(td) => {
+                        global.traits.insert(td.name.clone(), td.clone());
+                    }
+                    TopItem::ImplDef(id) => {
+                        let dict = lower::dict_name(&id.trait_name, &id.type_name);
+                        let var = Some(m.var.clone());
+                        if id.impl_constraints.is_empty() {
+                            global.impls.entry((id.trait_name.clone(), id.type_name.clone()))
+                                .or_insert(lower::ImplEntry { module_var: var, dict_ident: dict });
+                        } else {
+                            global.param_impls.push(lower::ParamImplEntry {
+                                trait_name: id.trait_name.clone(),
+                                target_type: id.target_type.clone(),
+                                constraints: id.impl_constraints.clone(),
+                                module_var: var,
+                                dict_ident: dict,
+                            });
+                        }
+                    }
+                    _ => {}
+                }
+            }
         }
     }
 

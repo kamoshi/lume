@@ -45,6 +45,7 @@ macro_rules! ty {
                 vars: vec![$($v),*],
                 row_vars: vec![],
                 constraints: vec![],
+                constraint_names: std::collections::HashMap::new(),
                 ty: type_def!($($body)+),
             }
         })

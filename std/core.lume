@@ -1,0 +1,20 @@
+-- lume internal no_prelude
+-- Core abstractions: Functor, map, and their standard instances.
+
+trait Functor f {
+  let map : (a -> b) -> f a -> f b
+}
+
+use Functor in List {
+  let map = list_map
+}
+
+use Functor in Maybe {
+  let map = f ->
+    | None -> None
+    | Some x -> Some (f x)
+}
+
+-- let map = Functor.map
+
+-- pub { map }
