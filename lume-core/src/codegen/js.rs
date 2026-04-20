@@ -110,6 +110,16 @@ fn js_ident(name: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
+/// Check if a name is a valid JS identifier (for field access with dot notation).
+fn is_js_ident(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' || c == '$' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+}
+
 pub fn emit(bundle: &[IrModule], variant_env: VariantEnv) -> String {
     let module_vars: HashMap<PathBuf, String> = bundle
         .iter()
@@ -315,15 +325,33 @@ impl Emitter {
             ir::Expr::Num(n) => self.emit_number(*n),
             ir::Expr::Str(s) => self.emit_string(s),
             ir::Expr::Bool(b) => self.out.push_str(if *b { "true" } else { "false" }),
-            ir::Expr::List(items) => {
-                self.out.push('[');
-                for (i, item) in items.iter().enumerate() {
-                    if i > 0 {
-                        self.out.push_str(", ");
+            ir::Expr::List { bases, elems } => {
+                if bases.is_empty() {
+                    self.out.push('[');
+                    for (i, item) in elems.iter().enumerate() {
+                        if i > 0 {
+                            self.out.push_str(", ");
+                        }
+                        self.emit_expr(item);
                     }
-                    self.emit_expr(item);
+                    self.out.push(']');
+                } else {
+                    // Use native JS spread: [...base1, ...base2, elem, ...]
+                    self.out.push('[');
+                    let mut first = true;
+                    for base in bases {
+                        if !first { self.out.push_str(", "); }
+                        first = false;
+                        self.out.push_str("...");
+                        self.emit_expr(base);
+                    }
+                    for e in elems {
+                        if !first { self.out.push_str(", "); }
+                        first = false;
+                        self.emit_expr(e);
+                    }
+                    self.out.push(']');
                 }
-                self.out.push(']');
             }
             ir::Expr::Var(name) => {
                 if JS_STDLIB.iter().any(|(n, _, _)| *n == name.as_str()) {
@@ -335,20 +363,27 @@ impl Emitter {
                 }
                 self.out.push_str(&js_ident(name));
             }
-            ir::Expr::Record { base, fields } => {
+            ir::Expr::Record { bases, fields } => {
                 self.out.push_str("{ ");
                 let mut first = true;
-                if let Some(base_expr) = base {
-                    self.out.push_str("...");
-                    self.emit_expr(base_expr);
+                for base in bases {
+                    if !first {
+                        self.out.push_str(", ");
+                    }
                     first = false;
+                    self.out.push_str("...");
+                    self.emit_expr(base);
                 }
                 for (name, val) in fields {
                     if !first {
                         self.out.push_str(", ");
                     }
                     first = false;
-                    self.out.push_str(name);
+                    if is_js_ident(name) {
+                        self.out.push_str(name);
+                    } else {
+                        self.out.push_str(&format!("\"{}\"", name));
+                    }
                     self.out.push_str(": ");
                     self.emit_expr(val);
                 }
@@ -356,8 +391,12 @@ impl Emitter {
             }
             ir::Expr::Field(record, field) => {
                 self.emit_access_target(record);
-                self.out.push('.');
-                self.out.push_str(field);
+                if is_js_ident(field) {
+                    self.out.push('.');
+                    self.out.push_str(field);
+                } else {
+                    self.out.push_str(&format!("[\"{}\"]", field));
+                }
             }
             ir::Expr::Tag(name, payload) => match payload {
                 None => {

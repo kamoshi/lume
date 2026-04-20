@@ -1,0 +1,19 @@
+-- Basic formatting test
+-- Comments should be preserved
+
+let x = 42
+let y = "hello"
+let z = true
+
+let add = a -> b -> a + b
+
+let result = add x 3
+
+
+pub {
+  x,
+  y,
+  z,
+  add,
+  result,
+}

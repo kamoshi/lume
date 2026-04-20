@@ -1,0 +1,12 @@
+-- Tests that a guarded match without a non-guarded catch-all is rejected.
+-- The guard on Circle might fail at runtime, so it doesn't cover Circle.
+
+type Shape =
+  | Circle Num
+  | Rect Num
+
+let f : Shape -> Text =
+  | Circle r if r > 5 -> "big"
+  | Rect _ -> "rect"
+
+pub {}

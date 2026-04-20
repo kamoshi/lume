@@ -1,0 +1,12 @@
+-- Tests that trait calls in the export expression are properly checked.
+-- This should error because Show has no impl for Bool.
+
+trait Show a {
+  let show : a -> Text
+}
+
+use Show in Num {
+  let show = n -> "num"
+}
+
+pub { result: Show.show true }

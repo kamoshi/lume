@@ -23,7 +23,9 @@
 !lume-core/
 !lume-core/Cargo.toml
 !lume-core/src/
-!lume-core/src/**
+!lume-core/src/**/
+!lume-core/src/**/*.rs
+!lume-core/src/**/*.typ
 
 !lume-repl/
 !lume-repl/Cargo.toml
@@ -53,6 +55,8 @@
 !tests/repl.toml
 !tests/lume/
 !tests/lume/**.lume
+!tests/fmt/
+!tests/fmt/**.lume
 
 !tools/
 !tools/tree-sitter-lume

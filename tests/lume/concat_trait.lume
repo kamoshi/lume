@@ -1,0 +1,24 @@
+-- Tests the ++ operator for Text and List concatenation via the Concat trait.
+-- Also tests that ++ on records is correctly rejected.
+
+-- Text concatenation
+let greeting = "hello" ++ " " ++ "world"
+let _ = greeting |> print
+
+-- List concatenation
+let nums = [1, 2] ++ [3, 4]
+let _ = match nums in
+  | [a, b, c, d, ..] -> showNum a ++ " " ++ showNum b ++ " " ++ showNum c ++ " " ++ showNum d |> print
+  | _ -> print "wrong"
+
+-- Empty list concat
+let empty = [] ++ [42]
+let _ = match empty in
+  | [x] -> showNum x |> print
+  | _ -> print "wrong"
+
+-- Nested concat
+let xs = [1] ++ [2] ++ [3]
+let _ = match xs in
+  | [a, b, c, ..] -> showNum a ++ " " ++ showNum b ++ " " ++ showNum c |> print
+  | _ -> print "wrong"

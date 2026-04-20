@@ -3,17 +3,31 @@
 -- containing at least a `name` field, regardless of what else is in it.
 use math = "./math.lume"
 
+
+
 let getName = { name, .. } -> name
 
 let alice = { name: "Alice", age: 30, role: "admin" }
-let bot   = { name: "R2D2", online: true, version: 3 }
+let bot = { name: "R2D2", online: true, version: 3 }
 
 let aliceName = getName alice
-let botName   = getName bot
+let botName = getName bot
+
+let aaa =
+  let x = 1 in
+  let y = 2 in
+  let z = x + y in
+  z
+
+let lol = match 2 in
+  | 1 -> "lol"
+  | 2 -> "lol"
+  | _ -> "hmm"
 
 -- Record update: alice starts without a `score` field.
 -- The updated record carries all of alice's original fields plus `score`.
-let aliceWithScore = { alice | score: 95 }
+
+let aliceWithScore = { ..alice, score: 95 }
 
 -- This function only requires a `score` field - it works on any record that has one.
 let getScore = { score, .. } -> score
@@ -22,4 +36,13 @@ let aliceScore = getScore aliceWithScore
 
 let {} = aliceScore |> math.pow2 |> showNum |> print
 
-pub { getName, aliceName, botName, getScore, aliceWithScore, aliceScore }
+
+
+pub {
+  getName,
+  aliceName,
+  botName,
+  getScore,
+  aliceWithScore,
+  aliceScore,
+}

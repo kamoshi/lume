@@ -1,0 +1,7 @@
+-- Tests that mapErr is properly typed with fresh type variables.
+-- This should type-check without errors (verifies no TyVar collision).
+
+let result = Ok 42
+let mapped = mapErr (e -> e ++ "!") result
+
+pub { mapped }

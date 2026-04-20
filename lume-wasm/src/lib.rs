@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use lume_core::{
-    ast::{Expr, ExprKind, MatchArm, NodeId, Pattern, Program, TopItem, Type},
+    ast::{Expr, ExprKind, ListEntry, MatchArm, NodeId, Pattern, Program, RecordEntry, TopItem, Type},
     bundle::BundleModule,
     codegen,
     error::Span,
@@ -63,15 +63,19 @@ fn push_span(src: &str, span: &Span, id: NodeId, out: &mut Vec<(usize, usize, No
 fn collect_expr(src: &str, expr: &Expr, out: &mut Vec<(usize, usize, NodeId)>) {
     push_span(src, &expr.span, expr.id, out);
     match &expr.kind {
-        ExprKind::List(items) => items.iter().for_each(|e| collect_expr(src, e, out)),
-        ExprKind::Record { base, fields, .. } => {
-            if let Some(b) = base {
-                collect_expr(src, b, out);
-            }
-            for f in fields {
-                push_span(src, &f.name_span, f.name_node_id, out);
-                if let Some(v) = &f.value {
-                    collect_expr(src, v, out);
+        ExprKind::List { entries } => entries.iter().for_each(|entry| match entry {
+            ListEntry::Elem(e) | ListEntry::Spread(e) => collect_expr(src, e, out),
+        }),
+        ExprKind::Record { entries } => {
+            for entry in entries {
+                match entry {
+                    RecordEntry::Spread(e) => collect_expr(src, e, out),
+                    RecordEntry::Field(f) => {
+                        push_span(src, &f.name_span, f.name_node_id, out);
+                        if let Some(v) = &f.value {
+                            collect_expr(src, v, out);
+                        }
+                    }
                 }
             }
         }
@@ -372,11 +376,11 @@ fn lower_bundle(
         };
 
         let module_path = Some(m.canonical.as_path());
-        let (node_types, type_env, resolved_trait_methods) =
+        let (node_types, type_env, resolved_trait_methods, resolved_op_types) =
             types::infer::elaborate_with_env(&m.program, module_path)
-                .map(|(nt, env, _, rtm)| (nt, env, rtm))
+                .map(|(nt, env, _, rtm, rot)| (nt, env, rtm, rot))
                 .map_err(|e| format!("{}: type error: {e}", m.canonical.display()))?;
-        let ir_mod = lower::lower(m.program.clone(), &node_types, &type_env, &local_global, &resolved_trait_methods);
+        let ir_mod = lower::lower(m.program.clone(), &node_types, &type_env, &local_global, &resolved_trait_methods, &resolved_op_types);
         ir_modules.push(codegen::IrModule {
             canonical: m.canonical.clone(),
             module: ir_mod,
@@ -506,7 +510,7 @@ fn try_elaborate_env(src: &str) -> Option<Vec<(String, String)>> {
     let tokens = Lexer::new(src).tokenize().ok()?;
     let mut program = parser::parse_program(&tokens).ok()?;
     program.pragmas = parse_pragmas(src).0;
-    let (_, env, _, _, _) = elaborate_with_env_partial(&program, Some(Path::new(WASM_ENTRY_PATH)));
+    let (_, env, _, _, _, _) = elaborate_with_env_partial(&program, Some(Path::new(WASM_ENTRY_PATH)));
     Some(
         env.iter()
             .map(|(name, scheme): (&String, &types::Scheme)| (name.clone(), scheme.ty.to_string()))
@@ -642,7 +646,7 @@ fn field_completions(src: &str, dot_pos: usize, cursor: usize, prefix: &str) -> 
         let tokens = Lexer::new(s).tokenize().ok()?;
         let mut program = parser::parse_program(&tokens).ok()?;
         program.pragmas = parse_pragmas(s).0;
-        let (_, env, _, _, _) = elaborate_with_env_partial(&program, Some(Path::new(WASM_ENTRY_PATH)));
+        let (_, env, _, _, _, _) = elaborate_with_env_partial(&program, Some(Path::new(WASM_ENTRY_PATH)));
         let scheme = env.lookup(record_name)?;
         if let Ty::Record(row) = &scheme.ty {
             Some(
@@ -694,10 +698,16 @@ fn collect_trait_calls(program: &Program) -> HashMap<NodeId, (String, String)> {
             out.insert(expr.id, (trait_name.clone(), method_name.clone()));
         }
         match &expr.kind {
-            ExprKind::List(es) => es.iter().for_each(|e| walk(e, out)),
-            ExprKind::Record { base, fields, .. } => {
-                if let Some(b) = base { walk(b, out); }
-                for f in fields { if let Some(v) = &f.value { walk(v, out); } }
+            ExprKind::List { entries } => entries.iter().for_each(|entry| match entry {
+                ListEntry::Elem(e) | ListEntry::Spread(e) => walk(e, out),
+            }),
+            ExprKind::Record { entries } => {
+                for entry in entries {
+                    match entry {
+                        RecordEntry::Spread(e) => walk(e, out),
+                        RecordEntry::Field(f) => { if let Some(v) = &f.value { walk(v, out); } }
+                    }
+                }
             }
             ExprKind::FieldAccess { record, .. } => walk(record, out),
             ExprKind::Variant { payload: Some(p), .. } => walk(p, out),
@@ -776,7 +786,7 @@ pub fn type_at(src: &str, offset: usize) -> Option<String> {
     let tokens = Lexer::new(src).tokenize().ok()?;
     let mut program = parser::parse_program(&tokens).ok()?;
     program.pragmas = parse_pragmas(src).0;
-    let (node_types, top_env, trait_env, _, var_name_hints) =
+    let (node_types, top_env, trait_env, _, var_name_hints, _) =
         elaborate_with_env_partial(&program, Some(Path::new(WASM_ENTRY_PATH)));
 
     let trait_calls = collect_trait_calls(&program);

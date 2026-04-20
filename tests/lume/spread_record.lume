@@ -1,0 +1,26 @@
+-- Tests record spread syntax
+
+let base = { x: 1, y: 2 }
+
+-- Basic spread: copy all fields from base, override y
+let r1 = { ..base, y: 10 }
+let _ = r1.x |> showNum |> print
+let _ = r1.y |> showNum |> print
+
+-- Spread with new field
+let r2 = { ..base, z: 3 }
+let _ = r2.x |> showNum |> print
+let _ = r2.z |> showNum |> print
+
+-- Multiple spreads: later shadows earlier
+let extra = { y: 99, z: 42 }
+let r3 = { ..base, ..extra }
+let _ = r3.x |> showNum |> print
+let _ = r3.y |> showNum |> print
+let _ = r3.z |> showNum |> print
+
+-- Fields interleaved with spreads
+let r4 = { a: 0, ..base, b: 9 }
+let _ = r4.a |> showNum |> print
+let _ = r4.x |> showNum |> print
+let _ = r4.b |> showNum |> print

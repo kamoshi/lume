@@ -1,0 +1,21 @@
+-- lume internal no_prelude
+-- Tests defining and using arbitrary user-defined operators.
+
+let (++) = concat_text
+
+-- Define a custom "surround" operator
+let (<>) = a -> b -> a ++ b ++ a
+
+let _ = "(" <> "hello" |> print
+let _ = "*" <> "wow" |> print
+
+-- Define a custom "append-line" operator
+let (<+>) = a -> b -> a ++ "\n" ++ b
+
+let block = "first" <+> "second" <+> "third"
+let _ = block |> print
+
+-- Operators as higher-order values via let binding
+let apply_op = op -> x -> y -> op x y
+let result = apply_op (<>) "!" "ok"
+let _ = result |> print

@@ -50,7 +50,13 @@ pub enum Expr {
     Num(f64),
     Str(String),
     Bool(bool),
-    List(Vec<Expr>),
+    /// `[1, 2, 3]` or with spreads lowered to bases + trailing elems.
+    List {
+        /// Spread lists to concatenate, merged left-to-right.
+        bases: Vec<Expr>,
+        /// Trailing elements appended after all bases.
+        elems: Vec<Expr>,
+    },
 
     // Names
     Var(String),
@@ -61,7 +67,10 @@ pub enum Expr {
 
     // Records
     Record {
-        base: Option<Box<Expr>>,
+        /// Base records to extend from, merged left-to-right.
+        /// Each base contributes all its fields; later bases shadow earlier ones.
+        bases: Vec<Expr>,
+        /// Explicit fields applied on top of all bases.
         fields: Vec<(String, Expr)>,
     },
     Field(Box<Expr>, String),

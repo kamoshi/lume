@@ -1,0 +1,17 @@
+-- Tests that { ..r, x: 1 } produces a guaranteed x field (sound direction).
+-- Also tests that field-after-spread is properly typed.
+
+let base = { y: 2, z: 3 }
+
+-- x: 1 comes AFTER the spread — it's guaranteed to be Num.
+let r1 = { ..base, x: 1 }
+let _ = r1.x |> showNum |> print
+let _ = r1.y |> showNum |> print
+
+-- Polymorphic version: the explicit field is guaranteed.
+let withName = r -> { ..r, name: "hello" }
+let result = withName { age: 30 }
+let _ = result.name |> print
+let _ = result.age |> showNum |> print
+
+pub {}

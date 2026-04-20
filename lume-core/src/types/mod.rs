@@ -199,18 +199,19 @@ impl Subst {
     //  • Normalisation before insertion: we apply the current substitution to
     //    `ty` first so that the stored value is as ground as possible.  This
     //    keeps chains short and prevents false cycles from path compression.
-    pub fn bind_ty(&mut self, v: TyVar, ty: Ty) {
+    pub fn bind_ty(&mut self, v: TyVar, ty: Ty) -> Result<(), TypeError> {
         // Normalize through the current substitution so chains that already
         // lead back to `v` are collapsed before we insert anything.
         let ty = self.apply(&ty);
         if ty == Ty::Var(v) {
-            return; // self-loop / already equivalent - nothing to do
+            return Ok(()); // self-loop / already equivalent - nothing to do
         }
         if let Some(existing) = self.tys.get(&v).cloned() {
             // v is already solved; the two solutions must agree.
-            let _ = unify(self, existing, ty);
+            unify(self, existing, ty)
         } else {
             self.tys.insert(v, ty);
+            Ok(())
         }
     }
 
@@ -218,15 +219,16 @@ impl Subst {
     //
     // A row self-loop looks like: Open(v) with no extra fields and tail=Open(v),
     // i.e. the row variable points back to itself with nothing new.
-    pub fn bind_row(&mut self, v: TyVar, row: Row) {
+    pub fn bind_row(&mut self, v: TyVar, row: Row) -> Result<(), TypeError> {
         let row = self.apply_row(&row);
         if row.tail == RowTail::Open(v) && row.fields.is_empty() {
-            return; // self-loop
+            return Ok(()); // self-loop
         }
         if let Some(existing) = self.rows.get(&v).cloned() {
-            let _ = unify_rows(self, existing, row);
+            unify_rows(self, existing, row)
         } else {
             self.rows.insert(v, row);
+            Ok(())
         }
     }
 
@@ -431,15 +433,13 @@ pub fn unify(s: &mut Subst, t1: Ty, t2: Ty) -> Result<(), TypeError> {
             if ty_occurs(v, &t) {
                 return Err(TypeError::OccursCheck(v));
             }
-            s.bind_ty(v, t);
-            Ok(())
+            s.bind_ty(v, t)
         }
         (t, Ty::Var(v)) => {
             if ty_occurs(v, &t) {
                 return Err(TypeError::OccursCheck(v));
             }
-            s.bind_ty(v, t);
-            Ok(())
+            s.bind_ty(v, t)
         }
 
         // Functions unify contra-co-variantly: param types must match and
@@ -543,7 +543,7 @@ fn unify_rows(s: &mut Subst, r1: Row, r2: Row) -> Result<(), TypeError> {
             if row_var_occurs(v1, &new_row) {
                 return Err(TypeError::OccursCheck(v1));
             }
-            s.bind_row(v1, new_row);
+            s.bind_row(v1, new_row)?;
         }
 
         (RowTail::Closed, RowTail::Open(v2)) => {
@@ -558,7 +558,7 @@ fn unify_rows(s: &mut Subst, r1: Row, r2: Row) -> Result<(), TypeError> {
             if row_var_occurs(v2, &new_row) {
                 return Err(TypeError::OccursCheck(v2));
             }
-            s.bind_row(v2, new_row);
+            s.bind_row(v2, new_row)?;
         }
 
         (RowTail::Open(v1), RowTail::Open(v2)) => {
@@ -582,8 +582,8 @@ fn unify_rows(s: &mut Subst, r1: Row, r2: Row) -> Result<(), TypeError> {
                 if row_var_occurs(v1, &r1_ext) || row_var_occurs(v2, &r2_ext) {
                     return Err(TypeError::OccursCheck(v1));
                 }
-                s.bind_row(v1, r1_ext);
-                s.bind_row(v2, r2_ext);
+                s.bind_row(v1, r1_ext)?;
+                s.bind_row(v2, r2_ext)?;
             }
         }
     }

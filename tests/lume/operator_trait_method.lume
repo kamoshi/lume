@@ -1,0 +1,36 @@
+-- lume internal no_prelude
+-- Tests defining operators as trait methods and resolving them through traits.
+
+let (++) = concat_text
+
+trait Mappable f {
+  let (<$>) : (a -> b) -> f a -> f b
+}
+
+use Mappable in List {
+  let (<$>) = f -> xs -> list_map f xs
+}
+
+use Mappable in Maybe {
+  let (<$>) = f ->
+    | None -> None
+    | Some x -> Some (f x)
+}
+
+-- Use <$> as infix operator (resolved through Mappable trait)
+let nums = (x -> x + 10) <$> [1, 2, 3]
+let _ = match nums in
+  | [a, b, c, ..] -> showNum a ++ " " ++ showNum b ++ " " ++ showNum c |> print
+  | _ -> print "wrong"
+
+let val = (x -> x * 2) <$> Some 21
+let _ = match val in
+  | Some n -> showNum n |> print
+  | None -> print "none"
+
+-- Use <$> as a first-class value via (op) syntax
+let mapList = (<$>)
+let doubled = mapList (x -> x * 2) [5, 6, 7]
+let _ = match doubled in
+  | [a, b, c, ..] -> showNum a ++ " " ++ showNum b ++ " " ++ showNum c |> print
+  | _ -> print "wrong"

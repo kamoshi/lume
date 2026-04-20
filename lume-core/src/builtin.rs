@@ -81,6 +81,25 @@ pub static BUILTINS: &[Builtin] = &[
         lua: "function(s) return (s:gsub('^%s+', ''):gsub('%s+$', '')) end",
         js: "(s) => s.trim()",
     },
+    Builtin {
+        name: "concat_text",
+        ty: ty!(Text -> (Text -> Text)),
+        lua: "function(a) return function(b) return a .. b end end",
+        js: "(a) => (b) => a + b",
+    },
+    Builtin {
+        name: "concat_list",
+        ty: ty!(a. [a] -> ([a] -> [a])),
+        lua: concat!(
+            "function(a) return function(b)\n",
+            "  local r = {}\n",
+            "  for i = 1, #a do r[#r+1] = a[i] end\n",
+            "  for i = 1, #b do r[#r+1] = b[i] end\n",
+            "  return r\n",
+            "end end",
+        ),
+        js: "(a) => (b) => [...a, ...b]",
+    },
 ];
 
 pub fn populate_env(s: &mut Subst, env: &mut TypeEnv) {

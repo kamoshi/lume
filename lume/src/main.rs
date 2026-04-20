@@ -152,14 +152,14 @@ fn lower_bundle(b: &[bundle::BundleModule]) -> Option<(Vec<codegen::IrModule>, t
         };
 
         let module_path = Some(m.canonical.as_path());
-        let (node_types, type_env, resolved_trait_methods) = match types::infer::elaborate_with_env(&m.program, module_path) {
-            Ok((nt, env, _, rtm)) => (nt, env, rtm),
+        let (node_types, type_env, resolved_trait_methods, resolved_op_types) = match types::infer::elaborate_with_env(&m.program, module_path) {
+            Ok((nt, env, _, rtm, rot)) => (nt, env, rtm, rot),
             Err(e) => {
                 eprintln!("{}: type error: {e}", m.canonical.display());
                 return None;
             }
         };
-        let ir_mod = lower::lower(m.program.clone(), &node_types, &type_env, &local_global, &resolved_trait_methods);
+        let ir_mod = lower::lower(m.program.clone(), &node_types, &type_env, &local_global, &resolved_trait_methods, &resolved_op_types);
         ir_modules.push(codegen::IrModule {
             canonical: m.canonical.clone(),
             module: ir_mod,
@@ -218,7 +218,7 @@ fn exec_file(path: &str) -> bool {
     }
 }
 
-fn fmt_file(path: &str) -> bool {
+fn fmt_file(path: &str, to_stdout: bool) -> bool {
     let src = match std::fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
@@ -226,39 +226,26 @@ fn fmt_file(path: &str) -> bool {
             return false;
         }
     };
-    // Verify it parses before touching it.
-    if let Err(e) = parse(&src) {
-        eprintln!("{path}: parse error: {e}");
-        return false;
-    }
-    // Collapse 3+ consecutive newlines into 2 (one blank line max).
-    let mut formatted = String::with_capacity(src.len());
-    let mut newlines: usize = 0;
-    for ch in src.chars() {
-        if ch == '\n' {
-            newlines += 1;
-        } else {
-            if newlines > 0 {
-                let emit = newlines.min(2);
-                for _ in 0..emit {
-                    formatted.push('\n');
-                }
-                newlines = 0;
-            }
-            formatted.push(ch);
+    let config = lume_core::fmt::FormatConfig::default();
+    let formatted = match lume_core::fmt::format_source(&src, &config) {
+        Some(f) => f,
+        None => {
+            eprintln!("{path}: parse error (cannot format)");
+            return false;
         }
+    };
+    if to_stdout {
+        print!("{formatted}");
+    } else {
+        if formatted == src {
+            return true;
+        }
+        if let Err(e) = std::fs::write(path, &formatted) {
+            eprintln!("{path}: {e}");
+            return false;
+        }
+        println!("{path}: formatted");
     }
-    // Flush trailing newlines, ensure exactly one at EOF.
-    formatted.push('\n');
-
-    if formatted == src {
-        return true;
-    }
-    if let Err(e) = std::fs::write(path, &formatted) {
-        eprintln!("{path}: {e}");
-        return false;
-    }
-    println!("{path}: formatted");
     true
 }
 
@@ -309,11 +296,14 @@ enum Command {
         #[arg(required = true)]
         files: Vec<String>,
     },
-    /// Format source files in place
+    /// Format source files
     Fmt {
         /// Lume source files to format
         #[arg(required = true)]
         files: Vec<String>,
+        /// Print formatted output to stdout instead of writing in place
+        #[arg(long)]
+        stdout: bool,
     },
     /// Compile to JavaScript and print to stdout
     Js {
@@ -351,7 +341,15 @@ fn main() {
     let ok = match cli.command {
         Command::Check { files } => run_on_files(&files, check_file),
         Command::Dump { files } => run_on_files(&files, dump_file),
-        Command::Fmt { files } => run_on_files(&files, fmt_file),
+        Command::Fmt { files, stdout } => {
+            let mut ok = true;
+            for f in &files {
+                if !fmt_file(f, stdout) {
+                    ok = false;
+                }
+            }
+            ok
+        }
         Command::Js { file } => js_file(&file),
         Command::Lsp => {
             tokio::runtime::Builder::new_multi_thread()
@@ -569,20 +567,23 @@ mod tests {
 
     #[test]
     fn parse_empty_list() {
-        assert!(matches!(parse_expr("[]").kind, ExprKind::List(ref v) if v.is_empty()));
+        assert!(matches!(parse_expr("[]").kind, ExprKind::List { ref entries } if entries.is_empty()));
     }
 
     #[test]
     fn parse_list() {
-        assert!(matches!(parse_expr("[1, 2, 3]").kind, ExprKind::List(ref v) if v.len() == 3));
+        assert!(matches!(parse_expr("[1, 2, 3]").kind, ExprKind::List { ref entries } if entries.len() == 3));
     }
 
     #[test]
     fn parse_record_literal() {
         let tokens = lex(r#"{ name: "Alice", age: 30 }"#);
         let (_, expr) = parser::parse_expr(&tokens).expect("parse error");
-        if let ExprKind::Record { fields, base, .. } = expr.kind {
-            assert!(base.is_none());
+        if let ExprKind::Record { entries } = &expr.kind {
+            let fields: Vec<_> = entries.iter().filter_map(|e| match e {
+                RecordEntry::Field(f) => Some(f),
+                _ => None,
+            }).collect();
             assert_eq!(fields.len(), 2);
             assert_eq!(fields[0].name, "name");
         } else {
@@ -591,15 +592,20 @@ mod tests {
     }
 
     #[test]
-    fn parse_record_update() {
-        let tokens = lex("{ alice | age: 31 }");
+    fn parse_record_spread() {
+        let tokens = lex("{ ..alice, age: 31 }");
         let (_, expr) = parser::parse_expr(&tokens).expect("parse error");
-        if let ExprKind::Record { base, fields, .. } = expr.kind {
-            assert!(base.is_some());
+        if let ExprKind::Record { entries } = &expr.kind {
+            let spreads = entries.iter().filter(|e| matches!(e, RecordEntry::Spread(_))).count();
+            let fields: Vec<_> = entries.iter().filter_map(|e| match e {
+                RecordEntry::Field(f) => Some(f),
+                _ => None,
+            }).collect();
+            assert_eq!(spreads, 1);
             assert_eq!(fields.len(), 1);
             assert_eq!(fields[0].name, "age");
         } else {
-            panic!("expected Record update");
+            panic!("expected Record with spread");
         }
     }
 
@@ -720,10 +726,9 @@ mod tests {
         assert!(matches!(
             program.exports.kind,
             ExprKind::Record {
-                ref fields,
-                base: None,
+                ref entries,
                 ..
-            } if fields.is_empty()
+            } if entries.is_empty()
         ));
     }
 
@@ -761,7 +766,7 @@ mod tests {
         let program = parse(src).expect("should parse");
         assert!(matches!(
             program.exports.kind,
-            ExprKind::Record { ref fields, .. } if fields.len() == 1
+            ExprKind::Record { ref entries, .. } if entries.len() == 1
         ));
     }
 

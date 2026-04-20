@@ -55,6 +55,54 @@ fn consume_ident(tokens: &[Spanned]) -> Result<(usize, String), ParseError> {
     }
 }
 
+/// Like `consume_ident` but also accepts a parenthesized operator: `(++)`, `(>>=)`, etc.
+/// Used in trait/impl method positions where operators can be defined.
+fn consume_ident_or_op(tokens: &[Spanned]) -> Result<(usize, String), ParseError> {
+    // Plain identifier.
+    if let Some(Spanned { token: Token::Ident(s), .. }) = tokens.first() {
+        return Ok((1, s.clone()));
+    }
+    // Parenthesized operator: ( op )
+    if matches!(tokens.first(), Some(Spanned { token: Token::LParen, .. })) {
+        if let Some(op_name) = tokens.get(1).and_then(|t| token_to_op_name(&t.token)) {
+            if matches!(tokens.get(2), Some(Spanned { token: Token::RParen, .. })) {
+                return Ok((3, op_name));
+            }
+        }
+    }
+    match tokens.first() {
+        Some(t) => Err(ParseError::unexpected(
+            format!("{:?}", t.token),
+            "identifier or (operator)",
+            t.span.clone(),
+        )),
+        None => Err(ParseError::unexpected_eof(Span::default())),
+    }
+}
+
+/// Maps an operator token to its string name.
+fn token_to_op_name(tok: &Token) -> Option<String> {
+    match tok {
+        Token::Concat => Some("++".to_string()),
+        Token::Plus => Some("+".to_string()),
+        Token::Minus => Some("-".to_string()),
+        Token::Star => Some("*".to_string()),
+        Token::Slash => Some("/".to_string()),
+        Token::EqEq => Some("==".to_string()),
+        Token::BangEq => Some("!=".to_string()),
+        Token::Lt => Some("<".to_string()),
+        Token::Gt => Some(">".to_string()),
+        Token::LtEq => Some("<=".to_string()),
+        Token::GtEq => Some(">=".to_string()),
+        Token::Pipe => Some("|>".to_string()),
+        Token::ResultPipe => Some("?>".to_string()),
+        Token::AmpAmp => Some("&&".to_string()),
+        Token::PipePipe => Some("||".to_string()),
+        Token::Operator(s) => Some(s.clone()),
+        _ => None,
+    }
+}
+
 /// Like `consume_ident` but also accepts a `TypeIdent` (uppercase-start).
 /// Used for record field names which may be either case.
 fn consume_any_ident(tokens: &[Spanned]) -> Result<(usize, String), ParseError> {
@@ -83,6 +131,23 @@ fn consume_type_ident(tokens: &[Spanned]) -> Result<(usize, String), ParseError>
             token: Token::TypeIdent(s),
             ..
         }) => Ok((1, s.clone())),
+        Some(t) => Err(ParseError::unexpected(
+            format!("{:?}", t.token),
+            "type identifier",
+            t.span.clone(),
+        )),
+        None => Err(ParseError::unexpected_eof(Span::default())),
+    }
+}
+
+/// Like `consume_type_ident` but also returns the span of the token.
+fn consume_type_ident_span(tokens: &[Spanned]) -> Result<(usize, String, Span), ParseError> {
+    match tokens.first() {
+        Some(Spanned {
+            token: Token::TypeIdent(s),
+            span,
+            ..
+        }) => Ok((1, s.clone(), span.clone())),
         Some(t) => Err(ParseError::unexpected(
             format!("{:?}", t.token),
             "type identifier",
@@ -272,9 +337,7 @@ pub fn parse_program(tokens: &[Spanned]) -> Result<Program, ParseError> {
         Expr {
             id: 0,
             kind: ExprKind::Record {
-                base: None,
-                fields: vec![],
-                spread: false,
+                entries: vec![],
             },
             span: span(&tokens[ptr..]),
         }
@@ -358,7 +421,7 @@ fn parse_trait_def(tokens: &[Spanned]) -> Result<(usize, TraitDef), ParseError> 
         ptr += method_doc_n;
         ptr += consume(&tokens[ptr..], &Token::Let)?;
         let method_name_span = span(&tokens[ptr..]);
-        let (n, method_name) = consume_ident(&tokens[ptr..])?;
+        let (n, method_name) = consume_ident_or_op(&tokens[ptr..])?;
         ptr += n;
         ptr += consume(&tokens[ptr..], &Token::Colon)?;
         let (n, ty) = parse_type(&tokens[ptr..])?;
@@ -418,7 +481,7 @@ fn parse_impl_def(tokens: &[Spanned]) -> Result<(usize, ImplDef), ParseError> {
         ptr += method_doc_n;
         ptr += consume(&tokens[ptr..], &Token::Let)?;
         let name_span = span(&tokens[ptr..]);
-        let (n, method_name) = consume_ident(&tokens[ptr..])?;
+        let (n, method_name) = consume_ident_or_op(&tokens[ptr..])?;
         ptr += n;
 
         // optional type annotation
@@ -582,7 +645,7 @@ fn parse_typedef(tokens: &[Spanned]) -> Result<(usize, TypeDef), ParseError> {
     let mut ptr = 0;
     ptr += consume(&tokens[ptr..], &Token::Type)?;
 
-    let (n, name) = consume_type_ident(&tokens[ptr..])?;
+    let (n, name, name_span) = consume_type_ident_span(&tokens[ptr..])?;
     ptr += n;
 
     // optional type parameters (lowercase identifiers)
@@ -634,13 +697,14 @@ fn parse_typedef(tokens: &[Spanned]) -> Result<(usize, TypeDef), ParseError> {
             params,
             variants,
             doc: None,
+            name_span,
         },
     ))
 }
 
 fn parse_variant(tokens: &[Spanned]) -> Result<(usize, Variant), ParseError> {
     let mut ptr = 0;
-    let (n, name) = consume_type_ident(&tokens[ptr..])?;
+    let (n, name, name_span) = consume_type_ident_span(&tokens[ptr..])?;
     ptr += n;
 
     // record payload: `{ field: Type, ... }` — parsed as wrapping a record type
@@ -648,7 +712,7 @@ fn parse_variant(tokens: &[Spanned]) -> Result<(usize, Variant), ParseError> {
         let (n, rt) = parse_record_type(&tokens[ptr..])?;
         ptr += n;
         let ty = Type::Record(rt);
-        return Ok((ptr, Variant { name, wraps: Some(ty) }));
+        return Ok((ptr, Variant { name, wraps: Some(ty), name_span }));
     }
 
     // single-value wrapper: `TestBox a`, `TestBox (List a)`
@@ -662,10 +726,10 @@ fn parse_variant(tokens: &[Spanned]) -> Result<(usize, Variant), ParseError> {
         // We try to parse a type; if it's a simple ident or paren type, take it.
         let (n, ty) = parse_type(&tokens[ptr..])?;
         ptr += n;
-        return Ok((ptr, Variant { name, wraps: Some(ty) }));
+        return Ok((ptr, Variant { name, wraps: Some(ty), name_span }));
     }
 
-    Ok((ptr, Variant { name, wraps: None }))
+    Ok((ptr, Variant { name, wraps: None, name_span }))
 }
 
 // ── Let bindings ──────────────────────────────────────────────────────────────
@@ -819,6 +883,7 @@ fn infix_bp(tok: &Token) -> Option<(u8, u8)> {
         Token::Concat => Some((50, 50)), // ++ right-assoc (equal bps)
         Token::Plus | Token::Minus => Some((60, 61)),
         Token::Star | Token::Slash => Some((70, 71)),
+        Token::Operator(_) => Some((50, 50)), // custom operators: same precedence as ++, right-assoc
         _ => None,
     }
 }
@@ -840,6 +905,7 @@ fn token_to_binop(tok: &Token) -> Option<BinOp> {
         Token::Minus => Some(BinOp::Sub),
         Token::Star => Some(BinOp::Mul),
         Token::Slash => Some(BinOp::Div),
+        Token::Operator(s) => Some(BinOp::Custom(s.clone())),
         _ => None,
     }
 }
@@ -1143,6 +1209,17 @@ fn parse_atom(tokens: &[Spanned]) -> Result<(usize, Expr), ParseError> {
         // ── Parenthesised expression ──────────────────────────────────────────
         Some(Token::LParen) => {
             let mut ptr = 1; // consume `(`
+            // Check for operator-as-value: `(op)` → Ident(op_name)
+            if let Some(tok) = first_token(&tokens[ptr..]) {
+                if let Some(op_name) = token_to_op_name(tok) {
+                    if matches!(first_token(&tokens[ptr + 1..]), Some(Token::RParen)) {
+                        let s = span(tokens);
+                        ptr += 1; // consume operator token
+                        ptr += 1; // consume `)`
+                        return Ok((ptr, Expr { id: 0, kind: ExprKind::Ident(op_name), span: s }));
+                    }
+                }
+            }
             let (n, inner) = parse_expr(&tokens[ptr..])?;
             ptr += n;
             ptr += consume(&tokens[ptr..], &Token::RParen)?;
@@ -1185,42 +1262,36 @@ fn parse_record_expr(tokens: &[Spanned]) -> Result<(usize, Expr), ParseError> {
     let mut ptr = 0;
     ptr += consume(&tokens[ptr..], &Token::LBrace)?;
 
-    // Check for record-update syntax: `{ ident | ... }`
-    // Heuristic: if tokens[ptr] is an ident and tokens[ptr+1] is `|`
-    let base = if matches!(first_token(&tokens[ptr..]), Some(Token::Ident(_)))
-        && matches!(first_token(&tokens[ptr + 1..]), Some(Token::Bar))
-    {
-        let ident_span = span(&tokens[ptr..]);
-        let (n, name) = consume_ident(&tokens[ptr..])?;
-        ptr += n;
-        ptr += 1; // consume `|`
-        Some(Box::new(Expr {
-            id: 0,
-            kind: ExprKind::Ident(name),
-            span: ident_span,
-        }))
-    } else {
-        None
-    };
-
-    let mut fields = Vec::new();
-    let mut spread = false;
+    let mut entries: Vec<RecordEntry> = Vec::new();
 
     while !matches!(first_token(&tokens[ptr..]), Some(Token::RBrace) | None) {
-        // `..` spread
+        // `..expr` — spread entry
         if matches!(first_token(&tokens[ptr..]), Some(Token::DotDot)) {
             ptr += 1;
-            spread = true;
-            // skip trailing comma if any
+            // Bare `..` (no following expression) — skip silently
+            if matches!(
+                first_token(&tokens[ptr..]),
+                Some(Token::RBrace) | Some(Token::Comma) | None
+            ) {
+                if matches!(first_token(&tokens[ptr..]), Some(Token::Comma)) {
+                    ptr += 1;
+                }
+                continue;
+            }
+            let (n, expr) = parse_expr(&tokens[ptr..])?;
+            ptr += n;
+            entries.push(RecordEntry::Spread(expr));
             if matches!(first_token(&tokens[ptr..]), Some(Token::Comma)) {
                 ptr += 1;
+            } else {
+                break;
             }
-            break;
+            continue;
         }
 
         let (n, field) = parse_record_field(&tokens[ptr..])?;
         ptr += n;
-        fields.push(field);
+        entries.push(RecordEntry::Field(field));
 
         if matches!(first_token(&tokens[ptr..]), Some(Token::Comma)) {
             ptr += 1;
@@ -1234,11 +1305,7 @@ fn parse_record_expr(tokens: &[Spanned]) -> Result<(usize, Expr), ParseError> {
         ptr,
         Expr {
             id: 0,
-            kind: ExprKind::Record {
-                base,
-                fields,
-                spread,
-            },
+            kind: ExprKind::Record { entries },
             span: rec_span,
         },
     ))
@@ -1298,11 +1365,18 @@ fn parse_list_expr(tokens: &[Spanned]) -> Result<(usize, Expr), ParseError> {
     let mut ptr = 0;
     ptr += consume(&tokens[ptr..], &Token::LBracket)?;
 
-    let mut items = Vec::new();
+    let mut entries = Vec::new();
     while !matches!(first_token(&tokens[ptr..]), Some(Token::RBracket) | None) {
-        let (n, item) = parse_expr(&tokens[ptr..])?;
-        ptr += n;
-        items.push(item);
+        if matches!(first_token(&tokens[ptr..]), Some(Token::DotDot)) {
+            ptr += 1; // consume ..
+            let (n, spread) = parse_expr(&tokens[ptr..])?;
+            ptr += n;
+            entries.push(ListEntry::Spread(spread));
+        } else {
+            let (n, item) = parse_expr(&tokens[ptr..])?;
+            ptr += n;
+            entries.push(ListEntry::Elem(item));
+        }
         if matches!(first_token(&tokens[ptr..]), Some(Token::Comma)) {
             ptr += 1;
         } else {
@@ -1315,7 +1389,7 @@ fn parse_list_expr(tokens: &[Spanned]) -> Result<(usize, Expr), ParseError> {
         ptr,
         Expr {
             id: 0,
-            kind: ExprKind::List(items),
+            kind: ExprKind::List { entries },
             span: list_span,
         },
     ))
@@ -1527,6 +1601,20 @@ pub fn parse_pattern(tokens: &[Spanned]) -> Result<(usize, Pattern), ParseError>
         Some(Token::LBracket) => {
             let (n, lp) = parse_list_pattern(tokens)?;
             Ok((n, Pattern::List(lp)))
+        }
+
+        // Parenthesized operator: (++) binds as an ident pattern.
+        Some(Token::LParen) => {
+            if let Some(op_name) = tokens.get(1).and_then(|t| token_to_op_name(&t.token)) {
+                if matches!(tokens.get(2), Some(Spanned { token: Token::RParen, .. })) {
+                    return Ok((3, Pattern::Ident(op_name, span(tokens), 0)));
+                }
+            }
+            Err(ParseError::unexpected(
+                format!("{:?}", Token::LParen),
+                "pattern",
+                span(tokens),
+            ))
         }
 
         Some(t) => Err(ParseError::unexpected(

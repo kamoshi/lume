@@ -67,6 +67,10 @@ pub enum Token {
     // Doc comment: --- text
     DocComment(String),
 
+    /// Arbitrary user-defined operator (symbol sequence not matching a built-in token).
+    /// Examples: `>>=`, `<*>`, `<$>`, `<|>`
+    Operator(String),
+
     Eof,
 }
 
@@ -76,6 +80,17 @@ pub struct Spanned {
     pub span: Span,
 }
 
+/// A regular (non-doc) comment captured during lexing.
+#[derive(Debug, Clone)]
+pub struct Comment {
+    /// The comment text (without the leading `-- `).
+    pub text: String,
+    /// Line number where the comment appeared (1-based).
+    pub line: usize,
+    /// Column where the `--` started (1-based).
+    pub col: usize,
+}
+
 // ── Lexer ─────────────────────────────────────────────────────────────────────
 
 pub struct Lexer<'src> {
@@ -83,6 +98,7 @@ pub struct Lexer<'src> {
     pos: usize,
     line: usize,
     col: usize,
+    comments: Vec<Comment>,
 }
 
 impl<'src> Lexer<'src> {
@@ -92,6 +108,7 @@ impl<'src> Lexer<'src> {
             pos: 0,
             line: 1,
             col: 1,
+            comments: Vec::new(),
         }
     }
 
@@ -107,6 +124,20 @@ impl<'src> Lexer<'src> {
             }
         }
         Ok(tokens)
+    }
+
+    /// Lex and return both tokens and captured comments.
+    pub fn tokenize_with_comments(mut self) -> Result<(Vec<Spanned>, Vec<Comment>), LexError> {
+        let mut tokens = Vec::new();
+        loop {
+            let tok = self.next_token()?;
+            let is_eof = tok.token == Token::Eof;
+            tokens.push(tok);
+            if is_eof {
+                break;
+            }
+        }
+        Ok((tokens, self.comments))
     }
 
     fn peek(&self) -> Option<u8> {
@@ -175,9 +206,28 @@ impl<'src> Lexer<'src> {
             }
             // Single-line comment: --
             if self.peek() == Some(b'-') && self.peek2() == Some(b'-') {
+                let comment_line = self.line;
+                let comment_col = self.col;
+                // skip --
+                self.advance();
+                self.advance();
+                // skip optional leading space
+                let had_space = self.peek() == Some(b' ');
+                if had_space {
+                    self.advance();
+                }
+                let start = self.pos;
                 while !matches!(self.peek(), Some(b'\n') | None) {
                     self.advance();
                 }
+                let text = std::str::from_utf8(&self.src[start..self.pos])
+                    .unwrap_or("")
+                    .to_string();
+                self.comments.push(Comment {
+                    text,
+                    line: comment_line,
+                    col: comment_col,
+                });
                 continue;
             }
             break;
@@ -227,27 +277,8 @@ impl<'src> Lexer<'src> {
                 self.advance();
                 Token::Comma
             }
-            b'*' => {
-                self.advance();
-                Token::Star
-            }
-            b'/' => {
-                self.advance();
-                Token::Slash
-            }
 
-            // + or ++
-            b'+' => {
-                self.advance();
-                if self.peek() == Some(b'+') {
-                    self.advance();
-                    Token::Concat
-                } else {
-                    Token::Plus
-                }
-            }
-
-            // - or -> or number (negative handled in parser as unary)
+            // - or -> (special: not a general operator char because of comment syntax --)
             b'-' => {
                 self.advance();
                 if self.peek() == Some(b'>') {
@@ -255,101 +286,6 @@ impl<'src> Lexer<'src> {
                     Token::Arrow
                 } else {
                     Token::Minus
-                }
-            }
-
-            // = or == or =>
-            b'=' => {
-                self.advance();
-                if self.peek() == Some(b'=') {
-                    self.advance();
-                    Token::EqEq
-                } else if self.peek() == Some(b'>') {
-                    self.advance();
-                    Token::FatArrow
-                } else {
-                    Token::Equal
-                }
-            }
-
-            // ! or !=
-            b'!' => {
-                self.advance();
-                if self.peek() == Some(b'=') {
-                    self.advance();
-                    Token::BangEq
-                } else {
-                    return Err(LexError {
-                        kind: LexErrorKind::UnexpectedChar(b'!'),
-                        span: self.span_at(line, col, 1),
-                    });
-                }
-            }
-
-            // < or <=
-            b'<' => {
-                self.advance();
-                if self.peek() == Some(b'=') {
-                    self.advance();
-                    Token::LtEq
-                } else {
-                    Token::Lt
-                }
-            }
-
-            // > or >=
-            b'>' => {
-                self.advance();
-                if self.peek() == Some(b'=') {
-                    self.advance();
-                    Token::GtEq
-                } else {
-                    Token::Gt
-                }
-            }
-
-            // :
-            b':' => {
-                self.advance();
-                Token::Colon
-            }
-
-            // | or |> or ||
-            b'|' => {
-                self.advance();
-                if self.peek() == Some(b'>') {
-                    self.advance();
-                    Token::Pipe
-                } else if self.peek() == Some(b'|') {
-                    self.advance();
-                    Token::PipePipe
-                } else {
-                    Token::Bar
-                }
-            }
-
-            // &&
-            b'&' => {
-                self.advance();
-                if self.peek() == Some(b'&') {
-                    self.advance();
-                    Token::AmpAmp
-                } else {
-                    return Err(LexError {
-                        kind: LexErrorKind::UnexpectedChar(b'&'),
-                        span: self.span_at(line, col, 1),
-                    });
-                }
-            }
-
-            // ? or ?>
-            b'?' => {
-                self.advance();
-                if self.peek() == Some(b'>') {
-                    self.advance();
-                    Token::ResultPipe
-                } else {
-                    Token::Question
                 }
             }
 
@@ -362,6 +298,18 @@ impl<'src> Lexer<'src> {
                 } else {
                     Token::Dot
                 }
+            }
+
+            // : (reserved for type annotations, not an operator char)
+            b':' => {
+                self.advance();
+                Token::Colon
+            }
+
+            // Operator characters — greedily collect and classify.
+            b'+' | b'*' | b'/' | b'=' | b'!' | b'<' | b'>' | b'|'
+            | b'&' | b'?' | b'$' | b'#' | b'@' | b'^' | b'~' => {
+                self.lex_operator()
             }
 
             // String literal
@@ -390,6 +338,37 @@ impl<'src> Lexer<'src> {
             token,
             span: self.span_at(line, col, len),
         })
+    }
+
+    /// Lex an operator: greedily consume operator characters, then classify.
+    fn lex_operator(&mut self) -> Token {
+        let start = self.pos;
+        while matches!(self.peek(), Some(b'+' | b'*' | b'/' | b'=' | b'!' | b'<' | b'>'
+                                       | b'|' | b'&' | b'?' | b'$' | b'#' | b'@' | b'^' | b'~')) {
+            self.advance();
+        }
+        let s = std::str::from_utf8(&self.src[start..self.pos]).unwrap();
+        match s {
+            "++" => Token::Concat,
+            "+" => Token::Plus,
+            "*" => Token::Star,
+            "/" => Token::Slash,
+            "==" => Token::EqEq,
+            "!=" => Token::BangEq,
+            "=" => Token::Equal,
+            "=>" => Token::FatArrow,
+            "<" => Token::Lt,
+            ">" => Token::Gt,
+            "<=" => Token::LtEq,
+            ">=" => Token::GtEq,
+            "|>" => Token::Pipe,
+            "||" => Token::PipePipe,
+            "|" => Token::Bar,
+            "&&" => Token::AmpAmp,
+            "?>" => Token::ResultPipe,
+            "?" => Token::Question,
+            _ => Token::Operator(s.to_string()),
+        }
     }
 
     fn lex_string(&mut self, _line: usize, _col: usize) -> Result<Token, LexError> {

@@ -1,0 +1,25 @@
+-- Traits and implementations
+
+trait Show a {
+  let show : a -> Text
+}
+
+type Color =
+  | Red
+  | Green
+  | Blue
+
+use Show in Color {
+  let show =
+    | Red   -> "red"
+    | Green -> "green"
+    | Blue  -> "blue"
+}
+
+-- Higher-order usage
+let showAll : (Show a) => List a -> List Text = map Show.show
+
+
+pub {
+  showAll,
+}

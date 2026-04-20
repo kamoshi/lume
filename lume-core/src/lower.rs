@@ -57,6 +57,7 @@ pub fn lower(
     type_env: &TypeEnv,
     global: &GlobalCtx,
     resolved_trait_methods: &HashMap<NodeId, (String, String)>,
+    resolved_op_types: &HashMap<NodeId, Ty>,
 ) -> ir::Module {
     let cx = Cx {
         node_types,
@@ -64,6 +65,7 @@ pub fn lower(
         global,
         dict_params: HashMap::new(),
         resolved_trait_methods,
+        resolved_op_types,
     };
 
     // Collect impl dict names before consuming items — these must be exported.
@@ -144,6 +146,8 @@ struct Cx<'a> {
     dict_params: HashMap<TyVar, (String, String)>,
     /// Ident nodes that the type checker resolved to an unambiguous trait method.
     resolved_trait_methods: &'a HashMap<NodeId, (String, String)>,
+    /// Operator expressions resolved through traits — stores the operator's instantiated type.
+    resolved_op_types: &'a HashMap<NodeId, Ty>,
 }
 
 impl<'a> Cx<'a> {
@@ -154,6 +158,7 @@ impl<'a> Cx<'a> {
             global: self.global,
             dict_params,
             resolved_trait_methods: self.resolved_trait_methods,
+            resolved_op_types: self.resolved_op_types,
         }
     }
 
@@ -239,7 +244,7 @@ impl<'a> Cx<'a> {
                 })
                 .collect();
 
-            let mut body = ir::Expr::Record { base: None, fields };
+            let mut body = ir::Expr::Record { bases: vec![], fields };
             for (param_name, _, _) in dict_param_list.iter().rev() {
                 body = ir::Expr::Lam(
                     ir::Pat::Var(param_name.clone()),
@@ -260,7 +265,7 @@ impl<'a> Cx<'a> {
                     (name, self.expr(b.value))
                 })
                 .collect();
-            (ir::Pat::Var(dict), ir::Expr::Record { base: None, fields })
+            (ir::Pat::Var(dict), ir::Expr::Record { bases: vec![], fields })
         }
     }
 
@@ -278,8 +283,15 @@ impl<'a> Cx<'a> {
                 if let Some(ir) = self.resolve_trait_call(id, &trait_name, &method_name) {
                     return ir;
                 }
-                // Unresolved — emit runtime error.
-                ir::Expr::Var(format!("__unresolved_{}_{}", trait_name, method_name))
+                // Defensive: should be unreachable for well-typed programs
+                // (check_trait_constraints catches missing impls).  Emit a
+                // clear runtime error rather than a silent nil access.
+                ir::Expr::App(
+                    Box::new(ir::Expr::Var("__error".into())),
+                    Box::new(ir::Expr::Str(
+                        format!("unresolved trait method: {}.{}", trait_name, method_name),
+                    )),
+                )
             }
 
             ExprKind::Ident(ref name) => {
@@ -298,7 +310,15 @@ impl<'a> Cx<'a> {
                     if let Some(ir) = self.resolve_trait_call(id, trait_name, method_name) {
                         return ir;
                     }
-                    return ir::Expr::Var(format!("__unresolved_{}_{}", trait_name, method_name));
+                    // Defensive: should be unreachable for well-typed programs
+                    // (check_trait_constraints catches missing impls).  Emit a
+                    // clear runtime error rather than a silent nil access.
+                    return ir::Expr::App(
+                        Box::new(ir::Expr::Var("__error".into())),
+                        Box::new(ir::Expr::Str(
+                            format!("unresolved trait method: {}.{}", trait_name, method_name),
+                        )),
+                    );
                 }
                 ir::Expr::Var(name.clone())
             }
@@ -308,23 +328,71 @@ impl<'a> Cx<'a> {
             ExprKind::Bool(b) => ir::Expr::Bool(b),
             ExprKind::Hole => ir::Expr::Var("__hole".to_string()),
 
-            ExprKind::List(items) => {
-                ir::Expr::List(items.into_iter().map(|e| self.expr(e)).collect())
+            ExprKind::List { entries } => {
+                // Lower interleaved elems/spreads into IR List with bases.
+                // Consecutive elements before a spread get flushed into a
+                // nested List that becomes the next base.
+                //
+                // `[1, ..a, 2, 3, ..b]` lowers to:
+                //   List { bases: [List{bases:[],elems:[1]}, a, List{bases:[],elems:[2,3]}, b],
+                //          elems: [] }
+                let mut bases: Vec<ir::Expr> = Vec::new();
+                let mut pending_elems: Vec<ir::Expr> = Vec::new();
+
+                for entry in entries {
+                    match entry {
+                        ListEntry::Elem(e) => {
+                            pending_elems.push(self.expr(e));
+                        }
+                        ListEntry::Spread(e) => {
+                            if !pending_elems.is_empty() {
+                                bases.push(ir::Expr::List {
+                                    bases: vec![],
+                                    elems: std::mem::take(&mut pending_elems),
+                                });
+                            }
+                            bases.push(self.expr(e));
+                        }
+                    }
+                }
+
+                ir::Expr::List { bases, elems: pending_elems }
             }
 
-            ExprKind::Record { base, fields, .. } => {
-                let base = base.map(|b| Box::new(self.expr(*b)));
-                let fields = fields
-                    .into_iter()
-                    .map(|f| {
-                        let val = match f.value {
-                            Some(v) => self.expr(v),
-                            None => ir::Expr::Var(f.name.clone()),
-                        };
-                        (f.name, val)
-                    })
-                    .collect();
-                ir::Expr::Record { base, fields }
+            ExprKind::Record { entries } => {
+                // Lower interleaved fields/spreads into IR Record with bases.
+                // Entries are applied left-to-right. Each spread becomes a base;
+                // when a spread follows explicit fields, the fields are flushed
+                // into a nested Record that becomes the next base.
+                //
+                // `{ ..a, x: 1, ..b, y: 2 }` lowers to:
+                //   Record { bases: [a, Record { bases: [], fields: [(x,1)] }, b],
+                //            fields: [(y, 2)] }
+                let mut bases: Vec<ir::Expr> = Vec::new();
+                let mut pending_fields: Vec<(String, ir::Expr)> = Vec::new();
+
+                for entry in entries {
+                    match entry {
+                        RecordEntry::Field(f) => {
+                            let val = match f.value {
+                                Some(v) => self.expr(v),
+                                None => ir::Expr::Var(f.name.clone()),
+                            };
+                            pending_fields.push((f.name, val));
+                        }
+                        RecordEntry::Spread(expr) => {
+                            if !pending_fields.is_empty() {
+                                bases.push(ir::Expr::Record {
+                                    bases: vec![],
+                                    fields: std::mem::take(&mut pending_fields),
+                                });
+                            }
+                            bases.push(self.expr(expr));
+                        }
+                    }
+                }
+
+                ir::Expr::Record { bases, fields: pending_fields }
             }
 
             ExprKind::FieldAccess { record, field } => {
@@ -362,6 +430,28 @@ impl<'a> Cx<'a> {
             ExprKind::Binary { op: BinOp::Pipe, left, right } => {
                 // a |> f  →  App(f, a)
                 ir::Expr::App(Box::new(self.expr(*right)), Box::new(self.expr(*left)))
+            }
+
+            ExprKind::Binary { op: BinOp::Custom(name), left, right } => {
+                // Check if the operator was resolved to a trait method.
+                let op_expr = if let Some((trait_name, method_name)) = self.resolved_trait_methods.get(&id) {
+                    // Use the operator's instantiated type for resolution.
+                    let op_ty = self.resolved_op_types.get(&id);
+                    if let Some(op_ty) = op_ty {
+                        if let Some(ir) = self.resolve_trait_call_with_ty(trait_name, method_name, op_ty) {
+                            ir
+                        } else {
+                            ir::Expr::Var(name)
+                        }
+                    } else {
+                        ir::Expr::Var(name)
+                    }
+                } else {
+                    ir::Expr::Var(name)
+                };
+                // a <op> b  →  App(App(op_expr, a), b)
+                let app1 = ir::Expr::App(Box::new(op_expr), Box::new(self.expr(*left)));
+                ir::Expr::App(Box::new(app1), Box::new(self.expr(*right)))
             }
 
             ExprKind::Binary { op, left, right } => {
@@ -484,6 +574,66 @@ impl<'a> Cx<'a> {
         None
     }
 
+    /// Like `resolve_trait_call` but uses an explicitly-provided type
+    /// (the operator's instantiated type) instead of looking up in `node_types`.
+    fn resolve_trait_call_with_ty(
+        &self,
+        trait_name: &str,
+        method_name: &str,
+        call_ty: &Ty,
+    ) -> Option<ir::Expr> {
+        let type_name = self.extract_type_param(trait_name, method_name, call_ty)?;
+
+        // Exact match in concrete impls.
+        if let Some(entry) = self.global.impls.get(&(trait_name.to_string(), type_name.clone())) {
+            let dict_expr = make_dict_ref(&entry.dict_ident, &entry.module_var);
+            return Some(ir::Expr::Field(Box::new(dict_expr), method_name.to_string()));
+        }
+
+        // Fallback: parameterized impls.
+        let trait_def = self.global.traits.get(trait_name)?;
+        let method_decl = trait_def.methods.iter().find(|m| m.name == method_name)?;
+        let type_at_param = find_ty_at_param(&method_decl.ty, &trait_def.type_param, call_ty)?;
+
+        for pi in &self.global.param_impls {
+            if pi.trait_name != trait_name {
+                continue;
+            }
+            let bindings = match match_ast_type_against_ty(&pi.target_type, &type_at_param) {
+                Some(b) => b,
+                None => continue,
+            };
+
+            let mut dict_expr = make_dict_ref(&pi.dict_ident, &pi.module_var);
+
+            for (c_trait, c_var) in &pi.constraints {
+                let bound_ty = match bindings.get(c_var) {
+                    Some(t) => t,
+                    None => continue,
+                };
+                let dict_arg = self.resolve_dict_arg(c_trait, bound_ty)?;
+                dict_expr = ir::Expr::App(Box::new(dict_expr), Box::new(dict_arg));
+            }
+
+            return Some(ir::Expr::Field(Box::new(dict_expr), method_name.to_string()));
+        }
+
+        // Dict param resolution (polymorphic context).
+        let trait_def2 = self.global.traits.get(trait_name)?;
+        let method_decl2 = trait_def2.methods.iter().find(|m| m.name == method_name)?;
+        let ty_at_param = find_ty_at_param(&method_decl2.ty, &trait_def2.type_param, call_ty)?;
+        if let Ty::Var(v) = ty_at_param {
+            if let Some((dict_name, _)) = self.dict_params.get(&v) {
+                return Some(ir::Expr::Field(
+                    Box::new(ir::Expr::Var(dict_name.clone())),
+                    method_name.to_string(),
+                ));
+            }
+        }
+
+        None
+    }
+
     fn resolve_trait_call_via_dict(
         &self,
         node_id: NodeId,
@@ -521,6 +671,7 @@ impl<'a> Cx<'a> {
         match_types(&scheme.ty, call_ty, &mut var_map);
 
         let mut result = ir::Expr::Var(name.to_string());
+        let mut any_dict = false;
 
         for (trait_name, var) in &scheme.constraints {
             let dict_arg = if let Some(concrete_ty) = var_map.get(var) {
@@ -528,23 +679,38 @@ impl<'a> Cx<'a> {
                     if let Some((dict_name, _)) = self.dict_params.get(v) {
                         ir::Expr::Var(dict_name.clone())
                     } else {
+                        // Type variable not in dict_params — the constraint is
+                        // still polymorphic at this call site; skip gracefully.
                         continue;
                     }
                 } else {
                     if let Some(arg) = self.resolve_dict_arg(trait_name, concrete_ty) {
                         arg
                     } else {
-                        continue;
+                        // No impl found — emit a runtime error rather than
+                        // silently producing a partially-applied function.
+                        ir::Expr::App(
+                            Box::new(ir::Expr::Var("__error".into())),
+                            Box::new(ir::Expr::Str(format!(
+                                "missing impl: {} for {}",
+                                trait_name,
+                                ty_canonical_name(concrete_ty)
+                                    .unwrap_or_else(|| "unknown".into())
+                            ))),
+                        )
                     }
                 }
             } else {
+                // Constraint variable not in var_map — type is unknown at this
+                // site (still polymorphic); skip gracefully.
                 continue;
             };
 
+            any_dict = true;
             result = ir::Expr::App(Box::new(result), Box::new(dict_arg));
         }
 
-        Some(result)
+        if any_dict { Some(result) } else { None }
     }
 
     fn resolve_dict_arg(&self, trait_name: &str, concrete_ty: &Ty) -> Option<ir::Expr> {

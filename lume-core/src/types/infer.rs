@@ -1,6 +1,6 @@
 use crate::ast::{
-    self, BinOp, Binding, Expr, ExprKind, FieldType, ImplDef, ListPattern, Literal, MatchArm,
-    NodeId, Pattern, Program, RecordField, RecordPattern, RecordType, TopItem, TraitDef, Type,
+    self, BinOp, Binding, Expr, ExprKind, FieldType, ImplDef, ListEntry, ListPattern, Literal, MatchArm,
+    NodeId, Pattern, Program, RecordEntry, RecordField, RecordPattern, RecordType, TopItem, TraitDef, Type,
     UnOp, UseBinding, UseDecl,
 };
 use crate::error::Span;
@@ -520,15 +520,18 @@ pub fn builtin_env(s: &mut Subst) -> (TypeEnv, VariantEnv) {
         ),
     );
     // mapErr : (e -> f) -> Result a e -> Result a f
+    let me_a = s.fresh_var();
+    let me_e = s.fresh_var();
+    let me_f = s.fresh_var();
     env.insert(
         "mapErr".into(),
         mk_scheme(
-            vec![0, 1, 2],
+            vec![me_a, me_e, me_f],
             Ty::Func(
-                Box::new(Ty::Func(Box::new(Ty::Var(1)), Box::new(Ty::Var(2)))),
+                Box::new(Ty::Func(Box::new(Ty::Var(me_e)), Box::new(Ty::Var(me_f)))),
                 Box::new(Ty::Func(
-                    Box::new(Ty::mk_con("Result", &[Ty::Var(0), Ty::Var(1)])),
-                    Box::new(Ty::mk_con("Result", &[Ty::Var(0), Ty::Var(2)])),
+                    Box::new(Ty::mk_con("Result", &[Ty::Var(me_a), Ty::Var(me_e)])),
+                    Box::new(Ty::mk_con("Result", &[Ty::Var(me_a), Ty::Var(me_f)])),
                 )),
             ),
         ),
@@ -599,7 +602,7 @@ pub fn inject_internal_builtins(s: &mut Subst, env: &mut TypeEnv) {
             vec![v0, v1],
             Ty::Func(
                 Box::new(Ty::Func(Box::new(Ty::Var(v0)), Box::new(Ty::Var(v1)))),
-                Box::new(Ty::Func(Box::new(list_a), Box::new(list_b))),
+                Box::new(Ty::Func(Box::new(list_a.clone()), Box::new(list_b))),
             ),
         ),
     );
@@ -670,6 +673,9 @@ pub struct Checker {
     /// Maps `NodeId` → `(trait_name, method_name)` so the lowerer can emit
     /// the correct dict field access instead of a bare variable reference.
     pub resolved_trait_methods: HashMap<NodeId, (String, String)>,
+    /// For operator expressions resolved through traits, stores the operator's
+    /// instantiated type (needed by the lowerer for dict resolution).
+    pub resolved_op_types: HashMap<NodeId, Ty>,
     /// Preferred display names for type variables introduced by annotations.
     /// Maps TyVar → name (e.g. "a", "b") so hover types of sub-expressions
     /// use consistent naming with the enclosing type signature.
@@ -690,6 +696,7 @@ impl Checker {
             param_impl_env: Vec::new(),
             trait_call_constraints: Vec::new(),
             resolved_trait_methods: HashMap::new(),
+            resolved_op_types: HashMap::new(),
             var_name_hints: HashMap::new(),
         }
     }
@@ -711,6 +718,7 @@ impl Checker {
             param_impl_env: Vec::new(),
             trait_call_constraints: Vec::new(),
             resolved_trait_methods: HashMap::new(),
+            resolved_op_types: HashMap::new(),
             var_name_hints: HashMap::new(),
         }
     }
@@ -731,7 +739,7 @@ impl Checker {
             }
         }
 
-        if id.impl_constraints.is_empty() {
+        if id.impl_constraints.is_empty() && !ast_type_has_any_var(&id.target_type) {
             let key = (id.trait_name.clone(), id.type_name.clone());
             if let Some(existing) = self.impl_env.get(&key) {
                 if existing != "<local>" {
@@ -1089,13 +1097,24 @@ impl Checker {
             // We introduce a fresh element variable and unify each element's
             // type against it.  If the list is empty the element type stays
             // polymorphic (a free variable in the result).
-            ExprKind::List(exprs) => {
+            ExprKind::List { entries } => {
                 let elem = self.fresh_ty();
-                for e in exprs {
-                    let t = self.infer(env, e)?;
-                    let t = self.subst.apply(&t);
-                    let elem_c = self.subst.apply(&elem);
-                    self.unify_at(t, elem_c, &e.span)?;
+                for entry in entries {
+                    match entry {
+                        ListEntry::Elem(e) => {
+                            let t = self.infer(env, e)?;
+                            let t = self.subst.apply(&t);
+                            let elem_c = self.subst.apply(&elem);
+                            self.unify_at(t, elem_c, &e.span)?;
+                        }
+                        ListEntry::Spread(e) => {
+                            let t = self.infer(env, e)?;
+                            let t = self.subst.apply(&t);
+                            let elem_c = self.subst.apply(&elem);
+                            let list_ty = Ty::mk_con("List", &[elem_c]);
+                            self.unify_at(t, list_ty, &e.span)?;
+                        }
+                    }
                 }
                 Ok(Ty::mk_con("List", &[self.subst.apply(&elem)]))
             }
@@ -1197,15 +1216,7 @@ impl Checker {
                 Ok(result_ty)
             }
 
-            ExprKind::Record {
-                base: None, fields, ..
-            } => self.infer_record(env, fields, span),
-
-            ExprKind::Record {
-                base: Some(base),
-                fields,
-                ..
-            } => self.infer_record_update(env, base, fields),
+            ExprKind::Record { entries } => self.infer_record(env, entries, span),
 
             ExprKind::FieldAccess { record, field } => self.infer_field_access(env, record, field),
 
@@ -1252,7 +1263,7 @@ impl Checker {
                 Ok(self.subst.apply(&then_ty))
             }
 
-            ExprKind::Binary { op, left, right } => self.infer_binary(env, op, left, right),
+            ExprKind::Binary { op, left, right } => self.infer_binary(env, expr.id, op, left, right),
 
             ExprKind::Unary { op, operand } => match op {
                 UnOp::Neg => {
@@ -1330,7 +1341,11 @@ impl Checker {
                 let bindings = self
                     .infer_pattern(pattern, val_ty)
                     .map_err(|e| TypeErrorAt::new(e, span.clone()))?;
-                let new_env = env.extend_many(bindings);
+                let mut new_env = env.clone();
+                for (name, ty) in bindings {
+                    let scheme = self.generalise(env, &ty);
+                    new_env.insert(name, scheme);
+                }
                 self.infer(&new_env, body)
             }
         }
@@ -1339,91 +1354,151 @@ impl Checker {
     fn infer_record(
         &mut self,
         env: &TypeEnv,
-        fields: &[RecordField],
+        entries: &[RecordEntry],
         span: &Span,
     ) -> Result<Ty, TypeErrorAt> {
+        let mut seen_fields: HashSet<&str> = HashSet::new();
         let mut row_fields: Vec<(String, Ty)> = Vec::new();
-        for f in fields {
-            let ty = if let Some(val) = &f.value {
-                self.infer(env, val)?
-            } else {
-                match env.lookup(&f.name) {
-                    Some(s) => self.instantiate(s),
-                    None => {
+        let mut open_tails: Vec<TyVar> = Vec::new();
+
+        // Track which fields are "guaranteed" — i.e., set AFTER the last open
+        // spread and therefore cannot be shadowed.  Fields set before an open
+        // spread might be overridden at runtime (right always shadows left).
+        let mut guaranteed: HashSet<String> = HashSet::new();
+
+        // Process entries left-to-right: later entries shadow earlier ones.
+        for entry in entries {
+            match entry {
+                RecordEntry::Spread(spread_expr) => {
+                    let sp_ty = self.infer(env, spread_expr)?;
+                    let sp_ty = self.subst.apply(&sp_ty);
+                    let sp_row = self.extract_record_row(&sp_ty, &spread_expr.span)?;
+                    let sp_row = self.subst.apply_row(&sp_row);
+                    if let RowTail::Open(rv) = sp_row.tail {
+                        open_tails.push(rv);
+                        // An open spread can shadow ALL previously-set fields
+                        // (its unknown fields come from the right, winning over
+                        // everything to the left).  Clear the guaranteed set.
+                        guaranteed.clear();
+                    }
+                    for (name, ty) in sp_row.fields {
+                        if let Some(pos) = row_fields.iter().position(|(n, _)| *n == name) {
+                            row_fields[pos].1 = ty;
+                        } else {
+                            row_fields.push((name.clone(), ty));
+                        }
+                        // Known fields of the spread ARE guaranteed (they're
+                        // concrete, not hidden behind an open tail).
+                        guaranteed.insert(name);
+                    }
+                }
+                RecordEntry::Field(f) => {
+                    if !seen_fields.insert(&f.name) {
                         return Err(TypeErrorAt::new(
-                            TypeError::UnboundVariable(f.name.clone()),
+                            TypeError::DuplicateField(f.name.clone()),
                             span.clone(),
-                        ))
+                        ));
                     }
+                    let ty = if let Some(val) = &f.value {
+                        self.infer(env, val)?
+                    } else {
+                        match env.lookup(&f.name) {
+                            Some(s) => self.instantiate(s),
+                            None => {
+                                return Err(TypeErrorAt::new(
+                                    TypeError::UnboundVariable(f.name.clone()),
+                                    span.clone(),
+                                ))
+                            }
+                        }
+                    };
+                    let ty = self.subst.apply(&ty);
+                    self.node_types.insert(f.name_node_id, ty.clone());
+                    if let Some(pos) = row_fields.iter().position(|(n, _)| *n == f.name) {
+                        row_fields[pos].1 = ty;
+                    } else {
+                        row_fields.push((f.name.clone(), ty));
+                    }
+                    // Explicit fields are always guaranteed (they appear at
+                    // this position which is to the right of any earlier spread).
+                    guaranteed.insert(f.name.clone());
                 }
-            };
-            let ty = self.subst.apply(&ty);
-            self.node_types.insert(f.name_node_id, ty.clone());
-            row_fields.push((f.name.clone(), ty));
+            }
         }
-        row_fields.sort_by(|a, b| a.0.cmp(&b.0));
+
+        // Determine result row tail.
+        //
+        // If exactly one spread had an open tail, reuse its row variable so
+        // that field information propagates through substitution (this preserves
+        // the precision of the old `{ base | field: val }` typing).
+        //
+        // With multiple open tails, unify them all into a single variable so
+        // the result stays connected to every spread's residual fields.
+        let tail = match open_tails.len() {
+            0 => RowTail::Closed,
+            1 => RowTail::Open(open_tails[0]),
+            _ => {
+                let unified = open_tails[0];
+                for &rv in &open_tails[1..] {
+                    let a = Ty::Record(Row { fields: vec![], tail: RowTail::Open(unified) });
+                    let b = Ty::Record(Row { fields: vec![], tail: RowTail::Open(rv) });
+                    self.unify_at(a, b, span)?;
+                }
+                RowTail::Open(unified)
+            }
+        };
+
+        // Only include fields in the explicit row that are guaranteed (set
+        // after the last open spread).  Fields set before an open spread are
+        // NOT safe to promise in the type — the open spread might shadow them
+        // at runtime.  If there's no open tail, all fields are guaranteed.
+        let result_fields = if open_tails.is_empty() {
+            row_fields
+        } else {
+            row_fields.into_iter()
+                .filter(|(name, _)| guaranteed.contains(name))
+                .collect()
+        };
+
+        let mut result_fields_sorted = result_fields;
+        result_fields_sorted.sort_by(|a, b| a.0.cmp(&b.0));
+
         Ok(Ty::Record(Row {
-            fields: row_fields,
-            tail: RowTail::Closed,
+            fields: result_fields_sorted,
+            tail,
         }))
     }
 
-    // Record update syntax: `{ base | field: val, … }`.
-    //
-    // The result type keeps all fields of `base` and overlays the updated
-    // fields.  We achieve this with a row variable trick:
-    //
-    //   1. Infer the types of the override fields normally.
-    //   2. Unify `base` with an *empty open row* - this binds a fresh row var
-    //      `base_rv` to "whatever fields base has".  After unification,
-    //      `base_rv` points to the base record's full field set.
-    //   3. Return a new record whose explicit fields are the overrides and
-    //      whose tail is `Open(base_rv)`.  Row-polymorphism then ensures that
-    //      downstream consumers see the union: the override fields shadow any
-    //      same-named fields inherited from the base.
-    fn infer_record_update(
-        &mut self,
-        env: &TypeEnv,
-        base: &Expr,
-        overrides: &[RecordField],
-    ) -> Result<Ty, TypeErrorAt> {
-        let base_ty = self.infer(env, base)?;
-        let base_ty = self.subst.apply(&base_ty);
-
-        let mut new_fields: Vec<(String, Ty)> = Vec::new();
-        for f in overrides {
-            let ty = if let Some(val) = &f.value {
-                self.infer(env, val)?
-            } else {
-                match env.lookup(&f.name) {
-                    Some(s) => self.instantiate(s),
-                    None => {
-                        return Err(TypeErrorAt::new(
-                            TypeError::UnboundVariable(f.name.clone()),
-                            base.span.clone(),
-                        ))
-                    }
-                }
-            };
-            let ty = self.subst.apply(&ty);
-            self.node_types.insert(f.name_node_id, ty.clone());
-            new_fields.push((f.name.clone(), ty));
+    /// Extract the row from a type that must be a record.
+    fn extract_record_row(&mut self, ty: &Ty, span: &Span) -> Result<Row, TypeErrorAt> {
+        match ty {
+            Ty::Record(row) => Ok(row.clone()),
+            Ty::Var(_) => {
+                // Unknown type — constrain it to be a record with a fresh open row.
+                let rv = self.fresh_var();
+                let open = Ty::Record(Row {
+                    fields: vec![],
+                    tail: RowTail::Open(rv),
+                });
+                self.unify_at(ty.clone(), open, span)?;
+                Ok(Row {
+                    fields: vec![],
+                    tail: RowTail::Open(rv),
+                })
+            }
+            _ => Err(TypeErrorAt::new(
+                TypeError::Mismatch(
+                    Ty::Record(Row {
+                        fields: vec![],
+                        tail: RowTail::Closed,
+                    }),
+                    ty.clone(),
+                ),
+                span.clone(),
+            )),
         }
-        new_fields.sort_by(|a, b| a.0.cmp(&b.0));
-
-        // Unify base with an empty open row to capture all its fields into base_rv.
-        let base_rv = self.fresh_var();
-        let open_base = Ty::Record(Row {
-            fields: vec![],
-            tail: RowTail::Open(base_rv),
-        });
-        self.unify_at(base_ty, open_base, &base.span)?;
-
-        Ok(Ty::Record(Row {
-            fields: new_fields,
-            tail: RowTail::Open(base_rv),
-        }))
     }
+
 
     // Field access `expr.field`.
     //
@@ -1462,7 +1537,7 @@ impl Checker {
                         fields: vec![(field.to_string(), field_ty.clone())],
                         tail: RowTail::Open(rest_var),
                     },
-                );
+                ).map_err(|e| TypeErrorAt::new(e, span.clone()))?;
                 return Ok(self.subst.apply(&field_ty));
             }
             return Err(TypeErrorAt::new(
@@ -1488,6 +1563,7 @@ impl Checker {
     fn infer_binary(
         &mut self,
         env: &TypeEnv,
+        node_id: NodeId,
         op: &BinOp,
         left: &Expr,
         right: &Expr,
@@ -1528,7 +1604,8 @@ impl Checker {
                 self.unify_at(tr, Ty::Bool, &right.span)?;
                 Ok(Ty::Bool)
             }
-            BinOp::Concat => self.infer_concat(env, left, right),
+            BinOp::Concat => self.infer_operator_call(env, node_id, "++", left, right, &left.span),
+            BinOp::Custom(ref name) => self.infer_operator_call(env, node_id, name, left, right, &left.span),
             BinOp::Pipe => {
                 // a |> f  ≡  f a
                 let t_arg = self.infer(env, left)?;
@@ -1548,54 +1625,98 @@ impl Checker {
         }
     }
 
-    fn infer_concat(
+    /// Resolve a binary operator as a function call.
+    /// Looks up `op_name` (e.g. "++") first in the environment, then via
+    /// trait method resolution (same as unambiguous trait shorthand for Ident).
+    fn infer_operator_call(
         &mut self,
         env: &TypeEnv,
+        node_id: NodeId,
+        op_name: &str,
         left: &Expr,
         right: &Expr,
+        span: &Span,
     ) -> Result<Ty, TypeErrorAt> {
+        // Resolve the operator type — same logic as ExprKind::Ident.
+        let op_ty = if let Some(scheme) = env.lookup(op_name) {
+            self.instantiate(scheme)
+        } else {
+            // Try unambiguous trait method resolution.
+            let mut matches: Vec<(&str, &ast::TraitMethod)> = self
+                .trait_env
+                .values()
+                .filter_map(|td| {
+                    td.methods
+                        .iter()
+                        .find(|m| m.name == op_name)
+                        .map(|m| (td.name.as_str(), m))
+                })
+                .collect();
+
+            if matches.is_empty() {
+                return Err(TypeErrorAt::new(
+                    TypeError::UnboundVariable(format!("({})", op_name)),
+                    span.clone(),
+                ));
+            }
+
+            if matches.len() > 1 {
+                let mut options: Vec<String> = matches
+                    .iter()
+                    .map(|(tn, m)| format!("{}.{}", tn, m.name))
+                    .collect();
+                options.sort();
+                return Err(TypeErrorAt::new(
+                    TypeError::AmbiguousTraitMethod {
+                        name: op_name.to_string(),
+                        options,
+                    },
+                    span.clone(),
+                ));
+            }
+
+            let (trait_name, method) = matches.remove(0);
+            let td = self.trait_env.get(trait_name).unwrap();
+            let trait_param = td.type_param.clone();
+            let trait_name = trait_name.to_string();
+            let method_ty = method.ty.clone();
+            let trait_param_var = self.subst.fresh_var();
+            let mut param_vars: HashMap<String, TyVar> =
+                HashMap::from([(trait_param, trait_param_var)]);
+            let ty = self
+                .lower_ty(&method_ty, &mut param_vars)
+                .map_err(|e| TypeErrorAt::new(e, span.clone()))?;
+            self.constraint_map.push((trait_name.clone(), trait_param_var));
+            self.trait_call_constraints.push((
+                trait_name.clone(),
+                trait_param_var,
+                span.clone(),
+            ));
+            self.resolved_trait_methods.insert(node_id, (trait_name, op_name.to_string()));
+            ty
+        };
+
+        // Store the operator's full instantiated type for lowering.
+        self.resolved_op_types.insert(node_id, op_ty.clone());
+
+        // Apply the operator type as a curried function: op left right.
         let tl = self.infer(env, left)?;
         let tl = self.subst.apply(&tl);
-        match &tl {
-            Ty::Text => {
-                self.check(env, right, Ty::Text)?;
-                Ok(Ty::Text)
-            }
-            _ if tl.con_name() == Some("List") => {
-                let (_, args) = tl.flatten_app();
-                let elem = (*args.first().expect("List must have exactly 1 type argument")).clone();
-                let list_ty = Ty::mk_con("List", &[elem.clone()]);
-                self.check(env, right, list_ty)?;
-                Ok(Ty::mk_con("List", &[self.subst.apply(&elem)]))
-            }
-            Ty::Record(_) => {
-                let tr = self.infer(env, right)?;
-                let tr = self.subst.apply(&tr);
-                if let Ty::Record(_) = &tr {
-                    let rv = self.fresh_var();
-                    Ok(Ty::Record(Row {
-                        fields: vec![],
-                        tail: RowTail::Open(rv),
-                    }))
-                } else {
-                    Err(TypeErrorAt::new(
-                        TypeError::Mismatch(tl, tr),
-                        right.span.clone(),
-                    ))
-                }
-            }
-            Ty::Var(_) => {
-                let tr = self.infer(env, right)?;
-                let tr = self.subst.apply(&tr);
-                let tl = self.subst.apply(&tl);
-                self.unify_at(tl, tr.clone(), &right.span)?;
-                Ok(self.subst.apply(&tr))
-            }
-            t => Err(TypeErrorAt::new(
-                TypeError::ConcatNonConcatenable(t.clone()),
-                left.span.clone(),
-            )),
-        }
+        let op_ty = self.subst.apply(&op_ty);
+
+        // Unify op_ty with Func(tl, Func(tr_expected, ret))
+        let ret = self.fresh_ty();
+        let tr_expected = self.fresh_ty();
+        let expected_func = Ty::Func(
+            Box::new(tl.clone()),
+            Box::new(Ty::Func(Box::new(tr_expected.clone()), Box::new(ret.clone()))),
+        );
+        self.unify_at(op_ty, expected_func, span)?;
+
+        let tr_expected = self.subst.apply(&tr_expected);
+        self.check(env, right, tr_expected)?;
+
+        Ok(self.subst.apply(&ret))
     }
 
     fn infer_result_pipe(
@@ -1673,6 +1794,7 @@ impl Checker {
 
         let t_in = self.subst.apply(&t_in);
         let t_out = self.subst.apply(&t_out);
+        self.check_exhaustiveness(&t_in, arms, span)?;
         Ok(Ty::Func(Box::new(t_in), Box::new(t_out)))
     }
 
@@ -1739,18 +1861,22 @@ impl Checker {
             return Ok(());
         }
 
-        // Check if any arm is a catch-all (wildcard or bare ident).
+        // Check if any non-guarded arm is a catch-all (wildcard or bare ident).
         let has_catch_all = arms
             .iter()
-            .any(|arm| matches!(arm.pattern, Pattern::Wildcard | Pattern::Ident(..)));
+            .any(|arm| arm.guard.is_none() && matches!(arm.pattern, Pattern::Wildcard | Pattern::Ident(..)));
         if has_catch_all {
             return Ok(());
         }
 
-        // Collect variant names mentioned in pattern heads.
+        // Collect variant names covered by non-guarded arms only.
+        // A guarded arm `| Circle r if r > 5 -> …` does NOT guarantee coverage
+        // because the guard may fail at runtime.
         let mut covered: HashSet<String> = HashSet::new();
         for arm in arms {
-            collect_variant_names(&arm.pattern, &mut covered);
+            if arm.guard.is_none() {
+                collect_variant_names(&arm.pattern, &mut covered);
+            }
         }
 
         let missing: Vec<String> = all_variants
@@ -1802,51 +1928,53 @@ impl Checker {
                 }
             }
             // ── Record in check mode: propagate expected field types ────────
-            ExprKind::Record { base: None, fields, .. } => {
-                if let Ty::Record(row) = &expected {
-                    if matches!(row.tail, RowTail::Closed) {
-                        let mut row_fields: Vec<(String, Ty)> = Vec::new();
-                        for f in fields {
-                            let expected_field_ty = row.fields.iter().find(|(n, _)| n == &f.name).map(|(_, t)| t);
-                            let ty = if let Some(val) = &f.value {
-                                if let Some(ety) = expected_field_ty {
-                                    self.check(env, val, ety.clone())?;
-                                    self.subst.apply(ety)
-                                } else {
-                                    self.infer(env, val)?
+            ExprKind::Record { entries } => {
+                // Only use the check-mode optimization when all entries are
+                // fields (no spreads) and the expected type is a closed record.
+                let all_fields = entries.iter().all(|e| matches!(e, RecordEntry::Field(_)));
+                if all_fields {
+                    if let Ty::Record(row) = &expected {
+                        if matches!(row.tail, RowTail::Closed) {
+                            let mut row_fields: Vec<(String, Ty)> = Vec::new();
+                            for entry in entries {
+                                if let RecordEntry::Field(f) = entry {
+                                    let expected_field_ty = row.fields.iter().find(|(n, _)| n == &f.name).map(|(_, t)| t);
+                                    let ty = if let Some(val) = &f.value {
+                                        if let Some(ety) = expected_field_ty {
+                                            self.check(env, val, ety.clone())?;
+                                            self.subst.apply(ety)
+                                        } else {
+                                            self.infer(env, val)?
+                                        }
+                                    } else {
+                                        match env.lookup(&f.name) {
+                                            Some(s) => self.instantiate(s),
+                                            None => {
+                                                return Err(TypeErrorAt::new(
+                                                    TypeError::UnboundVariable(f.name.clone()),
+                                                    span.clone(),
+                                                ))
+                                            }
+                                        }
+                                    };
+                                    let ty = self.subst.apply(&ty);
+                                    self.node_types.insert(f.name_node_id, ty.clone());
+                                    row_fields.push((f.name.clone(), ty));
                                 }
-                            } else {
-                                match env.lookup(&f.name) {
-                                    Some(s) => self.instantiate(s),
-                                    None => {
-                                        return Err(TypeErrorAt::new(
-                                            TypeError::UnboundVariable(f.name.clone()),
-                                            span.clone(),
-                                        ))
-                                    }
-                                }
-                            };
-                            let ty = self.subst.apply(&ty);
-                            self.node_types.insert(f.name_node_id, ty.clone());
-                            row_fields.push((f.name.clone(), ty));
+                            }
+                            row_fields.sort_by(|a, b| a.0.cmp(&b.0));
+                            let inferred = Ty::Record(Row {
+                                fields: row_fields,
+                                tail: RowTail::Closed,
+                            });
+                            self.node_types.insert(expr.id, self.subst.apply(&inferred));
+                            return self.unify_at(inferred, expected, span);
                         }
-                        row_fields.sort_by(|a, b| a.0.cmp(&b.0));
-                        let inferred = Ty::Record(Row {
-                            fields: row_fields,
-                            tail: RowTail::Closed,
-                        });
-                        self.node_types.insert(expr.id, self.subst.apply(&inferred));
-                        self.unify_at(inferred, expected, span)
-                    } else {
-                        let inferred = self.infer(env, expr)?;
-                        let inferred = self.subst.apply(&inferred);
-                        self.unify_at(inferred, expected, span)
                     }
-                } else {
-                    let inferred = self.infer(env, expr)?;
-                    let inferred = self.subst.apply(&inferred);
-                    self.unify_at(inferred, expected, span)
                 }
+                let inferred = self.infer(env, expr)?;
+                let inferred = self.subst.apply(&inferred);
+                self.unify_at(inferred, expected, span)
             }
             // ── LetIn in check mode: propagate expected type to body ──────
             ExprKind::LetIn { pattern, value, body } => {
@@ -1854,8 +1982,38 @@ impl Checker {
                 let bindings = self
                     .infer_pattern(pattern, val_ty)
                     .map_err(|e| TypeErrorAt::new(e, span.clone()))?;
-                let new_env = env.extend_many(bindings);
+                let mut new_env = env.clone();
+                for (name, ty) in bindings {
+                    let scheme = self.generalise(env, &ty);
+                    new_env.insert(name, scheme);
+                }
                 self.check(&new_env, body, expected)
+            }
+            // ── Bare match arms in check mode: propagate function type ────
+            ExprKind::Match(arms) => {
+                if let Ty::Func(t_param, t_ret) = expected.clone() {
+                    for arm in arms {
+                        let t_in_c = self.subst.apply(&t_param);
+                        let bindings = self
+                            .infer_pattern(&arm.pattern, t_in_c)
+                            .map_err(|e| TypeErrorAt::new(e, span.clone()))?;
+                        let arm_env = env.extend_many(bindings);
+                        if let Some(guard) = &arm.guard {
+                            let guard_ty = self.infer(&arm_env, guard)?;
+                            let guard_ty = self.subst.apply(&guard_ty);
+                            self.unify_at(guard_ty, Ty::Bool, &guard.span)?;
+                        }
+                        self.check(&arm_env, &arm.body, *t_ret.clone())?;
+                    }
+                    let t_param_resolved = self.subst.apply(&t_param);
+                    self.check_exhaustiveness(&t_param_resolved, arms, span)?;
+                    self.node_types.insert(expr.id, self.subst.apply(&expected));
+                    Ok(())
+                } else {
+                    let inferred = self.infer(env, expr)?;
+                    let inferred = self.subst.apply(&inferred);
+                    self.unify_at(inferred, expected, span)
+                }
             }
             // ── Match in check mode: propagate expected type to arm bodies ──
             ExprKind::MatchExpr { scrutinee, arms } => {
@@ -1871,6 +2029,8 @@ impl Checker {
                     }
                     self.check(&arm_env, &arm.body, expected.clone())?;
                 }
+                let scrut_resolved = self.subst.apply(&scrut_ty);
+                self.check_exhaustiveness(&scrut_resolved, arms, span)?;
                 self.node_types.insert(expr.id, self.subst.apply(&expected));
                 Ok(())
             }
@@ -1947,13 +2107,7 @@ impl Checker {
             }
             (Some(wt), Some(p)) => self.infer_pattern(p, wt),
             (None, None) | (None, Some(Pattern::Wildcard)) => Ok(vec![]),
-            (None, Some(p)) => self.infer_pattern(
-                p,
-                Ty::Record(Row {
-                    fields: vec![],
-                    tail: RowTail::Closed,
-                }),
-            ),
+            (None, Some(_)) => Err(TypeError::UnitVariantWithPayload(name.to_string())),
         }
     }
 
@@ -1962,6 +2116,12 @@ impl Checker {
         rp: &RecordPattern,
         expected: Ty,
     ) -> Result<Vec<(String, Ty)>, TypeError> {
+        let mut seen: HashSet<&str> = HashSet::new();
+        for fp in &rp.fields {
+            if !seen.insert(&fp.name) {
+                return Err(TypeError::DuplicateField(fp.name.clone()));
+            }
+        }
         let mut field_tys: Vec<(String, Ty)> = rp
             .fields
             .iter()
@@ -2317,6 +2477,11 @@ impl Checker {
         self.check_trait_constraints()?;
 
         let export_ty = self.infer(&env, &program.exports)?;
+
+        // Re-check constraints: the export expression may contain trait calls
+        // that were not present during the first check.
+        self.check_trait_constraints()?;
+
         Ok(self.subst.apply(&export_ty))
     }
 
@@ -2807,9 +2972,7 @@ fn synth_impl_binding(id: &ImplDef, trait_def: Option<&TraitDef>) -> Binding {
         value: Expr {
             id: u32::MAX,
             kind: ExprKind::Record {
-                base: None,
-                fields,
-                spread: false,
+                entries: fields.into_iter().map(RecordEntry::Field).collect(),
             },
             span: crate::error::Span::default(),
         },
@@ -2846,6 +3009,24 @@ fn ast_type_contains_var(ty: &Type, var_name: &str) -> bool {
             .fields
             .iter()
             .any(|f| ast_type_contains_var(&f.ty, var_name)),
+    }
+}
+
+/// Returns true if the AST type contains any type variable (lowercase name).
+fn ast_type_has_any_var(ty: &Type) -> bool {
+    match ty {
+        Type::Var(_) => true,
+        Type::Constructor(_) => false,
+        Type::App { callee, arg } => {
+            ast_type_has_any_var(callee) || ast_type_has_any_var(arg)
+        }
+        Type::Func { param, ret } => {
+            ast_type_has_any_var(param) || ast_type_has_any_var(ret)
+        }
+        Type::Record(rt) => rt
+            .fields
+            .iter()
+            .any(|f| ast_type_has_any_var(&f.ty)),
     }
 }
 
@@ -3061,6 +3242,11 @@ pub fn elaborate_bindings(
     checker.check_trait_constraints()?;
 
     let export_ty = checker.infer(&env, &program.exports)?;
+
+    // Re-check constraints: the export expression may contain trait calls
+    // that were not present during the first check.
+    checker.check_trait_constraints()?;
+
     let export_ty = checker.subst.apply(&export_ty);
 
     // Apply final substitution to binding schemes.
@@ -3170,10 +3356,12 @@ pub fn elaborate(
     checker.check_trait_constraints()?;
 
     let export_ty = checker.infer(&env, &program.exports)?;
-    let export_ty = checker.subst.apply(&export_ty);
 
-    // Apply the final substitution to every recorded type so all type variables
-    // are resolved to their concrete types.
+    // Re-check constraints: the export expression may contain trait calls
+    // that were not present during the first check.
+    checker.check_trait_constraints()?;
+
+    let export_ty = checker.subst.apply(&export_ty);
     let resolved_trait_methods = checker.resolved_trait_methods;
     let node_types: HashMap<NodeId, Ty> = checker
         .node_types
@@ -3189,7 +3377,7 @@ pub fn elaborate(
 pub fn elaborate_with_env(
     program: &Program,
     path: Option<&Path>,
-) -> Result<(HashMap<NodeId, Ty>, TypeEnv, Ty, HashMap<NodeId, (String, String)>), TypeErrorAt> {
+) -> Result<(HashMap<NodeId, Ty>, TypeEnv, Ty, HashMap<NodeId, (String, String)>, HashMap<NodeId, Ty>), TypeErrorAt> {
     let mut subst = Subst::new();
     let (base_env, mut var_env) = builtin_env(&mut subst);
     let mut env = base_env;
@@ -3254,6 +3442,11 @@ pub fn elaborate_with_env(
     checker.check_trait_constraints()?;
 
     let export_ty = checker.infer(&env, &program.exports)?;
+
+    // Re-check constraints: the export expression may contain trait calls
+    // that were not present during the first check.
+    checker.check_trait_constraints()?;
+
     let export_ty = checker.subst.apply(&export_ty);
 
     // Apply final substitution to env and node_types.
@@ -3268,6 +3461,11 @@ pub fn elaborate_with_env(
     let mut hole_errors = drain_holes_to_errors(&checker);
 
     let resolved_trait_methods = checker.resolved_trait_methods;
+    let resolved_op_types: HashMap<NodeId, Ty> = checker
+        .resolved_op_types
+        .into_iter()
+        .map(|(id, ty)| (id, checker.subst.apply(&ty)))
+        .collect();
     let node_types: HashMap<NodeId, Ty> = checker
         .node_types
         .into_iter()
@@ -3278,7 +3476,7 @@ pub fn elaborate_with_env(
         return Err(hole_errors.remove(0));
     }
 
-    Ok((node_types, resolved_env, export_ty, resolved_trait_methods))
+    Ok((node_types, resolved_env, export_ty, resolved_trait_methods, resolved_op_types))
 }
 
 /// Like [`elaborate_with_env`] but never fails - type errors are collected and
@@ -3297,6 +3495,7 @@ pub fn elaborate_with_env_partial(
     HashMap<String, TraitDef>,
     Vec<TypeErrorAt>,
     HashMap<TyVar, String>,
+    VariantEnv,
 ) {
     let mut subst = Subst::new();
     let (base_env, mut var_env) = builtin_env(&mut subst);
@@ -3397,6 +3596,11 @@ pub fn elaborate_with_env_partial(
     // Best-effort export type inference - ignore errors.
     let _ = checker.infer(&env, &program.exports);
 
+    // Re-check constraints for trait calls in the export expression.
+    if let Err(e) = checker.check_trait_constraints() {
+        errors.push(e);
+    }
+
     // Apply final substitution.
     let resolved_env: TypeEnv = {
         let mut e = TypeEnv::new();
@@ -3428,5 +3632,5 @@ pub fn elaborate_with_env_partial(
     let mut hole_errors = drain_holes_to_errors(&checker);
     errors.append(&mut hole_errors);
 
-    (node_types, resolved_env, checker.trait_env, errors, var_name_hints)
+    (node_types, resolved_env, checker.trait_env, errors, var_name_hints, checker.variant_env)
 }

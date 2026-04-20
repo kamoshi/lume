@@ -1,0 +1,25 @@
+-- Tests list spread syntax
+
+let xs = [1, 2, 3]
+let ys = [4, 5]
+
+-- Spread at the beginning
+let r1 = [..xs, 4, 5]
+let _ = r1 |> map (n -> showNum n) |> join ", " |> print
+
+-- Spread at the end
+let r2 = [0, ..xs]
+let _ = r2 |> map (n -> showNum n) |> join ", " |> print
+
+-- Multiple spreads
+let r3 = [..xs, ..ys]
+let _ = r3 |> map (n -> showNum n) |> join ", " |> print
+
+-- Interleaved spreads and elements
+let r4 = [0, ..xs, 99, ..ys, 100]
+let _ = r4 |> map (n -> showNum n) |> join ", " |> print
+
+-- Empty spread
+let empty : List Num = []
+let r5 = [..empty, 1, ..empty]
+let _ = r5 |> map (n -> showNum n) |> join ", " |> print

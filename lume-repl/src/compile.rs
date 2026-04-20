@@ -105,15 +105,15 @@ pub(crate) fn lower_bundle(
         };
 
         let module_path = Some(m.canonical.as_path());
-        let (node_types, type_env, resolved_trait_methods) =
+        let (node_types, type_env, resolved_trait_methods, resolved_op_types) =
             match types::infer::elaborate_with_env(&m.program, module_path) {
-                Ok((nt, env, _, rtm)) => (nt, env, rtm),
+                Ok((nt, env, _, rtm, rot)) => (nt, env, rtm, rot),
                 Err(e) => {
                     eprintln!("{}: type error: {e}", m.canonical.display());
                     return None;
                 }
             };
-        let ir_mod = lower::lower(m.program.clone(), &node_types, &type_env, &local_global, &resolved_trait_methods);
+        let ir_mod = lower::lower(m.program.clone(), &node_types, &type_env, &local_global, &resolved_trait_methods, &resolved_op_types);
         ir_modules.push(codegen::IrModule {
             canonical: m.canonical.clone(),
             module: ir_mod,
@@ -327,9 +327,9 @@ pub(crate) fn compile_repl(
         .map_err(|e| format!("parse error: {e}"))?;
 
     // Pass base_dir so the type checker can resolve `use` imports.
-    let (node_types, type_env, resolved_trait_methods) =
+    let (node_types, type_env, resolved_trait_methods, resolved_op_types) =
         types::infer::elaborate_with_env(&program, Some(base_dir))
-            .map(|(nt, env, _, rtm)| (nt, env, rtm))
+            .map(|(nt, env, _, rtm, rot)| (nt, env, rtm, rot))
             .map_err(|e| format!("type error: {e}"))?;
 
     let mut global = lower::GlobalCtx {
@@ -415,7 +415,7 @@ pub(crate) fn compile_repl(
         }
     }
 
-    let ir_mod = lower::lower(program, &node_types, &type_env, &global, &resolved_trait_methods);
+    let ir_mod = lower::lower(program, &node_types, &type_env, &global, &resolved_trait_methods, &resolved_op_types);
 
     let mut variant_env = types::infer::VariantEnv::default();
     for (name, info) in &global.variants {

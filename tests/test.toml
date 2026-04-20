@@ -94,6 +94,33 @@ Bob
 100
 """
 
+[tests.spread_record]
+path = "tests/lume/spread_record.lume"
+expect = "typecheck"
+output = """
+1
+10
+1
+3
+1
+99
+42
+0
+1
+9
+"""
+
+[tests.spread_list]
+path = "tests/lume/spread_list.lume"
+expect = "typecheck"
+output = """
+1, 2, 3, 4, 5
+0, 1, 2, 3
+1, 2, 3, 4, 5
+0, 1, 2, 3, 99, 4, 5, 100
+1
+"""
+
 [tests.list_operations]
 path = "tests/lume/list_operations.lume"
 expect = "typecheck"
@@ -474,4 +501,69 @@ path = "tests/lume/trait_bare_method_constrained.lume"
 expect = "typecheck"
 output = """
 42
+"""
+
+[tests.concat_trait]
+path = "tests/lume/concat_trait.lume"
+expect = "typecheck"
+output = """
+hello world
+1 2 3 4
+42
+1 2 3
+"""
+
+[tests.operator_custom]
+path = "tests/lume/operator_custom.lume"
+expect = "typecheck"
+output = """
+(hello(
+*wow*
+first
+second
+third
+!ok!
+"""
+
+[tests.operator_trait_method]
+path = "tests/lume/operator_trait_method.lume"
+expect = "typecheck"
+output = """
+11 12 13
+42
+10 12 14
+"""
+
+[tests.guard_exhaustive]
+path = "tests/lume/guard_exhaustive.lume"
+expect = "typecheck"
+output = """
+big circle
+small circle
+rect
+"""
+
+[tests.guard_non_exhaustive]
+path = "tests/lume/guard_non_exhaustive.lume"
+expect = "error"
+error_contains = "non-exhaustive match, missing: Circle"
+
+[tests.export_trait_check]
+path = "tests/lume/export_trait_check.lume"
+expect = "error"
+error_contains = "no impl of trait 'Show' for type 'Bool'"
+
+[tests.maperr_typing]
+path = "tests/lume/maperr_typing.lume"
+expect = "typecheck"
+output = ""
+
+[tests.spread_field_after]
+path = "tests/lume/spread_field_after.lume"
+expect = "typecheck"
+output = """
+1
+2
+hello
+30
 """

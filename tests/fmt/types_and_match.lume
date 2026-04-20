@@ -1,0 +1,34 @@
+-- Types, pattern matching, and variant constructors
+
+type Shape =
+  | Circle { radius: Num }
+  | Rect { width: Num, height: Num }
+  | Triangle { base: Num, height: Num }
+
+let pi = 3.14159
+
+-- Pattern matching on ADT
+let area : Shape -> Num =
+  | Circle { radius }         -> pi * radius * radius
+  | Rect { width, height }    -> width * height
+  | Triangle { base, height } -> base * height / 2
+
+-- Curried scaling function
+let scale : Num -> Shape -> Shape = f ->
+  | Circle { radius }         -> Circle { radius: radius * f }
+  | Rect { width, height }    -> Rect { width: width * f, height: height * f }
+  | Triangle { base, height } -> Triangle { base: base * f, height: height * f }
+
+-- Guards in pattern matching
+let grade : Num -> Text =
+  | s if s >= 90 -> "A"
+  | s if s >= 75 -> "B"
+  | s if s >= 60 -> "C"
+  | _            -> "Fail"
+
+
+pub {
+  area,
+  scale,
+  grade,
+}

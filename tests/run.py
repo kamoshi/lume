@@ -151,6 +151,39 @@ def run_repl_test(name: str, test: dict, lume_bin: str) -> tuple[bool, str]:
     return True, "ok"
 
 
+def run_fmt_test(path: str, lume_bin: str) -> tuple[bool, str]:
+    """Run a format idempotency test.
+
+    Formats the file via `lume fmt --stdout` and checks the output matches
+    the original.  Golden files in tests/fmt/ should already be ideally
+    formatted so the formatter must not change them.
+    """
+    with open(path) as fh:
+        original = fh.read()
+
+    result = subprocess.run(
+        [lume_bin, "fmt", "--stdout", path],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+    )
+    if result.returncode != 0:
+        return False, f"formatter failed: {result.stderr.strip()}"
+
+    formatted = result.stdout
+    if formatted == original:
+        return True, "stable"
+
+    # Build a short diff summary
+    import difflib
+
+    orig_lines = original.splitlines(keepends=True)
+    fmt_lines = formatted.splitlines(keepends=True)
+    diff = list(difflib.unified_diff(orig_lines, fmt_lines, n=1))
+    diff_str = "".join(diff[:20])  # limit to 20 lines
+    return False, f"formatter changed the file:\n{diff_str}"
+
+
 def main():
     lume_bin = build_lume()
 
@@ -163,8 +196,17 @@ def main():
         with open(REPL_TOML_PATH, "rb") as f:
             repl_tests = tomllib.load(f).get("tests", {})
 
+    # Discover format test files
+    fmt_dir = os.path.join(REPO_ROOT, "tests", "fmt")
+    fmt_files: list[str] = []
+    if os.path.isdir(fmt_dir):
+        for fname in sorted(os.listdir(fmt_dir)):
+            if fname.endswith(".lume"):
+                fmt_files.append(os.path.join(fmt_dir, fname))
+
     compiler_results: dict[str, tuple[bool, str]] = {}
     repl_results: dict[str, tuple[bool, str]] = {}
+    fmt_results: dict[str, tuple[bool, str]] = {}
 
     with ThreadPoolExecutor() as executor:
         compiler_futures = {
@@ -175,10 +217,16 @@ def main():
             executor.submit(run_repl_test, name, test, lume_bin): name
             for name, test in repl_tests.items()
         }
+        fmt_futures = {
+            executor.submit(run_fmt_test, path, lume_bin): os.path.basename(path)
+            for path in fmt_files
+        }
         for future in as_completed(compiler_futures):
             compiler_results[compiler_futures[future]] = future.result()
         for future in as_completed(repl_futures):
             repl_results[repl_futures[future]] = future.result()
+        for future in as_completed(fmt_futures):
+            fmt_results[fmt_futures[future]] = future.result()
 
     def print_section(
         title: str, results: dict[str, tuple[bool, str]]
@@ -200,8 +248,9 @@ def main():
 
     cp, cf = print_section("Compiler tests", compiler_results)
     rp, rf = print_section("REPL tests", repl_results)
+    fp, ff = print_section("Format tests", fmt_results)
 
-    passed, failed = cp + rp, cf + rf
+    passed, failed = cp + rp + fp, cf + rf + ff
     print(f"{passed} passed, {failed} failed, {passed + failed} total")
     if failed > 0:
         sys.exit(1)

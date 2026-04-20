@@ -1,0 +1,18 @@
+-- Tests that guards in pattern matching do not defeat exhaustiveness checking.
+-- A guarded arm doesn't guarantee coverage; a non-guarded catch-all is needed.
+
+type Shape =
+  | Circle Num
+  | Rect Num
+
+-- This is exhaustive because there's a non-guarded wildcard at the end
+let describe : Shape -> Text =
+  | Circle r if r > 5 -> "big circle"
+  | Circle _ -> "small circle"
+  | Rect w -> "rect"
+
+let _ = describe (Circle 10) |> print
+let _ = describe (Circle 2) |> print
+let _ = describe (Rect 4) |> print
+
+pub {}

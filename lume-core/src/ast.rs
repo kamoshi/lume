@@ -105,6 +105,8 @@ pub struct TypeDef {
     pub params: Vec<String>,
     pub variants: Vec<Variant>,
     pub doc: Option<String>,
+    /// Span of the type name token (for document symbols / go-to-definition).
+    pub name_span: Span,
 }
 
 #[derive(Debug, Clone)]
@@ -114,6 +116,8 @@ pub struct Variant {
     /// Unit variants have `None`. Wrapper variants carry a type, which may
     /// be a plain type (`Some a`) or a record type (`Circle { radius: Num }`).
     pub wraps: Option<Type>,
+    /// Span of the variant name token.
+    pub name_span: Span,
 }
 
 /// `let x : (C a, C b) => T = expr`
@@ -145,18 +149,19 @@ pub enum ExprKind {
     Number(f64),
     Text(String),
     Bool(bool),
-    List(Vec<Expr>),
+    /// `[1, 2, 3]` or with spreads: `[..a, 4, ..b]`
+    List {
+        entries: Vec<ListEntry>,
+    },
 
     // Names
     Ident(String),
 
     /// `{ name: "Alice", age: 30 }`
-    /// For record update: `{ alice | age: 31 }` the base is Some(alice).
+    /// Spreads and fields can be interleaved: `{ ..base, name: "Bob", ..extra }`
+    /// Entries are applied left-to-right; later entries shadow earlier duplicates.
     Record {
-        base: Option<Box<Expr>>,
-        fields: Vec<RecordField>,
-        #[allow(dead_code)]
-        spread: bool, // ends with `..` (spread pattern for modules)
+        entries: Vec<RecordEntry>,
     },
 
     /// `alice.name`
@@ -231,6 +236,20 @@ pub enum ExprKind {
     Hole,
 }
 
+/// An entry in a record expression: either a named field or a spread.
+#[derive(Debug, Clone)]
+pub enum RecordEntry {
+    Field(RecordField),
+    Spread(Expr),
+}
+
+/// An entry in a list expression: either a single element or a spread.
+#[derive(Debug, Clone)]
+pub enum ListEntry {
+    Elem(Expr),
+    Spread(Expr),
+}
+
 #[derive(Debug, Clone)]
 pub struct RecordField {
     pub name: String,
@@ -277,6 +296,9 @@ pub enum BinOp {
 
     // Concatenation
     Concat, // ++
+
+    // User-defined operator (e.g. <>, >>=, <*>)
+    Custom(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -487,20 +509,26 @@ fn assign_ids_expr(expr: &mut Expr, counter: &mut NodeId) {
     expr.id = *counter;
     *counter += 1;
     match &mut expr.kind {
-        ExprKind::List(exprs) => {
-            for e in exprs {
-                assign_ids_expr(e, counter);
+        ExprKind::List { entries } => {
+            for entry in entries {
+                match entry {
+                    ListEntry::Elem(e) | ListEntry::Spread(e) => assign_ids_expr(e, counter),
+                }
             }
         }
-        ExprKind::Record { base, fields, .. } => {
-            if let Some(b) = base {
-                assign_ids_expr(b, counter);
-            }
-            for f in fields {
-                f.name_node_id = *counter;
-                *counter += 1;
-                if let Some(v) = &mut f.value {
-                    assign_ids_expr(v, counter);
+        ExprKind::Record { entries } => {
+            for entry in entries {
+                match entry {
+                    RecordEntry::Field(f) => {
+                        f.name_node_id = *counter;
+                        *counter += 1;
+                        if let Some(v) = &mut f.value {
+                            assign_ids_expr(v, counter);
+                        }
+                    }
+                    RecordEntry::Spread(e) => {
+                        assign_ids_expr(e, counter);
+                    }
                 }
             }
         }

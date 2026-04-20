@@ -72,6 +72,10 @@ pub enum TypeError {
         name: String,
         options: Vec<String>,
     },
+    /// A record literal or pattern has the same field name more than once.
+    DuplicateField(String),
+    /// A unit variant (no payload) was given a payload pattern.
+    UnitVariantWithPayload(String),
 }
 
 impl fmt::Display for TypeError {
@@ -173,6 +177,12 @@ impl fmt::Display for TypeError {
                     name,
                     options.join(" or ")
                 )
+            }
+            TypeError::DuplicateField(field) => {
+                write!(f, "duplicate field '{}'", field)
+            }
+            TypeError::UnitVariantWithPayload(name) => {
+                write!(f, "variant '{}' takes no payload, but a pattern was given", name)
             }
         }
     }

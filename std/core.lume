@@ -2,6 +2,20 @@
 
 let id = x -> x
 
+-- Concat
+
+trait Concat a {
+  let (++) : a -> a -> a
+}
+
+use Concat in Text {
+  let (++) = concat_text
+}
+
+use Concat in List a {
+  let (++) = concat_list
+}
+
 -- ToString
 
 trait ToText a {

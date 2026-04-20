@@ -1,0 +1,47 @@
+-- Let-in chains and nested expressions
+
+let compute = x ->
+  let doubled = x * 2 in
+  let tripled = x * 3 in
+  let sum = doubled + tripled in
+    sum
+
+-- If-then-else
+let abs = n ->
+  if n >= 0
+    then n
+    else 0 - n
+
+-- Pipe chains
+let process = x ->
+  x |> compute |> abs
+
+
+-- Pipe chains
+let process2 = x ->
+  x
+    |> compute
+    |> abs
+    |> showNum
+    |> print
+
+-- Pipe chains
+let process3 = x -> x
+  |> compute
+  |> abs
+  |> showNum
+  |> print
+
+-- Safe division returning a Result
+let safeDivide : Num -> Num -> Result Num Text = a -> b ->
+  if b == 0
+    then Err "division by zero"
+    else Ok (a / b)
+
+
+pub {
+  compute,
+  abs,
+  process,
+  safeDivide,
+}

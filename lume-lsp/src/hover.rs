@@ -112,7 +112,7 @@ fn instantiate_fresh(scheme: &Scheme) -> Ty {
     let mut s = Subst::new();
     for &var in &scheme.vars {
         let fresh = s.fresh_var();
-        s.bind_ty(var, Ty::Var(fresh));
+        let _ = s.bind_ty(var, Ty::Var(fresh));
     }
     s.apply(&scheme.ty)
 }

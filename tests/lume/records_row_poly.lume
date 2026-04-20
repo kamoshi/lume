@@ -11,6 +11,6 @@ let _ = getName bob |> print
 let _ = getScore alice |> showNum |> print
 let _ = getScore bob |> showNum |> print
 
--- Record update syntax
-let alice2 = { alice | score: 100 }
+-- Record update via spread syntax
+let alice2 = { ..alice, score: 100 }
 let _ = getScore alice2 |> showNum |> print

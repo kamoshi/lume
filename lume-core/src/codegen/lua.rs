@@ -298,20 +298,59 @@ const LUA_RESERVED: &[&str] = &[
 /// Emit a Lua table key safely: bare identifier for normal names,
 /// `["keyword"]` for Lua reserved words.
 fn lua_field_key(name: &str) -> String {
-    if LUA_RESERVED.contains(&name) {
+    if LUA_RESERVED.contains(&name) || !is_lua_ident(name) {
         format!("[\"{}\"]", name)
     } else {
         name.to_string()
     }
 }
 
-/// Escape Lua reserved words.
+/// Check if a name is a valid Lua identifier.
+fn is_lua_ident(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Escape Lua reserved words and mangle operator-named identifiers.
 fn lua_ident(name: &str) -> std::borrow::Cow<'_, str> {
     if LUA_RESERVED.contains(&name) {
         std::borrow::Cow::Owned(format!("_{}", name))
+    } else if !is_lua_ident(name) {
+        std::borrow::Cow::Owned(mangle_op(name))
     } else {
         std::borrow::Cow::Borrowed(name)
     }
+}
+
+/// Mangle an operator name into a valid Lua identifier.
+fn mangle_op(name: &str) -> String {
+    let mut buf = String::from("__op_");
+    for c in name.chars() {
+        match c {
+            '+' => buf.push_str("plus"),
+            '-' => buf.push_str("minus"),
+            '*' => buf.push_str("star"),
+            '/' => buf.push_str("slash"),
+            '=' => buf.push_str("eq"),
+            '<' => buf.push_str("lt"),
+            '>' => buf.push_str("gt"),
+            '!' => buf.push_str("bang"),
+            '|' => buf.push_str("pipe"),
+            '&' => buf.push_str("amp"),
+            '?' => buf.push_str("qmark"),
+            '^' => buf.push_str("caret"),
+            '~' => buf.push_str("tilde"),
+            '$' => buf.push_str("dollar"),
+            '#' => buf.push_str("hash"),
+            '@' => buf.push_str("at"),
+            _ => buf.push(c),
+        }
+    }
+    buf
 }
 
 /// All stdlib + builtin implementations as globals, for REPL preloading.
@@ -842,15 +881,50 @@ impl Emitter {
             ir::Expr::Num(n) => self.emit_number(*n),
             ir::Expr::Str(s) => self.emit_string(s),
             ir::Expr::Bool(b) => self.out.push_str(if *b { "true" } else { "false" }),
-            ir::Expr::List(items) => {
-                self.out.push('{');
-                for (i, item) in items.iter().enumerate() {
-                    if i > 0 {
-                        self.out.push_str(", ");
+            ir::Expr::List { bases, elems } => {
+                if bases.is_empty() {
+                    // Plain list literal: { elem, elem, ... }
+                    self.out.push('{');
+                    for (i, item) in elems.iter().enumerate() {
+                        if i > 0 {
+                            self.out.push_str(", ");
+                        }
+                        self.emit_expr(item);
                     }
-                    self.emit_expr(item);
+                    self.out.push('}');
+                } else {
+                    // Chain _concat calls for spread bases + trailing elems
+                    self.needs_concat = true;
+                    let trailing = if elems.is_empty() {
+                        None
+                    } else {
+                        Some(elems)
+                    };
+                    let total = bases.len() + if trailing.is_some() { 1 } else { 0 };
+                    // Open _concat( wrappers
+                    for _ in 1..total {
+                        self.out.push_str("_concat(");
+                    }
+                    for (i, base) in bases.iter().enumerate() {
+                        if i > 0 {
+                            self.out.push_str(", ");
+                        }
+                        self.emit_expr(base);
+                        if i > 0 {
+                            self.out.push(')');
+                        }
+                    }
+                    if let Some(elems) = trailing {
+                        self.out.push_str(", {");
+                        for (i, e) in elems.iter().enumerate() {
+                            if i > 0 {
+                                self.out.push_str(", ");
+                            }
+                            self.emit_expr(e);
+                        }
+                        self.out.push_str("})");
+                    }
                 }
-                self.out.push('}');
             }
             ir::Expr::Var(name) => {
                 // Check if this is a stdlib function. If so, record it (so the
@@ -866,22 +940,9 @@ impl Emitter {
                     self.out.push_str(&lua_ident(name));
                 }
             }
-            ir::Expr::Record { base, fields } => {
-                if let Some(base_expr) = base {
-                    // Record update: _extend(base, { overrides })
-                    self.needs_extend = true;
-                    self.out.push_str("_extend(");
-                    self.emit_expr(base_expr);
-                    self.out.push_str(", {");
-                    for (i, (name, val)) in fields.iter().enumerate() {
-                        if i > 0 {
-                            self.out.push_str(", ");
-                        }
-                        self.out.push_str(&format!("{} = ", lua_field_key(name)));
-                        self.emit_expr(val);
-                    }
-                    self.out.push_str("})");
-                } else {
+            ir::Expr::Record { bases, fields } => {
+                if bases.is_empty() {
+                    // Plain record literal: { field = val, ... }
                     self.out.push('{');
                     for (i, (name, val)) in fields.iter().enumerate() {
                         if i > 0 {
@@ -891,11 +952,42 @@ impl Emitter {
                         self.emit_expr(val);
                     }
                     self.out.push('}');
+                } else {
+                    // Record with bases: chain _extend calls left-to-right.
+                    // _extend(_extend(b1, b2), { fields })
+                    self.needs_extend = true;
+                    // Build the nested _extend calls for all bases.
+                    let extend_depth = bases.len() - 1 + if fields.is_empty() { 0 } else { 1 };
+                    for _ in 0..extend_depth {
+                        self.out.push_str("_extend(");
+                    }
+                    let mut first = true;
+                    for base in bases {
+                        if !first {
+                            self.out.push_str(", ");
+                            self.emit_expr(base);
+                            self.out.push(')');
+                        } else {
+                            self.emit_expr(base);
+                            first = false;
+                        }
+                    }
+                    if !fields.is_empty() {
+                        self.out.push_str(", {");
+                        for (i, (name, val)) in fields.iter().enumerate() {
+                            if i > 0 {
+                                self.out.push_str(", ");
+                            }
+                            self.out.push_str(&format!("{} = ", lua_field_key(name)));
+                            self.emit_expr(val);
+                        }
+                        self.out.push_str("})");
+                    }
                 }
             }
             ir::Expr::Field(record, field) => {
                 self.emit_access_target(record);
-                if LUA_RESERVED.contains(&field.as_str()) {
+                if LUA_RESERVED.contains(&field.as_str()) || !is_lua_ident(field) {
                     self.out.push_str(&format!("[\"{}\"]", field));
                 } else {
                     self.out.push('.');
