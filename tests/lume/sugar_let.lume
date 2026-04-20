@@ -1,0 +1,15 @@
+let a = foo -> { bar, .. } ->
+  foo + bar
+
+-- sugar equivalent to the above
+-- can pattern match on struct fields
+let c foo { bar, .. } =
+  foo + bar
+
+-- equivalent to the above, just without matching on struct fields
+let b foo data =
+  foo + data.bar
+
+-- can have optional type annotations
+let d (foo: Num) { bar, .. } -> Num =
+  foo + bar

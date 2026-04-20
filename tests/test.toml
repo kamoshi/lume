@@ -195,6 +195,24 @@ output = """
 101, 102, 103
 """
 
+[tests.sugar_let]
+path = "tests/lume/sugar_let.lume"
+expect = "typecheck"
+
+[tests.sugar_let_runtime]
+path = "tests/lume/sugar_let_runtime.lume"
+expect = "typecheck"
+output = """
+42
+7
+120
+"""
+
+[tests.sugar_let_conflicting_annotation]
+path = "tests/lume/sugar_let_conflicting_annotation.lume"
+expect = "error"
+error_contains = "cannot mix head parameter/return annotations with a whole-binding type annotation"
+
 [tests.list_patterns]
 path = "tests/lume/list_patterns.lume"
 expect = "typecheck"

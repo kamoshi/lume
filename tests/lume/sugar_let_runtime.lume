@@ -1,0 +1,14 @@
+let add x y =
+  x + y
+
+let describe (x: Num) { bar, .. } -> Num =
+  x + bar
+
+let fact n =
+  if n == 0
+    then 1
+    else n * fact (n - 1)
+
+let _ = print (showNum (add 20 22))
+let _ = print (showNum (describe 2 { bar: 5, baz: 9 }))
+let _ = print (showNum (fact 5))

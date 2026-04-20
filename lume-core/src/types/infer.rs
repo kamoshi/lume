@@ -2157,15 +2157,14 @@ impl Checker {
             }
         }
 
-        if let Some(Some(rest_name)) = &rp.rest {
+        if let Some(Some((rest_name, _, rest_nid))) = &rp.rest {
             if let RowTail::Open(v) = tail {
-                bindings.push((
-                    rest_name.clone(),
-                    Ty::Record(Row {
-                        fields: vec![],
-                        tail: RowTail::Open(v),
-                    }),
-                ));
+                let rest_ty = Ty::Record(Row {
+                    fields: vec![],
+                    tail: RowTail::Open(v),
+                });
+                self.node_types.insert(*rest_nid, rest_ty.clone());
+                bindings.push((rest_name.clone(), rest_ty));
             }
         }
 
@@ -2186,8 +2185,10 @@ impl Checker {
             let elem_c = self.subst.apply(&elem);
             bindings.extend(self.infer_pattern(p, elem_c)?);
         }
-        if let Some(Some(rest)) = &lp.rest {
-            bindings.push((rest.clone(), Ty::mk_con("List", &[self.subst.apply(&elem)])));
+        if let Some(Some((rest_name, _, rest_nid))) = &lp.rest {
+            let rest_ty = Ty::mk_con("List", &[self.subst.apply(&elem)]);
+            self.node_types.insert(*rest_nid, rest_ty.clone());
+            bindings.push((rest_name.clone(), rest_ty));
         }
         Ok(bindings)
     }

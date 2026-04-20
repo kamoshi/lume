@@ -742,9 +742,34 @@ pub fn parse_binding(tokens: &[Spanned]) -> Result<(usize, Binding), ParseError>
     let (n, pattern) = parse_pattern(&tokens[ptr..])?;
     ptr += n;
 
+    // Optional binding-head sugar:
+    //   let f x y = body
+    //   let f (x: Num) y -> Text = body
+    //
+    // This lowers immediately to ordinary nested lambdas. When any head
+    // parameter or the return type is annotated, we synthesize a full binding
+    // type by filling unannotated positions with fresh type variables.
+    let mut params: Vec<(Pattern, Option<Type>)> = Vec::new();
+    while !matches!(
+        first_token(&tokens[ptr..]),
+        Some(Token::Equal | Token::Colon | Token::Arrow) | None
+    ) {
+        let (n, param, param_ty) = parse_binding_param(&tokens[ptr..])?;
+        ptr += n;
+        params.push((param, param_ty));
+    }
+
+    let mut sugar_ret_ty = None;
+    if !params.is_empty() && matches!(first_token(&tokens[ptr..]), Some(Token::Arrow)) {
+        ptr += 1; // consume `->`
+        let (n, ret_ty) = parse_type(&tokens[ptr..])?;
+        ptr += n;
+        sugar_ret_ty = Some(ret_ty);
+    }
+
     // optional type annotation (possibly with constraints)
     let mut constraints: Vec<(String, String)> = Vec::new();
-    let ty = if matches!(first_token(&tokens[ptr..]), Some(Token::Colon)) {
+    let explicit_ty = if matches!(first_token(&tokens[ptr..]), Some(Token::Colon)) {
         ptr += 1; // consume `:`
         // Try to parse constraint prefix: `(Trait a, Trait b) =>`
         // We detect this by speculatively scanning for `( TypeIdent ident , ... ) =>`
@@ -759,12 +784,82 @@ pub fn parse_binding(tokens: &[Spanned]) -> Result<(usize, Binding), ParseError>
         None
     };
 
+    let has_head_annotations = sugar_ret_ty.is_some() || params.iter().any(|(_, ty)| ty.is_some());
+    if explicit_ty.is_some() && has_head_annotations {
+        return Err(ParseError::conflicting_binding_annotations(span(&tokens[ptr..])));
+    }
+
     ptr += consume(&tokens[ptr..], &Token::Equal)?;
 
-    let (n, value) = parse_expr(&tokens[ptr..])?;
+    let (n, mut value) = parse_expr(&tokens[ptr..])?;
     ptr += n;
 
+    if !params.is_empty() {
+        value = desugar_binding_params(value, &params);
+    }
+
+    let ty = explicit_ty.or_else(|| synthesise_sugar_binding_type(&params, sugar_ret_ty));
+
     Ok((ptr, Binding { pattern, constraints, ty, value, doc: None }))
+}
+
+fn parse_binding_param(tokens: &[Spanned]) -> Result<(usize, Pattern, Option<Type>), ParseError> {
+    if matches!(first_token(tokens), Some(Token::LParen)) {
+        if tokens.get(1).and_then(|t| token_to_op_name(&t.token)).is_none() {
+            let mut ptr = 1;
+            let (n, pattern) = parse_pattern(&tokens[ptr..])?;
+            ptr += n;
+            ptr += consume(&tokens[ptr..], &Token::Colon)?;
+            let (n, ty) = parse_type(&tokens[ptr..])?;
+            ptr += n;
+            ptr += consume(&tokens[ptr..], &Token::RParen)?;
+            return Ok((ptr, pattern, Some(ty)));
+        }
+    }
+
+    let (n, pattern) = parse_pattern(tokens)?;
+    Ok((n, pattern, None))
+}
+
+fn desugar_binding_params(mut body: Expr, params: &[(Pattern, Option<Type>)]) -> Expr {
+    for (pattern, _) in params.iter().rev() {
+        let span = body.span.clone();
+        body = Expr {
+            id: 0,
+            kind: ExprKind::Lambda {
+                param: pattern.clone(),
+                body: Box::new(body),
+            },
+            span,
+        };
+    }
+    body
+}
+
+fn synthesise_sugar_binding_type(
+    params: &[(Pattern, Option<Type>)],
+    ret_ty: Option<Type>,
+) -> Option<Type> {
+    if params.is_empty() {
+        return ret_ty;
+    }
+
+    let any_annotations = ret_ty.is_some() || params.iter().any(|(_, ty)| ty.is_some());
+    if !any_annotations {
+        return None;
+    }
+
+    let mut ty = ret_ty.unwrap_or_else(|| Type::Var("__sugar_ret".to_string()));
+    for (idx, (_, param_ty)) in params.iter().enumerate().rev() {
+        let param_ty = param_ty
+            .clone()
+            .unwrap_or_else(|| Type::Var(format!("__sugar_arg_{}", idx)));
+        ty = Type::Func {
+            param: Box::new(param_ty),
+            ret: Box::new(ty),
+        };
+    }
+    Some(ty)
 }
 
 // ── Expressions ───────────────────────────────────────────────────────────────
@@ -1632,7 +1727,7 @@ fn parse_record_pattern(tokens: &[Spanned]) -> Result<(usize, RecordPattern), Pa
     ptr += consume(&tokens[ptr..], &Token::LBrace)?;
 
     let mut fields = Vec::new();
-    let mut rest: Option<Option<String>> = None;
+    let mut rest: Option<Option<(String, Span, NodeId)>> = None;
 
     loop {
         match first_token(&tokens[ptr..]) {
@@ -1642,8 +1737,9 @@ fn parse_record_pattern(tokens: &[Spanned]) -> Result<(usize, RecordPattern), Pa
                           // optional name: `..rest`
                 let name = if let Some(Token::Ident(s)) = first_token(&tokens[ptr..]) {
                     let s = s.clone();
+                    let rest_span = span(&tokens[ptr..]);
                     ptr += 1;
-                    Some(s)
+                    Some((s, rest_span, 0))
                 } else {
                     None
                 };
@@ -1704,7 +1800,7 @@ fn parse_list_pattern(tokens: &[Spanned]) -> Result<(usize, ListPattern), ParseE
     ptr += consume(&tokens[ptr..], &Token::LBracket)?;
 
     let mut elements = Vec::new();
-    let mut rest: Option<Option<String>> = None;
+    let mut rest: Option<Option<(String, Span, NodeId)>> = None;
 
     loop {
         match first_token(&tokens[ptr..]) {
@@ -1713,8 +1809,9 @@ fn parse_list_pattern(tokens: &[Spanned]) -> Result<(usize, ListPattern), ParseE
                 ptr += 1; // consume `..`
                 let name = if let Some(Token::Ident(s)) = first_token(&tokens[ptr..]) {
                     let s = s.clone();
+                    let rest_span = span(&tokens[ptr..]);
                     ptr += 1;
-                    Some(s)
+                    Some((s, rest_span, 0))
                 } else {
                     None
                 };

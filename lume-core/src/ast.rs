@@ -331,8 +331,8 @@ pub enum Pattern {
 #[derive(Debug, Clone)]
 pub struct RecordPattern {
     pub fields: Vec<FieldPattern>,
-    /// `None` = closed row; `Some(None)` = `..`; `Some(Some("rest"))` = `..rest`
-    pub rest: Option<Option<String>>,
+    /// `None` = closed row; `Some(None)` = `..`; `Some(Some((name, span, id)))` = `..rest`
+    pub rest: Option<Option<(String, Span, NodeId)>>,
 }
 
 #[derive(Debug, Clone)]
@@ -349,8 +349,8 @@ pub struct FieldPattern {
 #[derive(Debug, Clone)]
 pub struct ListPattern {
     pub elements: Vec<Pattern>,
-    /// `None` = closed; `Some(None)` = `..`; `Some(Some("rest"))` = `..rest`
-    pub rest: Option<Option<String>>,
+    /// `None` = closed; `Some(None)` = `..`; `Some(Some((name, span, id)))` = `..rest`
+    pub rest: Option<Option<(String, Span, NodeId)>>,
 }
 
 // ── Literals ──────────────────────────────────────────────────────────────────
@@ -488,9 +488,9 @@ fn assign_ids_pattern(pat: &mut Pattern, counter: &mut NodeId) {
                     assign_ids_pattern(p, counter);
                 }
             }
-            if let Some(Some(rest_name_pat)) = rp.rest.as_mut().map(|r| r.as_mut()) {
-                // rest is just a String, no pattern node to assign
-                let _ = rest_name_pat;
+            if let Some(Some((_, _, nid))) = rp.rest.as_mut() {
+                *nid = *counter;
+                *counter += 1;
             }
         }
         Pattern::Variant {
@@ -499,6 +499,10 @@ fn assign_ids_pattern(pat: &mut Pattern, counter: &mut NodeId) {
         Pattern::List(lp) => {
             for p in &mut lp.elements {
                 assign_ids_pattern(p, counter);
+            }
+            if let Some(Some((_, _, nid))) = lp.rest.as_mut() {
+                *nid = *counter;
+                *counter += 1;
             }
         }
         _ => {}

@@ -1511,7 +1511,7 @@ fn fmt_record_pattern(rp: &RecordPattern) -> Doc {
     if let Some(rest) = &rp.rest {
         parts.push(match rest {
             None => text(".."),
-            Some(name) => text(format!("..{}", name)),
+            Some((name, _, _)) => text(format!("..{}", name)),
         });
     }
     if parts.is_empty() {
@@ -1526,7 +1526,7 @@ fn fmt_list_pattern(lp: &ListPattern) -> Doc {
     if let Some(rest) = &lp.rest {
         parts.push(match rest {
             None => text(".."),
-            Some(name) => text(format!("..{}", name)),
+            Some((name, _, _)) => text(format!("..{}", name)),
         });
     }
     if parts.is_empty() {

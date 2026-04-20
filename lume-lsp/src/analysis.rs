@@ -278,6 +278,14 @@ fn collect_pattern_spans(pat: &ast::Pattern, out: &mut Vec<(Span, NodeId)>) {
             for fp in &rp.fields {
                 if let Some(inner) = &fp.pattern {
                     collect_pattern_spans(inner, out);
+                } else if fp.span.len > 0 {
+                    // Shorthand `{ bar }` — the field name IS the binding.
+                    out.push((fp.span.clone(), fp.node_id));
+                }
+            }
+            if let Some(Some((_, rest_span, rest_nid))) = &rp.rest {
+                if rest_span.len > 0 {
+                    out.push((rest_span.clone(), *rest_nid));
                 }
             }
         }
@@ -287,6 +295,11 @@ fn collect_pattern_spans(pat: &ast::Pattern, out: &mut Vec<(Span, NodeId)>) {
         ast::Pattern::List(lp) => {
             for p in &lp.elements {
                 collect_pattern_spans(p, out);
+            }
+            if let Some(Some((_, rest_span, rest_nid))) = &lp.rest {
+                if rest_span.len > 0 {
+                    out.push((rest_span.clone(), *rest_nid));
+                }
             }
         }
         _ => {}

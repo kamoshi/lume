@@ -55,6 +55,8 @@ pub enum ParseErrorKind {
     UnexpectedEof,
     /// Got a token we didn't expect in this position.
     UnexpectedToken { found: String, expected: String },
+    /// Sugared function binding used both head annotations and a whole-binding annotation.
+    ConflictingBindingAnnotations,
     /// A match expression has zero arms.
     EmptyMatch,
     /// A type definition has no variants.
@@ -84,6 +86,13 @@ impl ParseError {
             span,
         }
     }
+
+    pub fn conflicting_binding_annotations(span: Span) -> Self {
+        ParseError {
+            kind: ParseErrorKind::ConflictingBindingAnnotations,
+            span,
+        }
+    }
 }
 
 impl fmt::Display for ParseError {
@@ -94,6 +103,13 @@ impl fmt::Display for ParseError {
             }
             ParseErrorKind::UnexpectedToken { found, expected } => {
                 write!(f, "[{}] expected {}, found {}", self.span, expected, found)
+            }
+            ParseErrorKind::ConflictingBindingAnnotations => {
+                write!(
+                    f,
+                    "[{}] cannot mix head parameter/return annotations with a whole-binding type annotation",
+                    self.span
+                )
             }
             ParseErrorKind::EmptyMatch => {
                 write!(

@@ -688,7 +688,7 @@ mod tests {
         let pat = parse_pattern_str("[x, ..rest]");
         if let Pattern::List(lp) = pat {
             assert_eq!(lp.elements.len(), 1);
-            assert!(matches!(&lp.rest, Some(Some(s)) if s == "rest"));
+            assert!(matches!(&lp.rest, Some(Some((s, _, _))) if s == "rest"));
         } else {
             panic!("expected List pattern");
         }

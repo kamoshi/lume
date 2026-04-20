@@ -517,11 +517,11 @@ impl<'a> Cx<'a> {
                     .into_iter()
                     .map(|f| (f.name, f.pattern.map(|p| self.pat(p))))
                     .collect(),
-                rest: rp.rest,
+                rest: rp.rest.map(|r| r.map(|(name, _, _)| name)),
             },
             Pattern::List(lp) => ir::Pat::List {
                 elems: lp.elements.into_iter().map(|p| self.pat(p)).collect(),
-                rest: lp.rest,
+                rest: lp.rest.map(|r| r.map(|(name, _, _)| name)),
             },
         }
     }
