@@ -14,6 +14,110 @@ use crate::pretty::{
     concat, concat_all, group, hardline, join, line, nest, nil, render, space, text, wrap, Doc,
 };
 
+// ── String-aware scanning ──────────────────────────────────────────────────────
+
+/// Find a substring in `line` while skipping regions inside string literals.
+/// Returns the byte offset of the first occurrence outside quotes, or `None`.
+fn find_outside_string(line: &str, needle: &str) -> Option<usize> {
+    find_nth_outside_string(line, needle, 0)
+}
+
+/// Find the nth (0-based) occurrence of `needle` outside string literals.
+fn find_nth_outside_string(line: &str, needle: &str, n: usize) -> Option<usize> {
+    let mut count = 0;
+    let bytes = line.as_bytes();
+    let nlen = needle.len();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'"' {
+            // Skip over string literal contents.
+            i += 1;
+            while i < bytes.len() && bytes[i] != b'"' {
+                if bytes[i] == b'\\' {
+                    i += 1; // skip escaped char
+                }
+                i += 1;
+            }
+            i += 1; // skip closing quote
+        } else if i + nlen <= bytes.len() && &line[i..i + nlen] == needle {
+            if count == n {
+                return Some(i);
+            }
+            count += 1;
+            i += nlen;
+        } else {
+            i += 1;
+        }
+    }
+    None
+}
+
+/// Find the rightmost occurrence of `needle` outside string literals.
+fn rfind_outside_string(line: &str, needle: &str) -> Option<usize> {
+    let mut last = None;
+    let bytes = line.as_bytes();
+    let nlen = needle.len();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'"' {
+            i += 1;
+            while i < bytes.len() && bytes[i] != b'"' {
+                if bytes[i] == b'\\' {
+                    i += 1;
+                }
+                i += 1;
+            }
+            i += 1;
+        } else if i + nlen <= bytes.len() && &line[i..i + nlen] == needle {
+            last = Some(i);
+            i += nlen;
+        } else {
+            i += 1;
+        }
+    }
+    last
+}
+
+/// Check if `line` contains `needle` outside string literals.
+fn contains_outside_string(line: &str, needle: &str) -> bool {
+    find_outside_string(line, needle).is_some()
+}
+
+/// Split a line on ` |> ` and ` ?> ` boundaries outside string literals,
+/// keeping the operator with the right-hand segment.
+fn split_on_pipes_aware(s: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut last = 0;
+    let bytes = s.as_bytes();
+    let len = s.len();
+    let mut i = 0;
+    while i < len {
+        if bytes[i] == b'"' {
+            i += 1;
+            while i < len && bytes[i] != b'"' {
+                if bytes[i] == b'\\' {
+                    i += 1;
+                }
+                i += 1;
+            }
+            i += 1;
+        } else if i + 3 < len
+            && bytes[i] == b' '
+            && (bytes[i + 1] == b'|' || bytes[i + 1] == b'?')
+            && bytes[i + 2] == b'>'
+            && bytes[i + 3] == b' '
+        {
+            parts.push(&s[last..i]);
+            last = i + 1; // start from the operator
+            i += 4;
+        } else {
+            i += 1;
+        }
+    }
+    parts.push(&s[last..]);
+    parts
+}
+
 // ── Configuration ──────────────────────────────────────────────────────────────
 
 /// Formatting configuration.
@@ -141,6 +245,8 @@ struct FormatEntry {
     kind: EntryKind,
     source_line: usize, // 1-based
     text: String,
+    /// True for end-of-line comments (code precedes the comment on same source line).
+    is_eol_comment: bool,
 }
 
 /// Parse and format source text with full AST reformatting.
@@ -166,7 +272,7 @@ pub fn format_source(src: &str, config: &FormatConfig) -> Option<String> {
     for u in &program.uses {
         let line = use_start_line(u);
         let text = render(fmt_use(u), config.width).trim_end().to_string();
-        entries.push(FormatEntry { kind: EntryKind::Use, source_line: line, text });
+        entries.push(FormatEntry { kind: EntryKind::Use, source_line: line, text, is_eol_comment: false });
     }
 
     // Top-level items — conditionally apply match-arm arrow alignment.
@@ -183,7 +289,7 @@ pub fn format_source(src: &str, config: &FormatConfig) -> Option<String> {
             .unwrap_or(src_lines.len() + 1);
         let raw = render(fmt_top_item(item, ind), config.width).trim_end().to_string();
         let text = preserve_alignment(&raw, &src_lines, line, end_line);
-        entries.push(FormatEntry { kind: EntryKind::Item, source_line: line, text });
+        entries.push(FormatEntry { kind: EntryKind::Item, source_line: line, text, is_eol_comment: false });
     }
 
     // Pub exports
@@ -191,26 +297,37 @@ pub fn format_source(src: &str, config: &FormatConfig) -> Option<String> {
         if !es.is_empty() {
             let line = program.exports.span.line;
             let text = render(fmt_pub_exports(es, ind), config.width).trim_end().to_string();
-            entries.push(FormatEntry { kind: EntryKind::Export, source_line: line, text });
+            entries.push(FormatEntry { kind: EntryKind::Export, source_line: line, text, is_eol_comment: false });
         }
     }
 
-    // Comments
+    // Comments — distinguish standalone from end-of-line.
     for c in &comments {
         let text = if c.text.is_empty() {
             "--".to_string()
         } else {
             format!("-- {}", c.text)
         };
-        entries.push(FormatEntry { kind: EntryKind::Comment, source_line: c.line, text });
+        // EOL comment: something non-whitespace exists before the `--` on this line.
+        let is_eol = if let Some(src_line) = src_lines.get(c.line.saturating_sub(1)) {
+            let prefix = &src_line[..src_line.len().min(c.col.saturating_sub(1))];
+            !prefix.trim().is_empty()
+        } else {
+            false
+        };
+        entries.push(FormatEntry { kind: EntryKind::Comment, source_line: c.line, text, is_eol_comment: is_eol });
     }
 
-    // Sort by source line; comments before code on the same line.
+    // Sort by source line. Standalone comments go before code on the same line;
+    // end-of-line comments go after.
     entries.sort_by(|a, b| {
         a.source_line.cmp(&b.source_line).then_with(|| {
-            let a_pri = if a.kind == EntryKind::Comment { 0 } else { 1 };
-            let b_pri = if b.kind == EntryKind::Comment { 0 } else { 1 };
-            a_pri.cmp(&b_pri)
+            let pri = |e: &FormatEntry| {
+                if e.kind == EntryKind::Comment && !e.is_eol_comment { 0 }
+                else if e.kind != EntryKind::Comment { 1 }
+                else { 2 } // EOL comment goes after code
+            };
+            pri(a).cmp(&pri(b))
         })
     });
 
@@ -224,6 +341,18 @@ pub fn format_source(src: &str, config: &FormatConfig) -> Option<String> {
     align_binding_equals(&mut entries, &src_lines);
 
     for (i, entry) in entries.iter().enumerate() {
+        // End-of-line comments are appended to the previous line.
+        if entry.is_eol_comment {
+            // Remove the trailing newline from the previous output, append the comment.
+            if result.ends_with('\n') {
+                result.pop();
+            }
+            result.push_str("  ");
+            result.push_str(&entry.text);
+            result.push('\n');
+            continue;
+        }
+
         if i > 0 {
             let src_blanks = count_preceding_blanks(&src_lines, entry.source_line);
             let entering_items = has_uses && !seen_non_use && entry.kind != EntryKind::Use;
@@ -260,11 +389,12 @@ pub fn format_source(src: &str, config: &FormatConfig) -> Option<String> {
 
 /// Ensure the string ends with exactly `n` blank lines (= `n+1` newlines).
 fn set_trailing_blank_lines(s: &mut String, n: usize) {
-    while s.ends_with("\n\n") {
+    // Strip all trailing newlines.
+    while s.ends_with('\n') {
         s.pop();
     }
-    // Now s ends with at most 1 newline.
-    for _ in 0..n {
+    // Add n+1 newlines: one to end the last content line, plus n blank lines.
+    for _ in 0..=n {
         s.push('\n');
     }
 }
@@ -288,7 +418,7 @@ fn count_preceding_blanks(src_lines: &[&str], line_1based: usize) -> usize {
 fn use_start_line(u: &UseDecl) -> usize {
     match &u.binding {
         UseBinding::Ident(_, span, _) => span.line,
-        UseBinding::Record(rp) => rp.fields.first().map(|_| 1).unwrap_or(1),
+        UseBinding::Record(rp) => rp.fields.first().map(|f| f.span.line).unwrap_or(1),
     }
 }
 
@@ -404,36 +534,21 @@ fn preserve_lambda_body_break(formatted: &str, src_lines: &[&str], item_start: u
     formatted.to_string()
 }
 
-/// Find the position of the last ` -> ` in a line that represents a lambda arrow.
+/// Find the position of the last ` -> ` in a line that represents a lambda arrow,
+/// skipping occurrences inside string literals.
 /// Returns the byte position of the space before `->`.
 fn find_last_lambda_arrow(line: &str) -> Option<usize> {
-    // Find the rightmost ` -> ` that has content after it.
-    let mut last = None;
-    let mut search_from = 0;
-    while let Some(pos) = line[search_from..].find(" -> ") {
-        let abs_pos = search_from + pos;
-        // Check that what follows isn't just another `->` (chained params)
-        let after = &line[abs_pos + 4..];
-        if !after.is_empty() {
-            last = Some(abs_pos);
-        }
-        search_from = abs_pos + 4;
-    }
-    // Also check if line ends with ` -> X` (no trailing ` -> `)
-    if let Some(pos) = line.rfind(" -> ") {
+    rfind_outside_string(line, " -> ").filter(|&pos| {
         let after = &line[pos + 4..];
-        if !after.is_empty() && !after.contains(" -> ") {
-            last = Some(pos);
-        }
-    }
-    last
+        !after.is_empty()
+    })
 }
 
 /// Check if source lines for this item (between item_start and item_end, 1-based)
 /// contain `|>` or `?>` at the start of a line (after whitespace).
 fn source_has_vertical_pipes(src_lines: &[&str], item_start: usize, item_end: usize) -> bool {
     let start_idx = item_start.saturating_sub(1);
-    let end_idx = (item_end.saturating_sub(1)).min(src_lines.len());
+    let end_idx = item_end.min(src_lines.len());
     src_lines[start_idx..end_idx].iter().any(|l| {
         let t = l.trim_start();
         t.starts_with("|>") || t.starts_with("?>")
@@ -441,25 +556,21 @@ fn source_has_vertical_pipes(src_lines: &[&str], item_start: usize, item_end: us
 }
 
 /// Expand horizontal pipe chains into vertical format.
-/// For each line containing ` |> `, split so each `|>` step is on its own line
-/// indented 2 spaces more than the base expression.
+/// For each line containing ` |> ` or ` ?> ` outside string literals, split so
+/// each pipe step is on its own line indented 2 more than the base expression.
 fn expand_pipes_vertical(text: &str) -> String {
     let mut result = String::with_capacity(text.len() + 64);
     for line in text.lines() {
-        if line.contains(" |> ") || line.contains(" ?> ") {
-            // Determine indentation of this line.
+        if contains_outside_string(line, " |> ") || contains_outside_string(line, " ?> ") {
             let indent_len = line.len() - line.trim_start().len();
             let indent = &line[..indent_len];
             let content = line.trim_start();
 
-            // Split on pipe operators, preserving them.
-            let parts = split_on_pipes(content);
+            let parts = split_on_pipes_aware(content);
             if parts.len() > 1 {
-                // First part is the base expression.
                 result.push_str(indent);
                 result.push_str(parts[0].trim_end());
                 result.push('\n');
-                // Each subsequent part starts with |> or ?>
                 for part in &parts[1..] {
                     result.push_str(indent);
                     result.push_str("  ");
@@ -479,35 +590,11 @@ fn expand_pipes_vertical(text: &str) -> String {
     result
 }
 
-/// Split a string on ` |> ` and ` ?> ` boundaries, keeping the operator with
-/// the right-hand segment.
-fn split_on_pipes(s: &str) -> Vec<&str> {
-    let mut parts = Vec::new();
-    let mut last = 0;
-    let bytes = s.as_bytes();
-    let len = s.len();
-    let mut i = 0;
-    while i + 3 < len {
-        if bytes[i] == b' '
-            && (bytes[i + 1] == b'|' || bytes[i + 1] == b'?')
-            && bytes[i + 2] == b'>'
-            && bytes[i + 3] == b' '
-        {
-            parts.push(&s[last..i]);
-            last = i + 1; // start from the `|>` or `?>`
-            i += 4;
-        } else {
-            i += 1;
-        }
-    }
-    parts.push(&s[last..]);
-    parts
-}
-
-/// A line is a match arm if its trimmed form starts with `| ` and contains ` -> `.
+/// A line is a match arm if its trimmed form starts with `| ` and contains ` -> `
+/// outside string literals.
 fn is_match_arm_line(line: &str) -> bool {
     let t = line.trim_start();
-    t.starts_with("| ") && t.contains(" -> ")
+    t.starts_with("| ") && contains_outside_string(t, " -> ")
 }
 
 /// Check if the source lines corresponding to this arm group had aligned `->`.
@@ -529,7 +616,13 @@ fn source_arms_aligned(src_lines: &[&str], item_start: usize, fmt_arms: &[&str])
         .iter()
         .map(|l| {
             let t = l.trim_start();
-            t.split(" -> ").next().unwrap_or("").replace(' ', "")
+            // Split at first ` -> ` outside string literals.
+            let pat = if let Some(pos) = find_outside_string(t, " -> ") {
+                &t[..pos]
+            } else {
+                t
+            };
+            pat.replace(' ', "")
         })
         .collect();
 
@@ -540,7 +633,11 @@ fn source_arms_aligned(src_lines: &[&str], item_start: usize, fmt_arms: &[&str])
                 continue 'outer;
             }
             let src_t = src_arms[window_start + j].1.trim_start();
-            let src_pat = src_t.split(" -> ").next().unwrap_or("").replace(' ', "");
+            let src_pat = if let Some(pos) = find_outside_string(src_t, " -> ") {
+                src_t[..pos].replace(' ', "")
+            } else {
+                src_t.replace(' ', "")
+            };
             if src_pat != *fp {
                 continue 'outer;
             }
@@ -562,18 +659,16 @@ fn source_arms_aligned(src_lines: &[&str], item_start: usize, fmt_arms: &[&str])
     false
 }
 
-/// Find column (0-based byte offset) of the first ` -> ` in a match-arm line.
+/// Find column (0-based byte offset) of the first ` -> ` outside strings in a match-arm line.
 fn find_arrow_col(line: &str) -> usize {
-    // Skip the leading `| ` and pattern, find ` -> `
-    line.find(" -> ").unwrap_or(0)
+    find_outside_string(line, " -> ").unwrap_or(0)
 }
 
 /// Align ` -> ` in lines[start..end] to the maximum column.
 fn align_arrows(lines: &mut [String], start: usize, end: usize) {
-    // Find the position of ` -> ` in each line and compute max.
     let positions: Vec<Option<usize>> = lines[start..end]
         .iter()
-        .map(|l| l.find(" -> "))
+        .map(|l| find_outside_string(l, " -> "))
         .collect();
     let max_col = positions.iter().filter_map(|p| *p).max().unwrap_or(0);
     if max_col == 0 {

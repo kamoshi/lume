@@ -27,7 +27,7 @@ let grade : Num -> Text =
   | _            -> "Fail"
 
 -- Unaligned pattern matching
-let scale : Num -> Shape -> Shape = f ->
+let scale2 : Num -> Shape -> Shape = f ->
   | Circle { radius } -> Circle { radius: radius * f }
   | Rect { width, height } -> Rect { width: width * f, height: height * f }
   | Triangle { base, height } -> Triangle { base: base * f, height: height * f }
@@ -36,5 +36,6 @@ let scale : Num -> Shape -> Shape = f ->
 pub {
   area,
   scale,
+  scale2,
   grade,
 }
