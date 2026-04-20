@@ -132,160 +132,541 @@ fn push_indented(out: &mut String, depth: usize, ind: usize, content: &str) {
 
 // ── Public API: full AST-based formatting ──────────────────────────────────────
 
+/// Entry kinds for the flat-list formatting approach.
+#[derive(Clone, Copy, PartialEq)]
+enum EntryKind { Use, Item, Export, Comment }
+
+/// A formatted entry (use, item, comment, or export) with source position.
+struct FormatEntry {
+    kind: EntryKind,
+    source_line: usize, // 1-based
+    text: String,
+}
+
 /// Parse and format source text with full AST reformatting.
-/// Comments are preserved by re-attaching them based on source line positions.
-/// Returns `None` if parsing fails.
+/// Comments are preserved by building a flat list of anchors (items + comments)
+/// sorted by source position, then emitting them with spacing derived from the
+/// original source.  Returns `None` if parsing fails.
 pub fn format_source(src: &str, config: &FormatConfig) -> Option<String> {
     let lexer = crate::lexer::Lexer::new(src);
     let (tokens, comments) = lexer.tokenize_with_comments().ok()?;
     let mut program = crate::parser::parse_program(&tokens).ok()?;
     program.pragmas = crate::loader::parse_pragmas(src).0;
 
-    // Build the AST-formatted output
-    let ast_output = format_program(&program, config);
-
     if comments.is_empty() {
-        return Some(ast_output);
+        return Some(format_program(&program, config));
     }
 
-    // Strategy: walk through source lines and AST output lines together.
-    // Source lines tagged as CODE get replaced by AST output lines.
-    // Source lines tagged as COMMENT are preserved.
-    // Blank lines are collapsed to at most one.
     let src_lines: Vec<&str> = src.lines().collect();
+    let ind = config.indent;
 
-    // Build a map: source_line (1-based) → comment text
-    let mut comment_lines: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
-    let mut comment_texts: std::collections::HashMap<usize, String> =
-        std::collections::HashMap::new();
+    let mut entries: Vec<FormatEntry> = Vec::new();
+
+    // Uses
+    for u in &program.uses {
+        let line = use_start_line(u);
+        let text = render(fmt_use(u), config.width).trim_end().to_string();
+        entries.push(FormatEntry { kind: EntryKind::Use, source_line: line, text });
+    }
+
+    // Top-level items — conditionally apply match-arm arrow alignment.
+    let item_starts: Vec<usize> = program.items.iter().map(top_item_start_line).collect();
+    for (idx, item) in program.items.iter().enumerate() {
+        let line = item_starts[idx];
+        let end_line = item_starts.get(idx + 1).copied()
+            .or_else(|| {
+                if let ExprKind::Record { entries: es, .. } = &program.exports.kind {
+                    if !es.is_empty() { return Some(program.exports.span.line); }
+                }
+                None
+            })
+            .unwrap_or(src_lines.len() + 1);
+        let raw = render(fmt_top_item(item, ind), config.width).trim_end().to_string();
+        let text = preserve_alignment(&raw, &src_lines, line, end_line);
+        entries.push(FormatEntry { kind: EntryKind::Item, source_line: line, text });
+    }
+
+    // Pub exports
+    if let ExprKind::Record { entries: es, .. } = &program.exports.kind {
+        if !es.is_empty() {
+            let line = program.exports.span.line;
+            let text = render(fmt_pub_exports(es, ind), config.width).trim_end().to_string();
+            entries.push(FormatEntry { kind: EntryKind::Export, source_line: line, text });
+        }
+    }
+
+    // Comments
     for c in &comments {
-        comment_lines.insert(c.line);
-        let formatted = if c.text.is_empty() {
+        let text = if c.text.is_empty() {
             "--".to_string()
         } else {
             format!("-- {}", c.text)
         };
-        comment_texts.insert(c.line, formatted);
+        entries.push(FormatEntry { kind: EntryKind::Comment, source_line: c.line, text });
     }
 
-    // Collect AST output lines (non-blank code lines in order)
-    let ast_lines: Vec<&str> = ast_output.lines().collect();
-    let mut ast_code_lines: Vec<&str> = Vec::new();
-    let mut ast_blanks_before: Vec<usize> = Vec::new(); // number of blank lines before this code line
-    let mut blanks = 0usize;
-    for line in &ast_lines {
-        if line.trim().is_empty() {
-            blanks += 1;
-        } else {
-            ast_blanks_before.push(blanks);
-            ast_code_lines.push(line);
-            blanks = 0;
-        }
-    }
+    // Sort by source line; comments before code on the same line.
+    entries.sort_by(|a, b| {
+        a.source_line.cmp(&b.source_line).then_with(|| {
+            let a_pri = if a.kind == EntryKind::Comment { 0 } else { 1 };
+            let b_pri = if b.kind == EntryKind::Comment { 0 } else { 1 };
+            a_pri.cmp(&b_pri)
+        })
+    });
 
-    // Collect source code lines (non-blank, non-comment) in order
-    let mut src_code_indices: Vec<usize> = Vec::new(); // 0-based line indices
-    for (i, line) in src_lines.iter().enumerate() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let line_num = i + 1; // 1-based
-        if comment_lines.contains(&line_num) {
-            continue;
-        }
-        // Skip doc comments (--- ) — they're in the AST
-        if trimmed.starts_with("---") {
-            continue;
-        }
-        src_code_indices.push(i);
-    }
-
-    // Build mapping: src_code_idx[i] → ast_code_lines[i]
-    // They should be 1:1 (same number of code lines)
+    // Walk entries, emitting with appropriate blank-line spacing.
     let mut result = String::with_capacity(src.len() + 256);
-    let mut ast_idx = 0;
-    let mut src_blank_count: usize = 0;
+    let has_uses = entries.iter().any(|e| e.kind == EntryKind::Use);
+    let mut seen_non_use = false;
 
-    for (i, line) in src_lines.iter().enumerate() {
-        let trimmed = line.trim();
-        let line_num = i + 1;
+    // Align `=` in groups of consecutive single-line Item bindings
+    // where the source had them aligned.
+    align_binding_equals(&mut entries, &src_lines);
 
-        // Blank line — track count (will use max of source and AST blanks)
-        if trimmed.is_empty() {
-            src_blank_count += 1;
-            continue;
+    for (i, entry) in entries.iter().enumerate() {
+        if i > 0 {
+            let src_blanks = count_preceding_blanks(&src_lines, entry.source_line);
+            let entering_items = has_uses && !seen_non_use && entry.kind != EntryKind::Use;
+            let before_export = entry.kind == EntryKind::Export;
+            let min_blanks = if entering_items {
+                2
+            } else if before_export {
+                2
+            } else {
+                0
+            };
+            let blanks = src_blanks.max(min_blanks).min(2);
+            set_trailing_blank_lines(&mut result, blanks);
         }
 
-        // Comment line
-        if comment_lines.contains(&line_num) {
-            // Emit blank line before comment if source had one
-            if src_blank_count > 0 {
-                result.push('\n');
-            }
-            src_blank_count = 0;
-            if let Some(text) = comment_texts.get(&line_num) {
-                let indent = if ast_idx < ast_code_lines.len() {
-                    let ast_line = ast_code_lines[ast_idx];
-                    &ast_line[..ast_line.len() - ast_line.trim_start().len()]
-                } else {
-                    let s = *line;
-                    &s[..s.len() - s.trim_start().len()]
-                };
-                result.push_str(indent);
-                result.push_str(text);
-                result.push('\n');
-            }
-            continue;
-        }
-
-        // Doc comment line (part of AST — skip, emitted by AST formatter)
-        if trimmed.starts_with("---") {
-            continue;
-        }
-
-        // Code line — emit corresponding AST output
-        if ast_idx < ast_code_lines.len() {
-            // Determine blank lines: max of (source blanks capped at 1, AST blanks)
-            let source_blanks = src_blank_count.min(1);
-            let ast_blanks = if ast_idx > 0 { ast_blanks_before[ast_idx] } else { 0 };
-            let wanted = source_blanks.max(ast_blanks);
-
-            // Count how many trailing newlines already in result
-            let trailing = result.as_bytes().iter().rev().take_while(|&&b| b == b'\n').count();
-            let have_blanks = if trailing > 1 { trailing - 1 } else { 0 };
-            let extra = wanted.saturating_sub(have_blanks);
-            for _ in 0..extra {
-                result.push('\n');
-            }
-
-            result.push_str(ast_code_lines[ast_idx]);
-            result.push('\n');
-            ast_idx += 1;
-        }
-        src_blank_count = 0;
-    }
-
-    // Emit any remaining AST lines
-    while ast_idx < ast_code_lines.len() {
-        let ast_blanks = if ast_idx > 0 { ast_blanks_before[ast_idx] } else { 0 };
-        let trailing = result.as_bytes().iter().rev().take_while(|&&b| b == b'\n').count();
-        let have_blanks = if trailing > 1 { trailing - 1 } else { 0 };
-        let extra = ast_blanks.saturating_sub(have_blanks);
-        for _ in 0..extra {
-            result.push('\n');
-        }
-        result.push_str(ast_code_lines[ast_idx]);
+        result.push_str(&entry.text);
         result.push('\n');
-        ast_idx += 1;
+
+        if entry.kind != EntryKind::Use {
+            seen_non_use = true;
+        }
     }
 
-    // Ensure trailing newline (but don't strip intentional blanks)
+    // Ensure single trailing newline.
+    while result.ends_with("\n\n") {
+        result.pop();
+    }
     if !result.ends_with('\n') {
         result.push('\n');
     }
 
     Some(result)
+}
+
+/// Ensure the string ends with exactly `n` blank lines (= `n+1` newlines).
+fn set_trailing_blank_lines(s: &mut String, n: usize) {
+    while s.ends_with("\n\n") {
+        s.pop();
+    }
+    // Now s ends with at most 1 newline.
+    for _ in 0..n {
+        s.push('\n');
+    }
+}
+
+/// Count consecutive blank source lines immediately before `line_1based`.
+fn count_preceding_blanks(src_lines: &[&str], line_1based: usize) -> usize {
+    let mut count = 0;
+    let mut l = line_1based.saturating_sub(1); // 0-based index of line before target
+    while l > 0 {
+        l -= 1;
+        if src_lines.get(l).map(|s| s.trim().is_empty()).unwrap_or(false) {
+            count += 1;
+        } else {
+            break;
+        }
+    }
+    count
+}
+
+/// Source line of a `use` declaration (1-based).
+fn use_start_line(u: &UseDecl) -> usize {
+    match &u.binding {
+        UseBinding::Ident(_, span, _) => span.line,
+        UseBinding::Record(rp) => rp.fields.first().map(|_| 1).unwrap_or(1),
+    }
+}
+
+/// Source line of a top-level item (1-based).
+fn top_item_start_line(item: &TopItem) -> usize {
+    match item {
+        TopItem::TypeDef(td) => td.name_span.line,
+        TopItem::Binding(b) => binding_start_line(b),
+        TopItem::BindingGroup(bs) => bs.first().map(binding_start_line).unwrap_or(1),
+        TopItem::TraitDef(td) => td.name_span.line,
+        TopItem::ImplDef(id) => id.trait_name_span.line,
+    }
+}
+
+/// Source line of a binding (1-based), derived from the pattern identifier.
+fn binding_start_line(b: &Binding) -> usize {
+    match &b.pattern {
+        Pattern::Ident(_, span, _) => span.line,
+        _ => b.value.span.line,
+    }
+}
+
+// ── Alignment preservation ─────────────────────────────────────────────────────
+
+/// Post-process formatted item text:
+/// 1. Break lambda bodies to next line when source had them there.
+/// 2. Expand horizontal pipe chains to vertical when source had vertical pipes.
+/// 3. Preserve match-arm `->` alignment from source.
+fn preserve_alignment(formatted: &str, src_lines: &[&str], item_start: usize, item_end: usize) -> String {
+    // Step 1: break lambda body to next line if source had it there.
+    let after_lambda = preserve_lambda_body_break(formatted, src_lines, item_start);
+
+    // Step 2: expand pipes if source used vertical style.
+    let after_pipes = if source_has_vertical_pipes(src_lines, item_start, item_end) {
+        expand_pipes_vertical(&after_lambda)
+    } else {
+        after_lambda
+    };
+
+    // Step 3: align match-arm arrows.
+    let fmt_lines: Vec<&str> = after_pipes.lines().collect();
+    let mut result_lines: Vec<String> = fmt_lines.iter().map(|l| l.to_string()).collect();
+
+    let mut i = 0;
+    while i < fmt_lines.len() {
+        if is_match_arm_line(fmt_lines[i]) {
+            let group_start = i;
+            while i < fmt_lines.len() && is_match_arm_line(fmt_lines[i]) {
+                i += 1;
+            }
+            let group_end = i;
+            if group_end - group_start >= 2 {
+                if source_arms_aligned(src_lines, item_start, &fmt_lines[group_start..group_end]) {
+                    align_arrows(&mut result_lines, group_start, group_end);
+                }
+            }
+        } else {
+            i += 1;
+        }
+    }
+
+    let mut out = result_lines.join("\n");
+    if formatted.ends_with('\n') && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
+/// If the source had a lambda body on the next line (source line ends with `->`)
+/// but the formatted output has it inline, break it.
+fn preserve_lambda_body_break(formatted: &str, src_lines: &[&str], item_start: usize) -> String {
+    let src_line = src_lines.get(item_start.saturating_sub(1)).unwrap_or(&"");
+    let src_trimmed = src_line.trim_end();
+
+    // Check if source line ends with `->`
+    if !src_trimmed.ends_with("->") {
+        return formatted.to_string();
+    }
+
+    let fmt_lines: Vec<&str> = formatted.lines().collect();
+    if fmt_lines.is_empty() {
+        return formatted.to_string();
+    }
+
+    // The formatted first line might have everything inline: `let x = a -> body`
+    // We want to break after the last `->` on this line.
+    let first = fmt_lines[0];
+    // Find the last ` -> ` that is followed by non-pipe, non-`|` content.
+    // We want to split: `let process = x -> x |> compute |> abs`
+    // into: `let process = x ->\n  x |> compute |> abs`
+    if let Some(arrow_pos) = find_last_lambda_arrow(first) {
+        let before = &first[..arrow_pos + 3]; // includes ` ->`
+        let after = first[arrow_pos + 4..].trim_start(); // skip ` -> `
+        if after.starts_with("-> ") {
+            // This was a `-> ` break point inside params, skip
+            return formatted.to_string();
+        }
+        if !after.is_empty() && fmt_lines.len() == 1 {
+            // Single-line binding with body after `->`, break it.
+            let indent = "  ";
+            let mut result = String::new();
+            result.push_str(before);
+            result.push('\n');
+            result.push_str(indent);
+            result.push_str(after);
+            if formatted.ends_with('\n') {
+                result.push('\n');
+            }
+            return result;
+        }
+    }
+
+    formatted.to_string()
+}
+
+/// Find the position of the last ` -> ` in a line that represents a lambda arrow.
+/// Returns the byte position of the space before `->`.
+fn find_last_lambda_arrow(line: &str) -> Option<usize> {
+    // Find the rightmost ` -> ` that has content after it.
+    let mut last = None;
+    let mut search_from = 0;
+    while let Some(pos) = line[search_from..].find(" -> ") {
+        let abs_pos = search_from + pos;
+        // Check that what follows isn't just another `->` (chained params)
+        let after = &line[abs_pos + 4..];
+        if !after.is_empty() {
+            last = Some(abs_pos);
+        }
+        search_from = abs_pos + 4;
+    }
+    // Also check if line ends with ` -> X` (no trailing ` -> `)
+    if let Some(pos) = line.rfind(" -> ") {
+        let after = &line[pos + 4..];
+        if !after.is_empty() && !after.contains(" -> ") {
+            last = Some(pos);
+        }
+    }
+    last
+}
+
+/// Check if source lines for this item (between item_start and item_end, 1-based)
+/// contain `|>` or `?>` at the start of a line (after whitespace).
+fn source_has_vertical_pipes(src_lines: &[&str], item_start: usize, item_end: usize) -> bool {
+    let start_idx = item_start.saturating_sub(1);
+    let end_idx = (item_end.saturating_sub(1)).min(src_lines.len());
+    src_lines[start_idx..end_idx].iter().any(|l| {
+        let t = l.trim_start();
+        t.starts_with("|>") || t.starts_with("?>")
+    })
+}
+
+/// Expand horizontal pipe chains into vertical format.
+/// For each line containing ` |> `, split so each `|>` step is on its own line
+/// indented 2 spaces more than the base expression.
+fn expand_pipes_vertical(text: &str) -> String {
+    let mut result = String::with_capacity(text.len() + 64);
+    for line in text.lines() {
+        if line.contains(" |> ") || line.contains(" ?> ") {
+            // Determine indentation of this line.
+            let indent_len = line.len() - line.trim_start().len();
+            let indent = &line[..indent_len];
+            let content = line.trim_start();
+
+            // Split on pipe operators, preserving them.
+            let parts = split_on_pipes(content);
+            if parts.len() > 1 {
+                // First part is the base expression.
+                result.push_str(indent);
+                result.push_str(parts[0].trim_end());
+                result.push('\n');
+                // Each subsequent part starts with |> or ?>
+                for part in &parts[1..] {
+                    result.push_str(indent);
+                    result.push_str("  ");
+                    result.push_str(part.trim());
+                    result.push('\n');
+                }
+                continue;
+            }
+        }
+        result.push_str(line);
+        result.push('\n');
+    }
+    // Remove the trailing extra newline we added.
+    if result.ends_with('\n') && !text.ends_with('\n') {
+        result.pop();
+    }
+    result
+}
+
+/// Split a string on ` |> ` and ` ?> ` boundaries, keeping the operator with
+/// the right-hand segment.
+fn split_on_pipes(s: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut last = 0;
+    let bytes = s.as_bytes();
+    let len = s.len();
+    let mut i = 0;
+    while i + 3 < len {
+        if bytes[i] == b' '
+            && (bytes[i + 1] == b'|' || bytes[i + 1] == b'?')
+            && bytes[i + 2] == b'>'
+            && bytes[i + 3] == b' '
+        {
+            parts.push(&s[last..i]);
+            last = i + 1; // start from the `|>` or `?>`
+            i += 4;
+        } else {
+            i += 1;
+        }
+    }
+    parts.push(&s[last..]);
+    parts
+}
+
+/// A line is a match arm if its trimmed form starts with `| ` and contains ` -> `.
+fn is_match_arm_line(line: &str) -> bool {
+    let t = line.trim_start();
+    t.starts_with("| ") && t.contains(" -> ")
+}
+
+/// Check if the source lines corresponding to this arm group had aligned `->`.
+/// We find source arms by scanning from `item_start` (1-based) looking for
+/// `| ... -> ...` lines.
+fn source_arms_aligned(src_lines: &[&str], item_start: usize, fmt_arms: &[&str]) -> bool {
+    // Collect all match-arm lines from the item's source region.
+    let start_idx = item_start.saturating_sub(1);
+    let src_arms: Vec<(usize, &str)> = src_lines[start_idx..]
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| is_match_arm_line(l))
+        .map(|(i, l)| (i, *l))
+        .collect();
+
+    // Find the group in source arms that matches this formatter group.
+    // We match by checking the pattern text (before `->`) after stripping whitespace.
+    let fmt_patterns: Vec<String> = fmt_arms
+        .iter()
+        .map(|l| {
+            let t = l.trim_start();
+            t.split(" -> ").next().unwrap_or("").replace(' ', "")
+        })
+        .collect();
+
+    // Find a contiguous subsequence of source arms matching fmt_patterns.
+    'outer: for window_start in 0..src_arms.len().saturating_sub(fmt_patterns.len() - 1) {
+        for (j, fp) in fmt_patterns.iter().enumerate() {
+            if window_start + j >= src_arms.len() {
+                continue 'outer;
+            }
+            let src_t = src_arms[window_start + j].1.trim_start();
+            let src_pat = src_t.split(" -> ").next().unwrap_or("").replace(' ', "");
+            if src_pat != *fp {
+                continue 'outer;
+            }
+        }
+        // Found matching group. Check alignment of `->` in source.
+        let arrow_cols: Vec<usize> = (0..fmt_patterns.len())
+            .map(|j| {
+                let line = src_arms[window_start + j].1;
+                // Find ` -> ` position (first occurrence after `| `)
+                find_arrow_col(line)
+            })
+            .collect();
+        // Aligned if all at same column (and column > 0).
+        if arrow_cols.iter().all(|c| *c > 0) && arrow_cols.windows(2).all(|w| w[0] == w[1]) {
+            return true;
+        }
+        break;
+    }
+    false
+}
+
+/// Find column (0-based byte offset) of the first ` -> ` in a match-arm line.
+fn find_arrow_col(line: &str) -> usize {
+    // Skip the leading `| ` and pattern, find ` -> `
+    line.find(" -> ").unwrap_or(0)
+}
+
+/// Align ` -> ` in lines[start..end] to the maximum column.
+fn align_arrows(lines: &mut [String], start: usize, end: usize) {
+    // Find the position of ` -> ` in each line and compute max.
+    let positions: Vec<Option<usize>> = lines[start..end]
+        .iter()
+        .map(|l| l.find(" -> "))
+        .collect();
+    let max_col = positions.iter().filter_map(|p| *p).max().unwrap_or(0);
+    if max_col == 0 {
+        return;
+    }
+    for (i, pos) in positions.iter().enumerate() {
+        if let Some(col) = pos {
+            if *col < max_col {
+                let padding = max_col - col;
+                let line = &lines[start + i];
+                let (before, after) = line.split_at(*col);
+                lines[start + i] = format!("{}{}{}", before, " ".repeat(padding), after);
+            }
+        }
+    }
+}
+
+/// Align `=` across groups of consecutive single-line binding entries when
+/// the source already had them aligned.
+fn align_binding_equals(entries: &mut [FormatEntry], src_lines: &[&str]) {
+    let mut i = 0;
+    while i < entries.len() {
+        if entries[i].kind == EntryKind::Item && is_single_line_let(&entries[i].text) {
+            let group_start = i;
+            while i < entries.len()
+                && entries[i].kind == EntryKind::Item
+                && is_single_line_let(&entries[i].text)
+            {
+                i += 1;
+            }
+            let group_end = i;
+            if group_end - group_start >= 2 {
+                // Within this run, find sub-groups with aligned `=` in source.
+                align_subgroups(entries, group_start, group_end, src_lines);
+            }
+        } else {
+            i += 1;
+        }
+    }
+}
+
+/// Within entries[start..end], find maximal sub-groups of consecutive entries
+/// where source lines had `=` at the same column, and align them.
+fn align_subgroups(entries: &mut [FormatEntry], start: usize, end: usize, src_lines: &[&str]) {
+    // Get source `=` column for each entry.
+    let cols: Vec<Option<usize>> = entries[start..end]
+        .iter()
+        .map(|e| {
+            let idx = e.source_line.saturating_sub(1);
+            src_lines.get(idx).and_then(|l| l.find(" = "))
+        })
+        .collect();
+
+    let mut j = 0;
+    while j < cols.len() {
+        if let Some(col) = cols[j] {
+            let sub_start = j;
+            while j < cols.len() && cols[j] == Some(col) {
+                j += 1;
+            }
+            if j - sub_start >= 2 {
+                align_equals_in_entries(entries, start + sub_start, start + j);
+            }
+        } else {
+            j += 1;
+        }
+    }
+}
+
+fn is_single_line_let(text: &str) -> bool {
+    text.starts_with("let ") && !text.contains('\n')
+}
+
+fn align_equals_in_entries(entries: &mut [FormatEntry], start: usize, end: usize) {
+    let positions: Vec<Option<usize>> = entries[start..end]
+        .iter()
+        .map(|e| e.text.find(" = "))
+        .collect();
+    let max_col = positions.iter().filter_map(|p| *p).max().unwrap_or(0);
+    if max_col == 0 {
+        return;
+    }
+    for (i, pos) in positions.iter().enumerate() {
+        if let Some(col) = pos {
+            if *col < max_col {
+                let padding = max_col - col;
+                let text = &entries[start + i].text;
+                let (before, after) = text.split_at(*col);
+                entries[start + i].text =
+                    format!("{}{}{}", before, " ".repeat(padding), after);
+            }
+        }
+    }
 }
 
 /// Format a parsed program with the given configuration.
@@ -568,7 +949,7 @@ fn fmt_expr_binding_rhs(expr: &Expr, ind: usize) -> Doc {
     if let ExprKind::Match(arms) = &expr.kind {
         if arms.len() > 1 {
             let arms_doc: Vec<Doc> = arms.iter().map(fmt_match_arm).collect();
-            return nest(ind, concat(hardline(), concat_all(arms_doc)));
+            return nest(ind, concat(hardline(), join(hardline(), arms_doc)));
         }
     }
 
@@ -601,7 +982,7 @@ fn fmt_expr_binding_rhs(expr: &Expr, ind: usize) -> Doc {
                         text(" "),
                         params_doc,
                         text(" ->"),
-                        nest(ind, concat(hardline(), concat_all(arms_doc))),
+                        nest(ind, concat(hardline(), join(hardline(), arms_doc))),
                     ]);
                 }
             }
@@ -631,12 +1012,17 @@ fn fmt_expr_binding_rhs(expr: &Expr, ind: usize) -> Doc {
                     parts.push(text(" in"));
                     parts.push(hardline());
                 }
-                parts.push(fmt_expr(cur, 0));
+                let lets_block = concat_all(parts);
                 return concat_all(vec![
                     text(" "),
                     params_doc,
                     text(" ->"),
-                    nest(ind, concat(hardline(), concat_all(parts))),
+                    nest(ind, concat_all(vec![
+                        hardline(),
+                        lets_block,
+                        text(" ".repeat(ind)),
+                        fmt_expr(cur, 0),
+                    ])),
                 ]);
             }
             // Lambda -> if-then-else (keep multiline)
@@ -652,8 +1038,8 @@ fn fmt_expr_binding_rhs(expr: &Expr, ind: usize) -> Doc {
         }
     }
 
-    // Let-in chain: all lets and final body at same indent under `=`
-    // e.g. `let aaa =\n  let x = 1 in\n  let y = 2 in\n  z`
+    // Let-in chain: lets at one indent, final body indented one more.
+    // e.g. `let aaa =\n  let x = 1 in\n  let y = 2 in\n    z`
     if let ExprKind::LetIn { .. } = &expr.kind {
         let mut lets: Vec<(&Pattern, &Expr)> = Vec::new();
         let mut cur = expr;
@@ -670,6 +1056,7 @@ fn fmt_expr_binding_rhs(expr: &Expr, ind: usize) -> Doc {
             parts.push(text(" in"));
             parts.push(hardline());
         }
+        parts.push(text(" ".repeat(ind)));
         parts.push(fmt_expr(cur, 0));
         return nest(ind, concat(hardline(), concat_all(parts)));
     }
@@ -799,7 +1186,7 @@ fn fmt_expr_inner(expr: &Expr) -> Doc {
                     return concat_all(vec![
                         params_doc,
                         text(" ->"),
-                        nest(2, concat(hardline(), concat_all(arms_doc))),
+                        nest(2, concat(hardline(), join(hardline(), arms_doc))),
                     ]);
                 }
             }
@@ -819,6 +1206,33 @@ fn fmt_expr_inner(expr: &Expr) -> Doc {
         ExprKind::Binary { op, left, right } => {
             let prec = binop_prec(op);
             let op_s = binop_str(op);
+
+            // Pipe chains: collect all chained pipes and format as a unit.
+            if matches!(op, BinOp::Pipe | BinOp::ResultPipe) {
+                let (base, steps) = collect_pipe_chain(expr);
+                let base_doc = fmt_expr(base, prec);
+                if steps.len() == 1 {
+                    let step_op = binop_str(&steps[0].0);
+                    let step_doc = fmt_expr(steps[0].1, prec + 1);
+                    return group(concat_all(vec![
+                        base_doc,
+                        line(),
+                        text(format!("{} ", step_op)),
+                        step_doc,
+                    ]));
+                }
+                // Multi-step pipe: when broken, each step on its own line.
+                let mut parts = vec![base_doc];
+                for (step_op, step_expr) in &steps {
+                    let sop = binop_str(step_op);
+                    parts.push(concat(
+                        line(),
+                        concat(text(format!("{} ", sop)), fmt_expr(step_expr, prec + 1)),
+                    ));
+                }
+                return group(concat_all(parts));
+            }
+
             // Left-associative: left operand at same prec needs no parens,
             // right operand at same prec gets parens.
             let l = fmt_expr(left, prec);
@@ -845,7 +1259,7 @@ fn fmt_expr_inner(expr: &Expr) -> Doc {
 
         ExprKind::Match(arms) => {
             let arms_doc: Vec<Doc> = arms.iter().map(fmt_match_arm).collect();
-            concat_all(arms_doc)
+            join(hardline(), arms_doc)
         }
 
         ExprKind::MatchExpr { scrutinee, arms } => {
@@ -854,12 +1268,12 @@ fn fmt_expr_inner(expr: &Expr) -> Doc {
                 text("match "),
                 fmt_expr(scrutinee, 0),
                 text(" in"),
-                nest(2, concat(hardline(), concat_all(arms_doc))),
+                nest(2, concat(hardline(), join(hardline(), arms_doc))),
             ])
         }
 
         ExprKind::LetIn { .. } => {
-            // Flatten let-in chains: successive lets and final body at same level.
+            // Flatten let-in chains: lets at one level, body indented.
             let mut lets: Vec<(&Pattern, &Expr)> = Vec::new();
             let mut cur = expr;
             while let ExprKind::LetIn { pattern, value, body } = &cur.kind {
@@ -875,6 +1289,7 @@ fn fmt_expr_inner(expr: &Expr) -> Doc {
                 parts.push(text(" in"));
                 parts.push(hardline());
             }
+            parts.push(text("  "));
             parts.push(fmt_expr(cur, 0));
             concat_all(parts)
         }
@@ -900,7 +1315,6 @@ fn fmt_match_arm(arm: &MatchArm) -> Doc {
         guard_doc,
         text(" -> "),
         body_doc,
-        hardline(),
     ])
 }
 
@@ -913,6 +1327,22 @@ fn collect_apply(expr: &Expr) -> (&Expr, Vec<&Expr>) {
     }
     args.reverse();
     (cur, args)
+}
+
+/// Collect a left-associative pipe chain: `a |> b |> c` → (a, [(|>, b), (|>, c)])
+fn collect_pipe_chain(expr: &Expr) -> (&Expr, Vec<(BinOp, &Expr)>) {
+    let mut steps: Vec<(BinOp, &Expr)> = Vec::new();
+    let mut cur = expr;
+    while let ExprKind::Binary { op, left, right } = &cur.kind {
+        if matches!(op, BinOp::Pipe | BinOp::ResultPipe) {
+            steps.push((op.clone(), right));
+            cur = left;
+        } else {
+            break;
+        }
+    }
+    steps.reverse();
+    (cur, steps)
 }
 
 fn escape_string(s: &str) -> String {

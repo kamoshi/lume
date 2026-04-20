@@ -1,0 +1,9 @@
+use math = "lume:math"
+
+
+let x = math.gcd 3131 37183
+
+
+pub {
+  x,
+}

@@ -1,5 +1,6 @@
 -- Let-in chains and nested expressions
 
+
 let compute = x ->
   let doubled = x * 2 in
   let tripled = x * 3 in
@@ -12,12 +13,12 @@ let abs = n ->
     then n
     else 0 - n
 
--- Pipe chains
+-- Pipe chains 1
 let process = x ->
   x |> compute |> abs
 
 
--- Pipe chains
+-- Pipe chains 2
 let process2 = x ->
   x
     |> compute
@@ -25,7 +26,7 @@ let process2 = x ->
     |> showNum
     |> print
 
--- Pipe chains
+-- Pipe chains 3
 let process3 = x -> x
   |> compute
   |> abs
