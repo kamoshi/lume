@@ -432,3 +432,95 @@ body is *checked* against it rather than inferred:
 $
   "[LetAnnot]" quad (tau_"ann" = "lower"(T) quad Gamma tack.r e arrow.l tau_"ann") / (Gamma tack.r "let " x : T = e => "Gen"(Gamma, tau_"ann"))
 $
+
+=== 7.3 Constraint Annotations
+
+A binding may carry explicit trait constraints in addition to a type annotation.
+Constraints of the form `(Trait1 a, Trait2 b) =>` restrict the type parameters
+and are propagated into the resulting scheme without re-verification:
+
+$
+  "[LetConstrained]" quad (overline(C) => tau_"ann" = "lower"(T) quad Gamma tack.r e arrow.l tau_"ann") / (Gamma tack.r "let " x : overline(C) => T = e => forall overline(alpha) . overline(C) => tau_"ann")
+$
+
+=== 7.4 Mutual Recursion (Binding Groups)
+
+Multiple bindings connected by `and` are type-checked as a mutual group via a
+three-phase protocol:
+
+$
+  "[LetGroup]" quad ("Phase 1:" forall i : "fresh" alpha_i, quad Gamma' = Gamma , overline(x_i : alpha_i) \
+  quad "Phase 2:" forall i : Gamma' tack.r e_i => tau_i, quad alpha_i tilde.equiv tau_i \
+  quad "Phase 3:" forall i : sigma_i = "Gen"(Gamma, tau_i)) / (Gamma tack.r "let " x_1 = e_1 " and " dots " and " x_n = e_n => Gamma , overline(x_i : sigma_i))
+$
+
+Phase 1 inserts monomorphic placeholders. Phase 2 infers each body in the
+extended environment (enabling mutual references). Phase 3 generalizes each
+binding *with respect to the original environment* (not the extended one), so
+that mutually-recursive references remain monomorphic within the group.
+
+== 8. Type Definitions (ADTs)
+
+=== 8.1 Algebraic Data Types
+
+A type definition introduces a new type constructor and a set of variant
+constructors:
+
+$ "type" T overline(alpha) = | K_1 tau_1 | dots | K_n tau_n $
+
+Each variant constructor is added to the variant environment.  A wrapping
+variant $K_i$ with payload type $tau_i$ produces a constructor function:
+
+$
+  "[Ctor]" quad K_i : forall overline(alpha) . tau_i -> T overline(alpha)
+$
+
+A unit variant (no payload) produces a constant value:
+
+$
+  "[CtorUnit]" quad K_i : forall overline(alpha) . T overline(alpha)
+$
+
+The type parameters $overline(alpha)$ of the parent type are universally
+quantified in each constructor's scheme.
+
+=== 8.2 Exhaustiveness
+
+When matching against a value of type $T overline(alpha)$, the checker looks up
+all constructors $K_1 , dots , K_n$ of $T$ and verifies that non-guarded arms
+cover every constructor. A wildcard or bare ident (non-guarded) counts as
+covering all constructors.
+
+== 9. Module System
+
+=== 9.1 Imports
+
+A use declaration makes another module's exports available in the current scope:
+
+$ "use" x = "path" $
+
+The imported module is type-checked (or its cached result is reused) and its
+export type — a record type — is bound in the environment. Field access on the
+import (`x.method`) follows standard field-access typing from Section 3.14.
+
+=== 9.2 Destructuring Imports
+
+A record-pattern import extracts specific fields from a module's export:
+
+$ "use" { f_1, dots, f_n } = "path" $
+
+Each $f_i$ is bound to the corresponding field type from the module's export
+record scheme, instantiated independently.
+
+=== 9.3 Module Exports
+
+Every module produces an export type (the `pub { ... }` expression) which is
+typed as a record. Modules without explicit exports produce the unit record
+`{ }`. The export record's type scheme includes all constraints needed to use
+the exported bindings.
+
+=== 9.4 Prelude
+
+Unless the module opts out via `-- lume no_prelude`, the standard prelude module
+is implicitly imported before all user declarations.  It provides `map`,
+`filter`, and the `Functor`, `ToText`, `Concat` traits among others.
