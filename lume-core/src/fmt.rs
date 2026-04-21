@@ -357,13 +357,7 @@ pub fn format_source(src: &str, config: &FormatConfig) -> Option<String> {
             let src_blanks = count_preceding_blanks(&src_lines, entry.source_line);
             let entering_items = has_uses && !seen_non_use && entry.kind != EntryKind::Use;
             let before_export = entry.kind == EntryKind::Export;
-            let min_blanks = if entering_items {
-                2
-            } else if before_export {
-                2
-            } else {
-                0
-            };
+            let min_blanks = if entering_items || before_export { 2 } else { 0 };
             let blanks = src_blanks.max(min_blanks).min(2);
             set_trailing_blank_lines(&mut result, blanks);
         }
@@ -470,10 +464,10 @@ fn preserve_alignment(formatted: &str, src_lines: &[&str], item_start: usize, it
                 i += 1;
             }
             let group_end = i;
-            if group_end - group_start >= 2 {
-                if source_arms_aligned(src_lines, item_start, &fmt_lines[group_start..group_end]) {
-                    align_arrows(&mut result_lines, group_start, group_end);
-                }
+            if group_end - group_start >= 2
+                && source_arms_aligned(src_lines, item_start, &fmt_lines[group_start..group_end])
+            {
+                align_arrows(&mut result_lines, group_start, group_end);
             }
         } else {
             i += 1;

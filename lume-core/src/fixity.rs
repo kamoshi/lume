@@ -227,7 +227,7 @@ fn check_flat_for_errors(items: &[FlatItem], table: &FixityTable) -> Result<(), 
         }
     }
 
-    for (_level, ops) in &by_level {
+    for ops in by_level.values() {
         if ops.len() < 2 {
             continue;
         }
@@ -470,7 +470,7 @@ fn try_map_arms(
         .map(|arm| {
             Ok(MatchArm {
                 pattern: arm.pattern,
-                guard: arm.guard.map(|g| f(g)).transpose()?,
+                guard: arm.guard.map(f).transpose()?,
                 body: f(arm.body)?,
             })
         })

@@ -1,0 +1,16 @@
+-- lume internal no_prelude
+-- Library module: defines a Combine trait with an operator method that has custom fixity.
+-- (##) infixl 8 → bp (64, 65), tighter than ++ at bp (50, 50).
+-- Exports nothing explicitly; traits and impls propagate to any importer.
+
+let (++) = concat_text
+
+trait Combine a {
+  let (##) infixl 8 : a -> a -> a
+}
+
+use Combine in Text {
+  let (##) = l -> r -> l ++ "[" ++ r ++ "]"
+}
+
+pub {}

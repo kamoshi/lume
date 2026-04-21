@@ -1,0 +1,13 @@
+-- lume internal no_prelude
+-- Tests that fixity declared on a trait method in an imported module is respected.
+-- Imports mod_fixity_trait_lib which has: trait Combine a { let (##) infixl 8 : a -> a -> a }
+-- (##) infixl 8 → bp (64, 65), tighter than ++ at bp (50, 50).
+--
+-- "A" ## "B" ++ "C" with infixl 8:  ("A" ## "B") ++ "C"  =  "A[B]" ++ "C"  =  "A[B]C"
+-- "A" ## "B" ++ "C" with default:    "A" ## ("B" ++ "C")  =  "A[BC]"
+
+use lib = "./mod_fixity_trait_lib"
+
+let (++) = concat_text
+
+let _ = "A" ## "B" ++ "C" |> print

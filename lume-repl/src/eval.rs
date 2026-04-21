@@ -320,9 +320,7 @@ fn arity_to_kind_string(arity: usize) -> String {
         return "*".to_string();
     }
     let mut parts: Vec<&str> = Vec::with_capacity(arity + 1);
-    for _ in 0..=arity {
-        parts.push("*");
-    }
+    parts.extend(std::iter::repeat_n("*", arity + 1));
     parts.join(" -> ")
 }
 

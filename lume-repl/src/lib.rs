@@ -44,7 +44,7 @@ pub fn run_repl(file: Option<&str>) {
     use rustyline::{Config, Editor};
 
     let lua = mlua::Lua::new();
-    lua.load(&codegen::lua::full_prelude()).exec().expect("failed to load prelude");
+    lua.load(codegen::lua::full_prelude()).exec().expect("failed to load prelude");
     lua.load(SHOW_HELPER).exec().expect("failed to load _show");
 
     let repl_env = lua.create_table().expect("failed to create repl env");
@@ -135,7 +135,7 @@ pub fn run_repl_stdin(file: Option<&str>) {
     use std::io::{self, BufRead};
 
     let lua = mlua::Lua::new();
-    lua.load(&codegen::lua::full_prelude()).exec().expect("failed to load prelude");
+    lua.load(codegen::lua::full_prelude()).exec().expect("failed to load prelude");
     lua.load(SHOW_HELPER).exec().expect("failed to load _show");
 
     let repl_env = lua.create_table().expect("failed to create repl env");

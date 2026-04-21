@@ -11,6 +11,22 @@ use crate::types::{
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+// ── Return-type aliases (suppress clippy::type_complexity) ───────────────────
+
+type ElaborateResult = Result<(HashMap<NodeId, Ty>, Ty, HashMap<NodeId, (String, String)>), TypeErrorAt>;
+type ElaborateWithEnvResult = Result<
+    (HashMap<NodeId, Ty>, TypeEnv, Ty, HashMap<NodeId, (String, String)>, HashMap<NodeId, Ty>),
+    TypeErrorAt,
+>;
+type ElaboratePartialResult = (
+    HashMap<NodeId, Ty>,
+    TypeEnv,
+    HashMap<String, TraitDef>,
+    Vec<TypeErrorAt>,
+    HashMap<TyVar, String>,
+    VariantEnv,
+);
+
 // ── Type environment ──────────────────────────────────────────────────────────
 
 // The typing environment Γ maps source-level names to their Schemes.
@@ -2177,7 +2193,7 @@ impl Checker {
         expected: Ty,
     ) -> Result<Vec<(String, Ty)>, TypeError> {
         let elem = self.fresh_ty();
-        self.unify(expected, Ty::mk_con("List", &[elem.clone()]))?;
+        self.unify(expected, Ty::mk_con("List", std::slice::from_ref(&elem)))?;
         let elem = self.subst.apply(&elem);
 
         let mut bindings = Vec::new();
@@ -3312,7 +3328,7 @@ fn collect_binding_info(
 pub fn elaborate(
     program: &Program,
     path: Option<&Path>,
-) -> Result<(HashMap<NodeId, Ty>, Ty, HashMap<NodeId, (String, String)>), TypeErrorAt> {
+) -> ElaborateResult {
     let mut subst = Subst::new();
     let (env, mut var_env) = builtin_env(&mut subst);
     let mut env = env;
@@ -3379,7 +3395,7 @@ pub fn elaborate(
 pub fn elaborate_with_env(
     program: &Program,
     path: Option<&Path>,
-) -> Result<(HashMap<NodeId, Ty>, TypeEnv, Ty, HashMap<NodeId, (String, String)>, HashMap<NodeId, Ty>), TypeErrorAt> {
+) -> ElaborateWithEnvResult {
     let mut subst = Subst::new();
     let (base_env, mut var_env) = builtin_env(&mut subst);
     let mut env = base_env;
@@ -3491,14 +3507,7 @@ pub fn elaborate_with_env(
 pub fn elaborate_with_env_partial(
     program: &Program,
     path: Option<&Path>,
-) -> (
-    HashMap<NodeId, Ty>,
-    TypeEnv,
-    HashMap<String, TraitDef>,
-    Vec<TypeErrorAt>,
-    HashMap<TyVar, String>,
-    VariantEnv,
-) {
+) -> ElaboratePartialResult {
     let mut subst = Subst::new();
     let (base_env, mut var_env) = builtin_env(&mut subst);
     let mut env = base_env;

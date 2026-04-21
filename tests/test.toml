@@ -645,3 +645,10 @@ output = """
 path = "tests/lume/fixity_multifile_error.lume"
 expect = "error"
 error_contains = "non-associative"
+
+[tests.fixity_trait_method]
+path = "tests/lume/fixity_trait_method.lume"
+expect = "typecheck"
+output = """
+A[B]C
+"""
