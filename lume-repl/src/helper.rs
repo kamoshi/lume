@@ -18,6 +18,7 @@ const FG_RED: &str = "\x1b[31m";
 pub(crate) const KEYWORDS: &[&str] = &[
     "let", "pub", "type", "use", "if", "then", "else", "and",
     "not", "in", "trait", "match", "true", "false",
+    "infix", "infixl", "infixr",
 ];
 
 /// Rebuild the completion list from current defs + static keywords + builtins.
@@ -91,6 +92,9 @@ fn highlight_line(line: &str) -> String {
             | Token::Trait | Token::Match | Token::And | Token::Not => {
                 format!("{FG_BLUE}{BOLD}{lexeme}{RESET}")
             }
+            Token::Ident(name) if matches!(name.as_str(), "infix" | "infixl" | "infixr") => {
+                format!("{FG_BLUE}{BOLD}{lexeme}{RESET}")
+            }
             Token::True | Token::False => format!("{FG_CYAN}{lexeme}{RESET}"),
             Token::TypeIdent(_) => format!("{FG_YELLOW}{lexeme}{RESET}"),
             Token::Text(_) => format!("{FG_GREEN}{lexeme}{RESET}"),
@@ -101,7 +105,8 @@ fn highlight_line(line: &str) -> String {
             Token::Plus | Token::Minus | Token::Star | Token::Slash
             | Token::EqEq | Token::BangEq | Token::Lt | Token::Gt
             | Token::LtEq | Token::GtEq | Token::Concat
-            | Token::AmpAmp | Token::PipePipe | Token::Equal
+            | Token::AmpAmp | Token::PipePipe | Token::Operator(_)
+            | Token::Equal
             | Token::Colon | Token::Bar | Token::DotDot | Token::Dot => {
                 format!("{DIM}{lexeme}{RESET}")
             }
@@ -114,6 +119,42 @@ fn highlight_line(line: &str) -> String {
         out.push_str(&line[cursor..]);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{highlight_line, BOLD, DIM, FG_MAGENTA, KEYWORDS, RESET};
+
+    const FG_BLUE: &str = "\x1b[34m";
+
+    #[test]
+    fn fixity_words_are_keyword_highlighted() {
+        let line = "let (@@) infixl 1 = x -> x";
+        let highlighted = highlight_line(line);
+        let expected = format!("{FG_BLUE}{BOLD}infixl{RESET}");
+        assert!(highlighted.contains(&expected));
+    }
+
+    #[test]
+    fn custom_operators_are_highlighted() {
+        let line = "let (@@) infixl 1 = x -> y -> x @@ y";
+        let highlighted = highlight_line(line);
+        let expected = format!("{DIM}@@{RESET}");
+        assert!(highlighted.contains(&expected));
+    }
+
+    #[test]
+    fn fixity_words_are_in_completion_keywords() {
+        assert!(KEYWORDS.contains(&"infix"));
+        assert!(KEYWORDS.contains(&"infixl"));
+        assert!(KEYWORDS.contains(&"infixr"));
+    }
+
+    #[test]
+    fn repl_commands_still_highlight_magenta() {
+        let highlighted = highlight_line(":help");
+        assert_eq!(highlighted, format!("{FG_MAGENTA}{BOLD}:help{RESET}"));
+    }
 }
 
 // ── TypeHint ──────────────────────────────────────────────────────────────────
