@@ -178,6 +178,36 @@ fn first_token(tokens: &[Spanned]) -> Option<&Token> {
     tokens.first().map(|t| &t.token)
 }
 
+/// Returns `true` if the name looks like an operator rather than an identifier.
+/// An operator name is any string that contains at least one character that is
+/// not alphanumeric and not an underscore.
+fn is_operator_name(s: &str) -> bool {
+    s.chars().any(|c| !c.is_alphanumeric() && c != '_')
+}
+
+/// Try to parse a fixity declaration at the current token position:
+///   `infixl [0-9]?` | `infixr [0-9]?` | `infix [0-9]?`
+/// Returns `Some((tokens_consumed, Fixity))` on success, `None` otherwise.
+fn try_parse_fixity(tokens: &[Spanned]) -> Option<(usize, crate::ast::Fixity)> {
+    use crate::ast::{Fixity, FixityAssoc};
+    let assoc = match first_token(tokens)? {
+        Token::Ident(s) if s == "infixl" => FixityAssoc::Left,
+        Token::Ident(s) if s == "infixr" => FixityAssoc::Right,
+        Token::Ident(s) if s == "infix"  => FixityAssoc::None,
+        _ => return None,
+    };
+    let mut ptr = 1;
+    let prec = match tokens.get(ptr).map(|t| &t.token) {
+        Some(Token::Number(n)) if *n >= 0.0 && *n <= 9.0 => {
+            let p = *n as u8;
+            ptr += 1;
+            p
+        }
+        _ => 9, // default precedence (Haskell convention)
+    };
+    Some((ptr, Fixity { assoc, prec }))
+}
+
 /// Speculatively try to parse a constraint prefix: `(Trait a, Trait b) =>`
 /// or unparenthesized: `Trait a =>` / `Trait a, Trait b =>`
 /// Returns `Some((consumed, constraints))` on success, `None` on failure.
@@ -470,6 +500,17 @@ impl Parser {
             let method_name_span = span(&tokens[ptr..]);
             let (n, method_name) = consume_ident_or_op(&tokens[ptr..])?;
             ptr += n;
+            // If the method name is an operator, parse optional fixity declaration.
+            let method_fixity = if is_operator_name(&method_name) {
+                if let Some((n, fx)) = try_parse_fixity(&tokens[ptr..]) {
+                    ptr += n;
+                    Some(fx)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
             ptr += consume(&tokens[ptr..], &Token::Colon)?;
             let (n, ty) = parse_type(&tokens[ptr..])?;
             ptr += n;
@@ -478,6 +519,7 @@ impl Parser {
                 name_span: method_name_span,
                 ty,
                 doc: method_doc,
+                fixity: method_fixity,
             });
             // optional comma between methods
             if matches!(first_token(&tokens[ptr..]), Some(Token::Comma)) {
@@ -560,6 +602,7 @@ impl Parser {
             ptr += n;
             methods.push(Binding {
                 pattern: Pattern::Ident(method_name, name_span, 0),
+                fixity: None,
                 constraints: vec![],
                 ty,
                 value,
@@ -845,6 +888,24 @@ impl Parser {
         let (n, pattern) = parse_pattern(&tokens[ptr..])?;
         ptr += n;
 
+        // If the pattern is an operator name, check for a fixity declaration:
+        //   let (++) infixr 6 = ...
+        //   let (<>) infixl   = ...
+        let fixity = if let Pattern::Ident(ref name, ..) = pattern {
+            if is_operator_name(name) {
+                if let Some((n, fx)) = try_parse_fixity(&tokens[ptr..]) {
+                    ptr += n;
+                    Some(fx)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         // Optional binding-head sugar:
         //   let f x y = body
         //   let f (x: Num) y -> Text = body
@@ -910,6 +971,7 @@ impl Parser {
             ptr,
             Binding {
                 pattern,
+                fixity,
                 constraints,
                 ty,
                 value,
@@ -1546,6 +1608,32 @@ impl Parser {
     fn parse_record_field(&self, tokens: &[Spanned]) -> Result<(usize, RecordField), ParseError> {
         let mut ptr = 0;
         let name_span = span(tokens);
+
+        // Support operator names in record fields: `{ (<<), (>>) }` for pub/export.
+        if matches!(first_token(tokens), Some(Token::LParen)) {
+            if let Ok((n, op_name)) = consume_ident_or_op(&tokens[ptr..]) {
+                // Only treat as an operator field if the parens actually wrapped an op.
+                if n == 3 {
+                    ptr += n;
+                    // Operators in records are always shorthand (no `:` value).
+                    let value = Some(Expr {
+                        id: 0,
+                        kind: ExprKind::Ident(op_name.clone()),
+                        span: name_span.clone(),
+                    });
+                    return Ok((
+                        ptr,
+                        RecordField {
+                            name: op_name,
+                            name_span,
+                            name_node_id: 0,
+                            value,
+                        },
+                    ));
+                }
+            }
+        }
+
         // Check if the field name is a constructor (TypeIdent) before consuming.
         let is_constructor = matches!(
             tokens.first(),
@@ -1944,6 +2032,25 @@ fn parse_record_pattern(tokens: &[Spanned]) -> Result<(usize, RecordPattern), Pa
 fn parse_field_pattern(tokens: &[Spanned]) -> Result<(usize, FieldPattern), ParseError> {
     let mut ptr = 0;
     let field_span = span(tokens);
+
+    // Support operator names in destructured imports: `use { (<<), (>>) } = ...`
+    if matches!(first_token(tokens), Some(Token::LParen)) {
+        if let Ok((n, op_name)) = consume_ident_or_op(&tokens[ptr..]) {
+            if n == 3 {
+                ptr += n;
+                return Ok((
+                    ptr,
+                    FieldPattern {
+                        name: op_name,
+                        span: field_span,
+                        node_id: 0,
+                        pattern: None,
+                    },
+                ));
+            }
+        }
+    }
+
     let (n, name) = consume_any_ident(&tokens[ptr..])?;
     ptr += n;
 

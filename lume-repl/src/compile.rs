@@ -10,9 +10,9 @@ use lume_core::types;
 
 /// Type-check, lower, and optimise a bundle to IR modules.
 pub(crate) fn lower_bundle(
-    b: &[bundle::BundleModule],
+    mut b: Vec<bundle::BundleModule>,
 ) -> Option<(Vec<codegen::IrModule>, types::infer::VariantEnv)> {
-    lume_core::pipeline::lower_bundle(b)
+    lume_core::pipeline::lower_bundle(&mut b)
         .map_err(|e| eprintln!("{e}"))
         .ok()
 }
@@ -89,7 +89,7 @@ pub(crate) fn collect_new_dep_modules(
 
     // Type-check and lower the full dep chain (needed for cross-module trait dispatch).
     let (ir_modules, variant_env) =
-        lower_bundle(&all_bundle).ok_or_else(|| "dep compilation failed".to_string())?;
+        lower_bundle(all_bundle).ok_or_else(|| "dep compilation failed".to_string())?;
 
     // Build a complete module_vars map: already-loaded + new.
     let mut module_vars: HashMap<PathBuf, String> = loaded.clone();
@@ -129,7 +129,7 @@ pub(crate) fn compile_prelude_deps(
     }
 
     let (ir_modules, variant_env) =
-        lower_bundle(&dep_bundle).ok_or_else(|| "prelude compilation failed".to_string())?;
+        lower_bundle(dep_bundle).ok_or_else(|| "prelude compilation failed".to_string())?;
 
     let mut module_vars: HashMap<PathBuf, String> = loaded.clone();
     for ir_mod in &ir_modules {

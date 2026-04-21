@@ -1,0 +1,15 @@
+-- lume internal no_prelude
+-- Helper module: exports operators with fixity declarations for multi-file fixity tests.
+
+let (++) = concat_text
+
+-- Left-associative surround: a << b  →  a ++ "[" ++ b ++ "]"
+let (<<) infixl 7 = l -> r -> l ++ "[" ++ r ++ "]"
+
+-- Right-associative surround: a >> b  →  a ++ "[" ++ b ++ "]"
+let (>>) infixr 7 = l -> r -> l ++ "[" ++ r ++ "]"
+
+-- Non-associative equality-like comparison (for error tests)
+let (=?) infix 5 = x -> y -> x == y
+
+pub { (<<), (>>), (=?) }

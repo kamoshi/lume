@@ -1,0 +1,6 @@
+-- Helper for fixity_multifile_prec test.
+-- Exports (@@) with infixl 8 — binds tighter than (+).
+
+let (@@) infixl 8 = x -> y -> x * y
+
+pub { (@@) }

@@ -1,0 +1,11 @@
+-- lume internal no_prelude
+-- Test: left-associative custom operator chains correctly.
+--
+-- (<<) is infixl 7 so  a << b << c  parses as  (a << b) << c
+-- With strings: "A" << "B" << "C"  →  ("A[B]") << "C"  →  "A[B][C]"
+
+let (++) = concat_text
+
+let (<<) infixl 7 = l -> r -> l ++ "[" ++ r ++ "]"
+
+let _ = "A" << "B" << "C" |> print

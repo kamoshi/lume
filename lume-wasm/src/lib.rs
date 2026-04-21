@@ -279,9 +279,9 @@ fn stdlib_var(path: &str) -> String {
 
 /// Type-check, lower, and optimise a bundle of AST modules into IR modules.
 fn lower_bundle(
-    b: &[BundleModule],
+    mut b: Vec<BundleModule>,
 ) -> Result<(Vec<codegen::IrModule>, types::infer::VariantEnv), String> {
-    pipeline::lower_bundle(b)
+    pipeline::lower_bundle(&mut b)
 }
 
 // ── Public WASM API ───────────────────────────────────────────────────────────
@@ -324,7 +324,7 @@ pub fn to_js(src: &str) -> Result<JsValue, JsValue> {
     types::infer::check_program(&entry.program, Some(Path::new(WASM_ENTRY_PATH)))
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
     let (ir_modules, variant_env) =
-        lower_bundle(&bundle).map_err(|e| JsValue::from_str(&e))?;
+        lower_bundle(bundle).map_err(|e| JsValue::from_str(&e))?;
     Ok(JsValue::from_str(&codegen::js::emit(&ir_modules, variant_env)))
 }
 
@@ -338,7 +338,7 @@ pub fn to_lua(src: &str) -> Result<JsValue, JsValue> {
     types::infer::check_program(&entry.program, Some(Path::new(WASM_ENTRY_PATH)))
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
     let (ir_modules, variant_env) =
-        lower_bundle(&bundle).map_err(|e| JsValue::from_str(&e))?;
+        lower_bundle(bundle).map_err(|e| JsValue::from_str(&e))?;
     Ok(JsValue::from_str(&codegen::lua::emit(&ir_modules, variant_env)))
 }
 

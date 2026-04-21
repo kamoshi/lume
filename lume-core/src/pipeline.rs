@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use crate::ast::TopItem;
 use crate::bundle::BundleModule;
 use crate::codegen::IrModule;
+use crate::fixity;
 use crate::ir;
 use crate::lower;
 use crate::types;
@@ -18,7 +19,7 @@ use crate::types;
 /// Returns `Err(message)` on the first type error encountered, where
 /// `message` includes the canonical module path.
 pub fn lower_bundle(
-    b: &[BundleModule],
+    b: &mut [BundleModule],
 ) -> Result<(Vec<IrModule>, types::infer::VariantEnv), String> {
     // ── 1. Build the global trait / impl / variant context ───────────────────
     let mut global = lower::GlobalCtx {
@@ -79,6 +80,17 @@ pub fn lower_bundle(
         for (name, info) in builtin_variants.all() {
             global.variants.entry(name.clone()).or_insert_with(|| info.clone());
         }
+    }
+
+    // ── 1½. Fixity re-association pass ───────────────────────────────────────
+    // Collect all operator fixity declarations from every module, then rebuild
+    // any binary-operator sub-trees that were parsed with incorrect default
+    // precedences.  This must happen after the full global context scan so that
+    // fixity declarations in imported modules are visible.
+    {
+        let fixities = fixity::collect_fixities(b);
+        fixity::reassociate_bundle(b, &fixities)
+            .map_err(|e| format!("fixity error: {e}"))?;
     }
 
     // ── 2. Lower and optimise each module ────────────────────────────────────

@@ -1,0 +1,11 @@
+-- Test: mixing left-associative and right-associative operators at the same
+-- precedence level is a compile-time fixity error.
+--
+-- (<+) is infixl 5  →  bp (40, 41)
+-- (+>) is infixr 5  →  bp (40, 40)
+-- Writing  1 <+ 2 +> 3  should fail with a conflicting-associativity error.
+
+let (<+) infixl 5 = x -> y -> x + y
+let (+>) infixr 5 = x -> y -> x + y
+
+let _ = 1 <+ 2 +> 3 |> showNum |> print

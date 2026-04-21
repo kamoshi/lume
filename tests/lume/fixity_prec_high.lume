@@ -1,0 +1,9 @@
+-- Test: high-precedence custom operator binds tighter than built-in (+).
+--
+-- (@@) is infixl 8, which maps to bp (64,65).
+-- Built-in (+) is bp (60,61).
+-- So  1 + 2 @@ 3  parses as  1 + (2 @@ 3)  →  1 + 6  →  7
+
+let (@@) infixl 8 = x -> y -> x * y
+
+let _ = 1 + 2 @@ 3 |> showNum |> print

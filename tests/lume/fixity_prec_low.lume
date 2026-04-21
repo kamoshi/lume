@@ -1,0 +1,9 @@
+-- Test: low-precedence custom operator binds looser than built-in (+).
+--
+-- (??) is infixl 5, which maps to bp (40,41).
+-- Built-in (+) is bp (60,61).
+-- So  1 + 2 ?? 3  parses as  (1 + 2) ?? 3  →  3 ?? 3  →  9
+
+let (??) infixl 5 = x -> y -> x * y
+
+let _ = 1 + 2 ?? 3 |> showNum |> print

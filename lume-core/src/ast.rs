@@ -42,6 +42,62 @@ pub enum TopItem {
     ImplDef(ImplDef),
 }
 
+// ── Operator fixity ───────────────────────────────────────────────────────────
+
+/// Associativity for a user-defined infix operator.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FixityAssoc {
+    /// `infixl` — `a ⊕ b ⊕ c` parses as `(a ⊕ b) ⊕ c`.
+    Left,
+    /// `infixr` — `a ⊕ b ⊕ c` parses as `a ⊕ (b ⊕ c)`.
+    Right,
+    /// `infix` — non-associative; chaining at the same level is disallowed.
+    /// Treated as left-assoc at parse time; enforced by a post-parse lint.
+    None,
+}
+
+/// Fixity declaration on an operator binding or trait method.
+///
+/// ```text
+/// let (++) infixr 6 = …        -- right-assoc at precedence 6
+/// let (<>) infixl   = …        -- left-assoc at default precedence (9)
+/// let (=?) infix  2 = …        -- non-assoc at precedence 2
+/// ```
+#[derive(Debug, Clone)]
+pub struct Fixity {
+    pub assoc: FixityAssoc,
+    /// Precedence level 0–9.  Defaults to 9 when the number is omitted.
+    pub prec: u8,
+}
+
+impl Fixity {
+    /// Convert to the Pratt `(left_bp, right_bp)` pair used by the parser and
+    /// the fixity re-association pass.
+    ///
+    /// Precedence *N* maps to binding-power `N × 8`, spreading user-defined
+    /// operators evenly across the full built-in bp range:
+    ///
+    /// | Prec | bp (infixl/infix) | bp (infixr) | vs built-ins |
+    /// |------|--------------------|-------------|--------------|
+    /// | 0    | (0, 1)             | (0, 0)      | below `\|>` (10) |
+    /// | 5    | (40, 41)           | (40, 40)    | same level as `==` (40) |
+    /// | 7    | (56, 57)           | (56, 56)    | between `++` (50) and `+` (60) |
+    /// | 8    | (64, 65)           | (64, 64)    | between `+` (60) and `*` (70) |
+    /// | 9    | (72, 73)           | (72, 72)    | above `*` (70) |
+    ///
+    /// - `infixl N` → `(N*8, N*8+1)` — right recurses with higher bp → left-assoc
+    /// - `infixr N` → `(N*8, N*8)`   — equal bps → right-assoc (Pratt convention)
+    /// - `infix  N` → `(N*8, N*8+1)` — encoded like `infixl`; chaining detected
+    ///   as a post-parse error by the fixity pass
+    pub fn to_binding_powers(&self) -> (u8, u8) {
+        let base = self.prec.saturating_mul(8);
+        match self.assoc {
+            FixityAssoc::Left | FixityAssoc::None => (base, base + 1),
+            FixityAssoc::Right => (base, base),
+        }
+    }
+}
+
 /// `trait Show a { show: a -> Text }`
 #[derive(Debug, Clone)]
 pub struct TraitDef {
@@ -60,6 +116,8 @@ pub struct TraitMethod {
     pub name_span: Span,
     pub ty: Type,
     pub doc: Option<String>,
+    /// Operator fixity, e.g. `let (++) infixr 6 : a -> a -> a`.
+    pub fixity: Option<Fixity>,
 }
 
 /// `use Show in Num { show = x -> show x }`
@@ -124,6 +182,8 @@ pub struct Variant {
 #[derive(Debug, Clone)]
 pub struct Binding {
     pub pattern: Pattern,
+    /// Operator fixity, e.g. `let (++) infixr 6 = …`.  `None` for normal bindings.
+    pub fixity: Option<Fixity>,
     /// Parsed constraint annotations: `(ToText a, ToText b) =>`.
     pub constraints: Vec<(String, String)>,
     pub ty: Option<Type>,

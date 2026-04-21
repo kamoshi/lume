@@ -1,0 +1,11 @@
+-- lume internal no_prelude
+-- Test: fixity declarations from an imported module are respected.
+--
+-- (<<) is infixl 7 in mod_fixity_lib; (>>) is infixr 7.
+-- "A" << "B" << "C"  →  ("A[B]") << "C"  →  "A[B][C]"  (left-assoc)
+-- "A" >> "B" >> "C"  →  "A" >> ("B[C]")  →  "A[B[C]]"  (right-assoc)
+
+use { (<<), (>>) } = "./mod_fixity_lib"
+
+let _ = "A" << "B" << "C" |> print
+let _ = "A" >> "B" >> "C" |> print

@@ -1,0 +1,8 @@
+-- Test: precedence declared in an imported module is respected.
+--
+-- (@@) is infixl 8 in mod_fixity_prec_lib, which is above built-in (+).
+-- So  1 + 2 @@ 3  in this file should also parse as  1 + (2 @@ 3) = 7.
+
+use { (@@) } = "./mod_fixity_prec_lib"
+
+let _ = 1 + 2 @@ 3 |> showNum |> print

@@ -1,0 +1,7 @@
+-- lume internal no_prelude
+-- Test: chaining a non-associative operator imported from another module
+-- should produce the same fixity error as if declared locally.
+
+use { (=?) } = "./mod_fixity_lib"
+
+let _ = 1 =? 2 =? 3 |> print

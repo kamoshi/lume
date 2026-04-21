@@ -585,3 +585,63 @@ output = """
 hello
 30
 """
+
+# ── Fixity tests ──────────────────────────────────────────────────────────────
+
+[tests.fixity_infixl]
+path = "tests/lume/fixity_infixl.lume"
+expect = "typecheck"
+output = """
+A[B][C]
+"""
+
+[tests.fixity_infixr]
+path = "tests/lume/fixity_infixr.lume"
+expect = "typecheck"
+output = """
+A[B[C]]
+"""
+
+[tests.fixity_prec_high]
+path = "tests/lume/fixity_prec_high.lume"
+expect = "typecheck"
+output = """
+7
+"""
+
+[tests.fixity_prec_low]
+path = "tests/lume/fixity_prec_low.lume"
+expect = "typecheck"
+output = """
+9
+"""
+
+[tests.fixity_non_assoc_chain]
+path = "tests/lume/fixity_non_assoc_chain.lume"
+expect = "error"
+error_contains = "non-associative"
+
+[tests.fixity_mixed_assoc]
+path = "tests/lume/fixity_mixed_assoc.lume"
+expect = "error"
+error_contains = "conflicting associativity"
+
+[tests.fixity_multifile_assoc]
+path = "tests/lume/fixity_multifile_assoc.lume"
+expect = "typecheck"
+output = """
+A[B][C]
+A[B[C]]
+"""
+
+[tests.fixity_multifile_prec]
+path = "tests/lume/fixity_multifile_prec.lume"
+expect = "typecheck"
+output = """
+7
+"""
+
+[tests.fixity_multifile_error]
+path = "tests/lume/fixity_multifile_error.lume"
+expect = "error"
+error_contains = "non-associative"

@@ -1,0 +1,8 @@
+-- Test: non-associative operator cannot be chained.
+--
+-- (=?) is declared `infix 5` (non-associative).
+-- Writing  1 =? 2 =? 3  should be a compile-time fixity error.
+
+let (=?) infix 5 = x -> y -> x == y
+
+let _ = 1 =? 2 =? 3 |> print

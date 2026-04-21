@@ -3,6 +3,7 @@ pub mod builtin;
 pub mod bundle;
 pub mod codegen;
 pub mod error;
+pub mod fixity;
 pub mod fmt;
 pub mod ir;
 pub mod lexer;

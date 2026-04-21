@@ -52,8 +52,8 @@ fn check_file(path: &str) -> bool {
 /// Type-check, lower, and optimise every module in the bundle.
 /// Returns `(Vec<IrModule>, VariantEnv)` on success,
 /// or `None` (after printing the error) on the first type error.
-fn lower_bundle(b: &[bundle::BundleModule]) -> Option<(Vec<codegen::IrModule>, types::infer::VariantEnv)> {
-    lume_core::pipeline::lower_bundle(b)
+fn lower_bundle(mut b: Vec<bundle::BundleModule>) -> Option<(Vec<codegen::IrModule>, types::infer::VariantEnv)> {
+    lume_core::pipeline::lower_bundle(&mut b)
         .map_err(|e| eprintln!("{e}"))
         .ok()
 }
@@ -66,7 +66,7 @@ fn js_file(path: &str) -> bool {
             return false;
         }
     };
-    let (ir_modules, variant_env) = match lower_bundle(&b) {
+    let (ir_modules, variant_env) = match lower_bundle(b) {
         Some(v) => v,
         None => return false,
     };
@@ -82,7 +82,7 @@ fn lua_file(path: &str) -> bool {
             return false;
         }
     };
-    let (ir_modules, variant_env) = match lower_bundle(&b) {
+    let (ir_modules, variant_env) = match lower_bundle(b) {
         Some(v) => v,
         None => return false,
     };

@@ -22,7 +22,7 @@ pub fn run(path: &str) -> Result<(), String> {
     let b = bundle::collect(Path::new(path))
         .map_err(|e| format!("{path}: {e}"))?;
 
-    let (ir_modules, variant_env) = lower_bundle(&b)
+    let (ir_modules, variant_env) = lower_bundle(b)
         .ok_or_else(|| "compilation failed".to_string())?;
 
     let lua_src = codegen::lua::emit(&ir_modules, variant_env);

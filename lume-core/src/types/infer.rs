@@ -2968,6 +2968,7 @@ fn synth_impl_binding(id: &ImplDef, trait_def: Option<&TraitDef>) -> Binding {
 
     Binding {
         pattern: Pattern::Ident(dict_name, crate::error::Span::default(), u32::MAX),
+        fixity: None,
         constraints: id.impl_constraints.clone(),
         ty,
         value: Expr {

@@ -683,12 +683,17 @@ impl Emitter {
                 }
                 ir::ImportBinding::Destructure(names) => {
                     for name in names {
+                        let key = lua_field_key(name);
+                        let access = if key.starts_with('[') {
+                            format!("{}{}", mv, key)
+                        } else {
+                            format!("{}.{}", mv, key)
+                        };
                         self.out.push_str(&format!(
-                            "{}{} = {}.{}\n",
+                            "{}{} = {}\n",
                             local,
                             lua_ident(name),
-                            mv,
-                            name
+                            access
                         ));
                     }
                 }
@@ -716,12 +721,17 @@ impl Emitter {
                         self.out
                             .push_str(&format!("local {} = require(\"{}\")\n", tmp, path));
                         for name in names {
+                            let key = lua_field_key(name);
+                            let access = if key.starts_with('[') {
+                                format!("{}{}", tmp, key)
+                            } else {
+                                format!("{}.{}", tmp, key)
+                            };
                             self.out.push_str(&format!(
-                                "{}{} = {}.{}\n",
+                                "{}{} = {}\n",
                                 local,
                                 lua_ident(name),
-                                tmp,
-                                name
+                                access
                             ));
                         }
                     }
