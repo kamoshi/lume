@@ -5,7 +5,6 @@ use lume_core::bundle;
 use lume_core::codegen;
 use lume_core::error::LumeError;
 use lume_core::lexer::Lexer;
-use lume_core::lower;
 use lume_core::parser;
 use lume_core::types;
 
@@ -50,129 +49,13 @@ fn check_file(path: &str) -> bool {
     }
 }
 
-/// Type-check and lower every module in the bundle to IR.
+/// Type-check, lower, and optimise every module in the bundle.
 /// Returns `(Vec<IrModule>, VariantEnv)` on success,
-/// or `None` (and prints an error) if any module fails to type-check.
+/// or `None` (after printing the error) on the first type error.
 fn lower_bundle(b: &[bundle::BundleModule]) -> Option<(Vec<codegen::IrModule>, types::infer::VariantEnv)> {
-    use lume_core::ast::TopItem;
-
-    // Build the global trait/impl/variant context from all modules so cross-module
-    // TraitCalls can be resolved and bare constructor references lowered to lambdas.
-    let mut global = lower::GlobalCtx {
-        traits: std::collections::HashMap::new(),
-        impls: std::collections::HashMap::new(),
-        param_impls: Vec::new(),
-        variants: std::collections::HashMap::new(),
-    };
-    for m in b.iter() {
-        for item in &m.program.items {
-            match item {
-                TopItem::TraitDef(td) => {
-                    global.traits.insert(td.name.clone(), td.clone());
-                }
-                TopItem::ImplDef(id) => {
-                    let dict = lower::dict_name(&id.trait_name, &id.type_name);
-                    if id.impl_constraints.is_empty() {
-                        global.impls.insert(
-                            (id.trait_name.clone(), id.type_name.clone()),
-                            lower::ImplEntry {
-                                module_var: Some(m.var.clone()),
-                                dict_ident: dict,
-                            },
-                        );
-                    } else {
-                        global.param_impls.push(lower::ParamImplEntry {
-                            trait_name: id.trait_name.clone(),
-                            target_type: id.target_type.clone(),
-                            constraints: id.impl_constraints.clone(),
-                            module_var: Some(m.var.clone()),
-                            dict_ident: dict,
-                        });
-                    }
-                }
-                TopItem::TypeDef(td) => {
-                    for variant in &td.variants {
-                        global.variants.insert(
-                            variant.name.clone(),
-                            lume_core::types::infer::VariantInfo {
-                                type_name: td.name.clone(),
-                                type_params: td.params.clone(),
-                                wraps: variant.wraps.clone(),
-                            },
-                        );
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    // Register built-in variants (Maybe, Result) so the lowerer can
-    // convert bare constructor references like `Some` and `Ok` into lambdas.
-    {
-        let mut scratch = lume_core::types::Subst::new();
-        let (_, builtin_variants) = types::infer::builtin_env(&mut scratch);
-        for (name, info) in builtin_variants.all() {
-            global.variants.entry(name.clone()).or_insert_with(|| info.clone());
-        }
-    }
-
-    // Lower each module with its own local view: impls defined in this
-    // module are accessed by bare name (module_var = None).
-    let mut ir_modules = Vec::new();
-    for m in b.iter() {
-        let local_global = lower::GlobalCtx {
-            traits: global.traits.clone(),
-            impls: global.impls
-                .iter()
-                .map(|(k, e)| {
-                    let is_local = e.module_var.as_deref() == Some(&m.var);
-                    let entry = lower::ImplEntry {
-                        module_var: if is_local { None } else { e.module_var.clone() },
-                        dict_ident: e.dict_ident.clone(),
-                    };
-                    (k.clone(), entry)
-                })
-                .collect(),
-            param_impls: global.param_impls
-                .iter()
-                .map(|pi| lower::ParamImplEntry {
-                    trait_name: pi.trait_name.clone(),
-                    target_type: pi.target_type.clone(),
-                    constraints: pi.constraints.clone(),
-                    module_var: if pi.module_var.as_deref() == Some(&m.var) {
-                        None
-                    } else {
-                        pi.module_var.clone()
-                    },
-                    dict_ident: pi.dict_ident.clone(),
-                })
-                .collect(),
-            variants: global.variants.clone(),
-        };
-
-        let module_path = Some(m.canonical.as_path());
-        let (node_types, type_env, resolved_trait_methods, resolved_op_types) = match types::infer::elaborate_with_env(&m.program, module_path) {
-            Ok((nt, env, _, rtm, rot)) => (nt, env, rtm, rot),
-            Err(e) => {
-                eprintln!("{}: type error: {e}", m.canonical.display());
-                return None;
-            }
-        };
-        let ir_mod = lower::lower(m.program.clone(), &node_types, &type_env, &local_global, &resolved_trait_methods, &resolved_op_types);
-        ir_modules.push(codegen::IrModule {
-            canonical: m.canonical.clone(),
-            module: ir_mod,
-            var: m.var.clone(),
-        });
-    }
-
-    // Convert the global variants map into a VariantEnv for codegen.
-    let mut variant_env = types::infer::VariantEnv::default();
-    for (name, info) in global.variants {
-        variant_env.insert(name, info);
-    }
-    Some((ir_modules, variant_env))
+    lume_core::pipeline::lower_bundle(b)
+        .map_err(|e| eprintln!("{e}"))
+        .ok()
 }
 
 fn js_file(path: &str) -> bool {
