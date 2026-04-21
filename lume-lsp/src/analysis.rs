@@ -24,6 +24,8 @@ pub struct DocInfo {
     /// Line number (1-indexed) → spans on that line, sorted by span length
     /// (shortest first) for efficient "find innermost expression" queries.
     pub span_index: HashMap<usize, Vec<(Span, NodeId)>>,
+    /// Parenthesized-expression spans for explicit hover on `(` / `)`.
+    pub paren_span_index: HashMap<usize, Vec<(Span, NodeId)>>,
     /// All names in scope at the end of the file (builtins + imports + lets).
     pub top_env: TypeEnv,
     /// Trait definitions visible in this file (local + imported).
@@ -319,6 +321,9 @@ fn collect_expr_semantic(
             collect_expr_semantic(func, node_types, top_env, variant_env, false, out);
             collect_expr_semantic(arg, node_types, top_env, variant_env, false, out);
         }
+        ExprKind::Paren(inner) => {
+            collect_expr_semantic(inner, node_types, top_env, variant_env, false, out);
+        }
         ExprKind::Binary { left, right, .. } => {
             collect_expr_semantic(left, node_types, top_env, variant_env, false, out);
             collect_expr_semantic(right, node_types, top_env, variant_env, false, out);
@@ -520,6 +525,7 @@ pub fn analyse(uri: &Url, src: &str) -> (Option<DocInfo>, Vec<Diagnostic>) {
     let (node_types, top_env, trait_env, type_errors, var_name_hints, variant_env) =
         elaborate_with_env_partial(&program, path.as_deref());
     let span_index = collect_spans(&program);
+    let paren_span_index = collect_paren_spans(&program);
     let trait_calls = collect_trait_calls(&program);
     let extra_hovers = collect_extra_hovers(&program);
     let doc_comments = collect_doc_comments(&program);
@@ -536,6 +542,7 @@ pub fn analyse(uri: &Url, src: &str) -> (Option<DocInfo>, Vec<Diagnostic>) {
     let doc_info = Some(DocInfo {
         node_types,
         span_index,
+        paren_span_index,
         top_env,
         trait_env,
         trait_calls,
@@ -590,6 +597,7 @@ fn collect_trait_calls(program: &Program) -> HashMap<NodeId, (String, String)> {
             ExprKind::Variant { payload: Some(p), .. } => walk(p, out),
             ExprKind::Lambda { body, .. } => walk(body, out),
             ExprKind::Apply { func, arg } => { walk(func, out); walk(arg, out); }
+            ExprKind::Paren(inner) => walk(inner, out),
             ExprKind::Binary { left, right, .. } => { walk(left, out); walk(right, out); }
             ExprKind::Unary { operand, .. } => walk(operand, out),
             ExprKind::If { cond, then_branch, else_branch } => {
@@ -703,6 +711,104 @@ fn collect_pattern_spans(pat: &ast::Pattern, out: &mut Vec<(Span, NodeId)>) {
     }
 }
 
+fn collect_paren_spans(program: &Program) -> HashMap<usize, Vec<(Span, NodeId)>> {
+    let mut flat = Vec::new();
+
+    fn walk(expr: &Expr, out: &mut Vec<(Span, NodeId)>) {
+        if let ExprKind::Paren(inner) = &expr.kind {
+            if expr.span.len > 0 {
+                out.push((expr.span.clone(), expr.id));
+            }
+            walk(inner, out);
+            return;
+        }
+
+        match &expr.kind {
+            ExprKind::List { entries } => entries.iter().for_each(|entry| match entry {
+                ast::ListEntry::Elem(e) | ast::ListEntry::Spread(e) => walk(e, out),
+            }),
+            ExprKind::Record { entries } => {
+                for entry in entries {
+                    match entry {
+                        RecordEntry::Spread(e) => walk(e, out),
+                        RecordEntry::Field(f) => {
+                            if let Some(v) = &f.value {
+                                walk(v, out);
+                            }
+                        }
+                    }
+                }
+            }
+            ExprKind::FieldAccess { record, .. } => walk(record, out),
+            ExprKind::Variant { payload: Some(p), .. } => walk(p, out),
+            ExprKind::Lambda { body, .. } => walk(body, out),
+            ExprKind::Apply { func, arg } => {
+                walk(func, out);
+                walk(arg, out);
+            }
+            ExprKind::Binary { left, right, .. } => {
+                walk(left, out);
+                walk(right, out);
+            }
+            ExprKind::Unary { operand, .. } => walk(operand, out),
+            ExprKind::If { cond, then_branch, else_branch } => {
+                walk(cond, out);
+                walk(then_branch, out);
+                walk(else_branch, out);
+            }
+            ExprKind::Match(arms) => {
+                for a in arms {
+                    if let Some(g) = &a.guard {
+                        walk(g, out);
+                    }
+                    walk(&a.body, out);
+                }
+            }
+            ExprKind::MatchExpr { scrutinee, arms } => {
+                walk(scrutinee, out);
+                for a in arms {
+                    if let Some(g) = &a.guard {
+                        walk(g, out);
+                    }
+                    walk(&a.body, out);
+                }
+            }
+            ExprKind::LetIn { value, body, .. } => {
+                walk(value, out);
+                walk(body, out);
+            }
+            _ => {}
+        }
+    }
+
+    for item in &program.items {
+        match item {
+            TopItem::Binding(b) => walk(&b.value, &mut flat),
+            TopItem::BindingGroup(bs) => {
+                for b in bs {
+                    walk(&b.value, &mut flat);
+                }
+            }
+            TopItem::ImplDef(id) => {
+                for m in &id.methods {
+                    walk(&m.value, &mut flat);
+                }
+            }
+            TopItem::TypeDef(_) | TopItem::TraitDef(_) => {}
+        }
+    }
+    walk(&program.exports, &mut flat);
+
+    let mut by_line: HashMap<usize, Vec<(Span, NodeId)>> = HashMap::new();
+    for (span, nid) in flat {
+        by_line.entry(span.line).or_default().push((span, nid));
+    }
+    for bucket in by_line.values_mut() {
+        bucket.sort_by(|(s1, n1), (s2, n2)| s1.len.cmp(&s2.len).then(n2.cmp(n1)));
+    }
+    by_line
+}
+
 fn collect_expr_spans(expr: &Expr, out: &mut Vec<(Span, NodeId)>) {
     if expr.span.len > 0 {
         out.push((expr.span.clone(), expr.id));
@@ -733,6 +839,7 @@ fn collect_expr_spans(expr: &Expr, out: &mut Vec<(Span, NodeId)>) {
             collect_expr_spans(func, out);
             collect_expr_spans(arg, out);
         }
+        ExprKind::Paren(inner) => collect_expr_spans(inner, out),
         ExprKind::Binary { left, right, .. } => {
             collect_expr_spans(left, out);
             collect_expr_spans(right, out);
@@ -1322,6 +1429,7 @@ fn collect_refs_expr(expr: &Expr, out: &mut HashMap<String, Vec<Span>>) {
             collect_refs_expr(func, out);
             collect_refs_expr(arg, out);
         }
+        ExprKind::Paren(inner) => collect_refs_expr(inner, out),
         ExprKind::Binary { left, right, .. } => {
             collect_refs_expr(left, out);
             collect_refs_expr(right, out);
@@ -1455,6 +1563,7 @@ fn collect_match_exprs(program: &Program) -> Vec<MatchExprInfo> {
                 walk(func, out);
                 walk(arg, out);
             }
+            ExprKind::Paren(inner) => walk(inner, out),
             ExprKind::Binary { left, right, .. } => {
                 walk(left, out);
                 walk(right, out);

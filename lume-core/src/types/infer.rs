@@ -1267,6 +1267,8 @@ impl Checker {
                 Ok(self.subst.apply(&ret_c))
             }
 
+            ExprKind::Paren(inner) => self.infer(env, inner),
+
             ExprKind::If {
                 cond,
                 then_branch,

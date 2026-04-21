@@ -430,6 +430,8 @@ impl<'a> Cx<'a> {
                 ir::Expr::App(Box::new(self.expr(*func)), Box::new(self.expr(*arg)))
             }
 
+            ExprKind::Paren(inner) => self.expr(*inner),
+
             ExprKind::Binary { op: BinOp::Pipe, left, right } => {
                 // a |> f  →  App(f, a)
                 ir::Expr::App(Box::new(self.expr(*right)), Box::new(self.expr(*left)))

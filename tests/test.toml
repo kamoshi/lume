@@ -641,6 +641,13 @@ output = """
 7
 """
 
+[tests.fixity_paren_barrier]
+path = "tests/lume/fixity_paren_barrier.lume"
+expect = "typecheck"
+output = """
+9
+"""
+
 [tests.fixity_multifile_error]
 path = "tests/lume/fixity_multifile_error.lume"
 expect = "error"

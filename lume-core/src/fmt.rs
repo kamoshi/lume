@@ -1165,6 +1165,7 @@ fn expr_prec(expr: &Expr) -> u8 {
         ExprKind::Match(_) => 1,
         ExprKind::MatchExpr { .. } => 1,
         ExprKind::Binary { op, .. } => binop_prec(op),
+        ExprKind::Paren(_) => 100,
         ExprKind::Unary { .. } => 70,
         ExprKind::Apply { .. } => 60,
         _ => 100,
@@ -1289,6 +1290,10 @@ fn fmt_expr_inner(expr: &Expr) -> Doc {
                 args.iter().map(|a| fmt_expr(a, 61)).collect::<Vec<_>>(),
             );
             group(concat(func_doc, nest(2, concat(line(), args_doc))))
+        }
+
+        ExprKind::Paren(inner) => {
+            concat_all(vec![text("("), fmt_expr(inner, 0), text(")")])
         }
 
         ExprKind::Binary { op, left, right } => {

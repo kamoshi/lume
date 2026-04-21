@@ -207,6 +207,14 @@ fn flatten_and_recurse(expr: Expr, table: &FixityTable) -> Result<Vec<FlatItem>,
             items.extend(flatten_and_recurse(*right, table)?);
             Ok(items)
         }
+        ExprKind::Paren(inner) => {
+            let recursed = reassociate_expr(*inner, table)?;
+            Ok(vec![FlatItem::Expr(Expr {
+                id: expr.id,
+                kind: ExprKind::Paren(Box::new(recursed)),
+                span: expr.span,
+            })])
+        }
         _ => {
             let recursed = map_children_owned(expr, |child| reassociate_expr(child, table))?;
             Ok(vec![FlatItem::Expr(recursed)])
@@ -391,6 +399,8 @@ fn map_children_owned(
         | ExprKind::Ident(_)
         | ExprKind::TraitCall { .. }
         | ExprKind::Hole => kind,
+
+        ExprKind::Paren(inner) => ExprKind::Paren(Box::new(f(*inner)?)),
 
         ExprKind::List { entries } => ExprKind::List {
             entries: entries

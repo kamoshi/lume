@@ -1468,6 +1468,7 @@ fn parse_atom(tokens: &[Spanned]) -> Result<(usize, Expr), ParseError> {
         // ── Parenthesised expression ──────────────────────────────────────────
         Some(Token::LParen) => {
             let mut ptr = 1; // consume `(`
+            let open_span = tokens[0].span.clone();
                              // Check for operator-as-value: `(op)` → Ident(op_name)
             if let Some(tok) = first_token(&tokens[ptr..]) {
                 if let Some(op_name) = token_to_op_name(tok) {
@@ -1488,8 +1489,21 @@ fn parse_atom(tokens: &[Spanned]) -> Result<(usize, Expr), ParseError> {
             }
             let (n, inner) = parse_expr(&tokens[ptr..])?;
             ptr += n;
+            let close_span = tokens[ptr].span.clone();
             ptr += consume(&tokens[ptr..], &Token::RParen)?;
-            Ok((ptr, inner))
+            let s = Span {
+                line: open_span.line,
+                col: open_span.col,
+                len: (close_span.col + close_span.len).saturating_sub(open_span.col),
+            };
+            Ok((
+                ptr,
+                Expr {
+                    id: 0,
+                    kind: ExprKind::Paren(Box::new(inner)),
+                    span: s,
+                },
+            ))
         }
 
         // ── If expression ─────────────────────────────────────────────────────

@@ -23,6 +23,34 @@ pub fn type_at_with_id(pos: Position, doc: &DocInfo) -> Option<(NodeId, Ty)> {
         .and_then(|(_, id)| doc.node_types.get(id).map(|ty| (*id, ty.clone())))
 }
 
+fn paren_type_at_with_id(pos: Position, text: &str, doc: &DocInfo) -> Option<(NodeId, Ty)> {
+    let line_text = text.lines().nth(pos.line as usize)?;
+    let byte_col = utf16_to_byte(line_text, pos.character);
+    let line = pos.line as usize + 1;
+    let candidates = [byte_col, byte_col.saturating_sub(1)];
+
+    for candidate in candidates {
+        let Some(ch) = line_text.get(candidate..).and_then(|s| s.chars().next()) else {
+            continue;
+        };
+        if ch != '(' && ch != ')' {
+            continue;
+        }
+        let col = candidate + 1;
+        if let Some(found) = doc
+            .paren_span_index
+            .get(&line)?
+            .iter()
+            .find(|(span, _)| span.col <= col && col <= span.col + span.len)
+            .and_then(|(_, id)| doc.node_types.get(id).map(|ty| (*id, ty.clone())))
+        {
+            return Some(found);
+        }
+    }
+
+    None
+}
+
 /// Convert a UTF-16 code-unit offset (LSP `Position.character`) to a byte
 /// offset within a single line of UTF-8 text.
 pub fn utf16_to_byte(line: &str, utf16_offset: u32) -> usize {
@@ -176,6 +204,11 @@ fn lume_block(content: &str) -> String {
 ///
 /// Returns `None` when no hover information is available.
 pub fn hover_label(pos: Position, text: &str, doc: &DocInfo) -> Option<String> {
+    if let Some((_, ty)) = paren_type_at_with_id(pos, text, doc) {
+        let ty_str = format_ty_with_hints(&ty, &doc.var_name_hints);
+        return Some(lume_block(&ty_str));
+    }
+
     if let Some((node_id, ty)) = type_at_with_id(pos, doc) {
         // Check if this node is a TraitCall — if so, split hover between
         // the trait name part and the method name part.
@@ -299,6 +332,37 @@ fn builtin_fixity(op: &str) -> Option<&'static str> {
         "+" | "-" => Some("infixl 7"),
         "*" | "/" => Some("infixl 8"),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::hover_label;
+    use crate::analysis::analyse;
+    use tower_lsp::lsp_types::{Position, Url};
+
+    #[test]
+    fn hover_on_left_paren_shows_group_type() {
+        let src = "let x = (1 + 2)\n";
+        let uri = Url::parse("file:///hover_paren_left.lume").unwrap();
+        let (doc, diagnostics) = analyse(&uri, src);
+        assert!(diagnostics.is_empty());
+        let doc = doc.unwrap();
+
+        let label = hover_label(Position::new(0, 8), src, &doc).unwrap();
+        assert_eq!(label, "```lume\nNum\n```");
+    }
+
+    #[test]
+    fn hover_on_right_paren_shows_group_type() {
+        let src = "let x = (1 + 2)\n";
+        let uri = Url::parse("file:///hover_paren_right.lume").unwrap();
+        let (doc, diagnostics) = analyse(&uri, src);
+        assert!(diagnostics.is_empty());
+        let doc = doc.unwrap();
+
+        let label = hover_label(Position::new(0, 14), src, &doc).unwrap();
+        assert_eq!(label, "```lume\nNum\n```");
     }
 }
 

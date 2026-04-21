@@ -257,6 +257,11 @@ pub enum ExprKind {
         right: Box<Expr>,
     },
 
+    /// Parenthesized expression.
+    /// Kept in the AST so passes like fixity reassociation can respect
+    /// explicit grouping from the source.
+    Paren(Box<Expr>),
+
     /// `not x`  or  unary `-x`
     Unary {
         op: UnOp,
@@ -616,6 +621,9 @@ fn assign_ids_expr(expr: &mut Expr, counter: &mut NodeId) {
         ExprKind::Binary { left, right, .. } => {
             assign_ids_expr(left, counter);
             assign_ids_expr(right, counter);
+        }
+        ExprKind::Paren(inner) => {
+            assign_ids_expr(inner, counter);
         }
         ExprKind::Unary { operand, .. } => {
             assign_ids_expr(operand, counter);

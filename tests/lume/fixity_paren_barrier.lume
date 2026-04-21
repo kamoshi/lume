@@ -1,0 +1,8 @@
+-- Test: parentheses must stop fixity reassociation from pulling in outer pipes.
+--
+-- (@@) is infixl 1, so it binds looser than |> on its own.
+-- But the explicit parentheses around `1 + 2 @@ 3` must preserve that group.
+
+let (@@) infixl 1 = x -> y -> x * y
+
+let _ = (1 + 2 @@ 3) |> showNum |> print
