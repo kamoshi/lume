@@ -13,4 +13,4 @@ language = "lume"
 
 [grammars.lume]
 repository = "https://github.com/kamoshi/tree-sitter-lume.git"
-rev = "a76241d7789441aee73c057be620669203263dc3"
+rev = "34a0db91e68a83946c264dbab41d961e78dd0f48"
