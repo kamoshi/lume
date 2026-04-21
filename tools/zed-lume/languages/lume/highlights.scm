@@ -39,6 +39,14 @@
 ".." @operator
 
 ":" @punctuation.delimiter
+";" @punctuation.delimiter
+
+"(" @punctuation.bracket
+")" @punctuation.bracket
+"[" @punctuation.bracket
+"]" @punctuation.bracket
+"{" @punctuation.bracket
+"}" @punctuation.bracket
 
 ; Custom operators (user-defined via infix/infixl/infixr declarations)
 (operator) @operator
@@ -54,6 +62,12 @@
 
 ; Top-level and let bindings — name is a function
 (binding pattern: (pattern (identifier) @function))
+
+; Function calls — identifier directly in callee position
+(apply function: (identifier) @function.call)
+
+; Trait method calls — `Show.show`, `Eq.eq`, etc.
+(trait_call method: (identifier) @function.call)
 
 ; Trait definitions
 (trait_definition name: (type_identifier) @type)

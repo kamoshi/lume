@@ -620,6 +620,7 @@ fn collect_trait_calls(program: &Program) -> HashMap<NodeId, (String, String)> {
                 });
             }
             ExprKind::LetIn { value, body, .. } => { walk(value, out); walk(body, out); }
+            ExprKind::Sequence(exprs) => exprs.iter().for_each(|e| walk(e, out)),
             _ => {}
         }
     }
@@ -782,6 +783,7 @@ fn collect_paren_spans(program: &Program) -> HashMap<usize, Vec<(Span, NodeId)>>
                 walk(value, out);
                 walk(body, out);
             }
+            ExprKind::Sequence(exprs) => exprs.iter().for_each(|e| walk(e, out)),
             _ => {}
         }
     }
@@ -883,6 +885,7 @@ fn collect_expr_spans(expr: &Expr, out: &mut Vec<(Span, NodeId)>) {
             collect_expr_spans(value, out);
             collect_expr_spans(body, out);
         }
+        ExprKind::Sequence(exprs) => exprs.iter().for_each(|e| collect_expr_spans(e, out)),
         _ => {}
     }
 }
@@ -1466,6 +1469,7 @@ fn collect_refs_expr(expr: &Expr, out: &mut HashMap<String, Vec<Span>>) {
             collect_refs_expr(value, out);
             collect_refs_expr(body, out);
         }
+        ExprKind::Sequence(exprs) => exprs.iter().for_each(|e| collect_refs_expr(e, out)),
         _ => {}
     }
 }
@@ -1583,6 +1587,7 @@ fn collect_match_exprs(program: &Program) -> Vec<MatchExprInfo> {
                 walk(value, out);
                 walk(body, out);
             }
+            ExprKind::Sequence(exprs) => exprs.iter().for_each(|e| walk(e, out)),
             _ => {}
         }
     }
