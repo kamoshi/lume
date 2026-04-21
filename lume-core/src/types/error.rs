@@ -16,7 +16,6 @@ pub enum TypeError {
     },
     ConcatNonConcatenable(Ty),
     GuardNotBool(Ty),
-    ResultPipeNonResult(Ty),
     ImportError(String),
     /// Non-exhaustive match: missing variants listed.
     NonExhaustiveMatch(Vec<String>),
@@ -103,9 +102,6 @@ impl fmt::Display for TypeError {
                 ty
             ),
             TypeError::GuardNotBool(ty) => write!(f, "match guard must be Bool, got `{}`", ty),
-            TypeError::ResultPipeNonResult(ty) => {
-                write!(f, "?> requires a Result type on the left, got `{}`", ty)
-            }
             TypeError::ImportError(msg) => write!(f, "import error: {}", msg),
             TypeError::NonExhaustiveMatch(missing) => {
                 write!(f, "non-exhaustive match, missing: {}", missing.join(", "))

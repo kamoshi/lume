@@ -301,7 +301,7 @@ mod tests {
             .map(|s| s.token)
             .collect();
         assert!(matches!(toks[0], Token::Pipe));
-        assert!(matches!(toks[1], Token::ResultPipe));
+        assert!(matches!(toks[1], Token::Operator(ref s) if s == "?>"));
         assert!(matches!(toks[2], Token::Arrow));
         assert!(matches!(toks[3], Token::Concat));
         assert!(matches!(toks[4], Token::EqEq));

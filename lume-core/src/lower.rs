@@ -58,6 +58,7 @@ pub fn lower(
     global: &GlobalCtx,
     resolved_trait_methods: &HashMap<NodeId, (String, String)>,
     resolved_op_types: &HashMap<NodeId, Ty>,
+    prelude_fields: &[String],
 ) -> ir::Module {
     let cx = Cx {
         node_types,
@@ -84,10 +85,12 @@ pub fn lower(
     // Lower imports.
     let mut imports: Vec<ir::Import> = Vec::new();
 
-    // Synthesize a prelude import so codegen emits `local map = _mod_prelude_.map`.
-    if !program.pragmas.no_prelude {
+    // Synthesize a prelude import that destructures all names the prelude
+    // exports. The `prelude_fields` list is computed from the compiled prelude's
+    // export record at the call site, so it stays in sync automatically.
+    if !program.pragmas.no_prelude && !prelude_fields.is_empty() {
         imports.push(ir::Import {
-            binding: ir::ImportBinding::Destructure(vec!["map".into()]),
+            binding: ir::ImportBinding::Destructure(prelude_fields.to_vec()),
             path: "lume:prelude".into(),
         });
     }

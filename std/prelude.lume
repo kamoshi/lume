@@ -2,8 +2,9 @@
 -- Auto-imported into every module. Re-exports the core
 -- type class hierarchy and polymorphic functions.
 
-use { id } = "lume:core"
+use { id, (?>) } = "lume:core"
 
 pub {
-  id
+  id,
+  (?>)
 }

@@ -333,8 +333,7 @@ pub struct MatchArm {
 #[derive(Debug, Clone, PartialEq)]
 pub enum BinOp {
     // Pipe
-    Pipe,       // |>
-    ResultPipe, // ?>
+    Pipe, // |>
 
     // Arithmetic
     Add,

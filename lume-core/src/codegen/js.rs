@@ -589,14 +589,6 @@ impl Emitter {
                 self.emit_expr(left);
                 self.out.push(')');
             }
-            ir::BinOp::ResultPipe => {
-                self.needs_result_bind = true;
-                self.out.push_str("$resultBind(");
-                self.emit_expr(left);
-                self.out.push_str(", ");
-                self.emit_expr(right);
-                self.out.push(')');
-            }
             ir::BinOp::Concat => {
                 self.out.push('(');
                 self.emit_expr(left);

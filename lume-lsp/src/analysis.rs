@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use lume_core::{
     ast::{self, Binding, Expr, ExprKind, NodeId, Program, RecordEntry, TopItem, TraitDef},
     error::{LumeError, Span},
+    fixity::{self, FixityTable},
     lexer::Lexer,
     loader::{parse_pragmas, resolve_path, PragmaWarning},
     parser,
@@ -51,6 +52,11 @@ pub struct DocInfo {
     pub match_exprs: Vec<MatchExprInfo>,
     /// Imported names: name → resolved file path (for cross-file go-to-definition).
     pub imports: HashMap<String, std::path::PathBuf>,
+    /// Operator fixity declarations visible in this file.
+    pub fixity_table: FixityTable,
+    /// Semantic annotations (type-system-aware) for identifiers and operators.
+    /// Used by the semantic tokens provider for rich editor highlighting.
+    pub semantic_spans: Vec<SemanticSpan>,
 }
 
 /// Info about a `match ... in` expression for the "fill match arms" code action.
@@ -61,6 +67,392 @@ pub struct MatchExprInfo {
     pub scrutinee_id: NodeId,
     /// Variant names already covered in existing arms.
     pub existing_variants: Vec<String>,
+}
+
+// ── Semantic token classification ────────────────────────────────────────────
+
+/// Semantic classification for a source span, used to power rich semantic
+/// tokens that the editor highlights with semantic meaning beyond syntax.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum SemanticClass {
+    /// A function or operator binding.
+    Function,
+    /// A local variable or parameter.
+    Variable,
+    /// A function parameter (lambda param, match arm bind).
+    Parameter,
+    /// A data constructor / enum variant.
+    EnumMember,
+    /// A trait method call.
+    Method,
+    /// A record field name.
+    Property,
+    /// A type constructor name.
+    Type,
+    /// A type variable / type parameter.
+    TypeParameter,
+    /// An operator symbol.
+    Operator,
+}
+
+bitflags::bitflags! {
+    /// Modifiers that can be applied to any semantic token type.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub struct SemanticMod: u32 {
+        /// This span is the declaration site for the name.
+        const DECLARATION = 1 << 0;
+        /// The binding is readonly (all Lume top-level bindings are).
+        const READONLY    = 1 << 1;
+    }
+}
+
+/// A single semantic annotation for a source span.
+#[derive(Debug, Clone)]
+pub struct SemanticSpan {
+    pub span: Span,
+    pub class: SemanticClass,
+    pub mods: SemanticMod,
+}
+
+// ── Semantic span collection ──────────────────────────────────────────────────
+
+/// Walk the typed AST and collect semantic annotations for all named references.
+///
+/// This produces a span-keyed list that `compute_semantic_tokens` merges on top
+/// of the raw lexer classification to give editors richer highlighting.
+pub fn collect_semantic_spans(
+    program: &Program,
+    node_types: &HashMap<NodeId, Ty>,
+    top_env: &TypeEnv,
+    variant_env: &VariantEnv,
+) -> Vec<SemanticSpan> {
+    let mut out: Vec<SemanticSpan> = Vec::new();
+
+    // Collect top-level binding names as declaration sites.
+    for item in &program.items {
+        match item {
+            TopItem::Binding(b) => collect_binding_decl(b, node_types, top_env, &mut out),
+            TopItem::BindingGroup(bs) => {
+                for b in bs {
+                    collect_binding_decl(b, node_types, top_env, &mut out);
+                }
+            }
+            TopItem::TypeDef(td) => {
+                // Type name itself
+                if td.name_span.len > 0 {
+                    out.push(SemanticSpan {
+                        span: td.name_span.clone(),
+                        class: SemanticClass::Type,
+                        mods: SemanticMod::DECLARATION | SemanticMod::READONLY,
+                    });
+                }
+                // Variant names
+                for v in &td.variants {
+                    if v.name_span.len > 0 {
+                        out.push(SemanticSpan {
+                            span: v.name_span.clone(),
+                            class: SemanticClass::EnumMember,
+                            mods: SemanticMod::DECLARATION | SemanticMod::READONLY,
+                        });
+                    }
+                }
+            }
+            TopItem::TraitDef(td) => {
+                if td.name_span.len > 0 {
+                    out.push(SemanticSpan {
+                        span: td.name_span.clone(),
+                        class: SemanticClass::Type,
+                        mods: SemanticMod::DECLARATION | SemanticMod::READONLY,
+                    });
+                }
+                for m in &td.methods {
+                    if m.name_span.len > 0 {
+                        out.push(SemanticSpan {
+                            span: m.name_span.clone(),
+                            class: SemanticClass::Method,
+                            mods: SemanticMod::DECLARATION | SemanticMod::READONLY,
+                        });
+                    }
+                }
+            }
+            TopItem::ImplDef(id) => {
+                for m in &id.methods {
+                    collect_binding_decl(m, node_types, top_env, &mut out);
+                    collect_expr_semantic(&m.value, node_types, top_env, variant_env, false, &mut out);
+                }
+            }
+        }
+    }
+
+    // Walk all expression bodies.
+    for item in &program.items {
+        match item {
+            TopItem::Binding(b) => {
+                collect_expr_semantic(&b.value, node_types, top_env, variant_env, false, &mut out);
+            }
+            TopItem::BindingGroup(bs) => {
+                for b in bs {
+                    collect_expr_semantic(&b.value, node_types, top_env, variant_env, false, &mut out);
+                }
+            }
+            TopItem::ImplDef(_) | TopItem::TypeDef(_) | TopItem::TraitDef(_) => {}
+        }
+    }
+
+    // Walk exports expression.
+    collect_expr_semantic(&program.exports, node_types, top_env, variant_env, false, &mut out);
+
+    out
+}
+
+fn collect_binding_decl(
+    b: &Binding,
+    node_types: &HashMap<NodeId, Ty>,
+    top_env: &TypeEnv,
+    out: &mut Vec<SemanticSpan>,
+) {
+    if let ast::Pattern::Ident(name, span, id) = &b.pattern {
+        if span.len == 0 {
+            return;
+        }
+        // Determine class: function if type is Func, else variable.
+        let class = if let Some(ty) = node_types.get(id) {
+            classify_ty(ty)
+        } else {
+            // Fall back to top_env scheme.
+            top_env
+                .lookup(name)
+                .map(|s| classify_ty(&s.ty))
+                .unwrap_or(SemanticClass::Variable)
+        };
+        out.push(SemanticSpan {
+            span: span.clone(),
+            class,
+            mods: SemanticMod::DECLARATION | SemanticMod::READONLY,
+        });
+    }
+}
+
+/// Classify a type into a semantic class.
+fn classify_ty(ty: &Ty) -> SemanticClass {
+    match ty {
+        Ty::Func(_, _) => SemanticClass::Function,
+        _ => SemanticClass::Variable,
+    }
+}
+
+/// Recursively walk an expression and emit semantic spans for identifiers.
+fn collect_expr_semantic(
+    expr: &Expr,
+    node_types: &HashMap<NodeId, Ty>,
+    top_env: &TypeEnv,
+    variant_env: &VariantEnv,
+    in_param_position: bool,
+    out: &mut Vec<SemanticSpan>,
+) {
+    match &expr.kind {
+        ExprKind::Ident(name) => {
+            if expr.span.len == 0 {
+                return;
+            }
+            // Check if it's a known variant name.
+            if variant_env.lookup(name).is_some() {
+                out.push(SemanticSpan {
+                    span: expr.span.clone(),
+                    class: SemanticClass::EnumMember,
+                    mods: SemanticMod::READONLY,
+                });
+                return;
+            }
+            let class = if in_param_position {
+                SemanticClass::Parameter
+            } else if let Some(ty) = node_types.get(&expr.id) {
+                classify_ty(ty)
+            } else {
+                top_env
+                    .lookup(name)
+                    .map(|s| classify_ty(&s.ty))
+                    .unwrap_or(SemanticClass::Variable)
+            };
+            out.push(SemanticSpan {
+                span: expr.span.clone(),
+                class,
+                mods: SemanticMod::READONLY,
+            });
+        }
+        ExprKind::TraitCall { .. } => {
+            if expr.span.len > 0 {
+                out.push(SemanticSpan {
+                    span: expr.span.clone(),
+                    class: SemanticClass::Method,
+                    mods: SemanticMod::READONLY,
+                });
+            }
+        }
+        ExprKind::Variant { name: _, payload } => {
+            // The variant name span is the whole `expr.span` minus payload.
+            // We don't have the variant-name-only span here; the whole expr
+            // span may include `Name { ... }`. We emit for the ident portion
+            // (the first token) when the span is valid.
+            // We can't easily isolate just the constructor name here, so we
+            // annotate the full expression span only if there's no payload
+            // (unit constructors).
+            if expr.span.len > 0 {
+                // Always mark the entire variant reference as EnumMember.
+                // Editors will use it for the clickable range.
+                out.push(SemanticSpan {
+                    span: expr.span.clone(),
+                    class: SemanticClass::EnumMember,
+                    mods: SemanticMod::empty(),
+                });
+            }
+            if let Some(p) = payload {
+                collect_expr_semantic(p, node_types, top_env, variant_env, false, out);
+            }
+        }
+        ExprKind::Lambda { param, body } => {
+            collect_pattern_semantic(param, node_types, top_env, variant_env, true, out);
+            collect_expr_semantic(body, node_types, top_env, variant_env, false, out);
+        }
+        ExprKind::Apply { func, arg } => {
+            collect_expr_semantic(func, node_types, top_env, variant_env, false, out);
+            collect_expr_semantic(arg, node_types, top_env, variant_env, false, out);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            collect_expr_semantic(left, node_types, top_env, variant_env, false, out);
+            collect_expr_semantic(right, node_types, top_env, variant_env, false, out);
+        }
+        ExprKind::Unary { operand, .. } => {
+            collect_expr_semantic(operand, node_types, top_env, variant_env, false, out);
+        }
+        ExprKind::If { cond, then_branch, else_branch } => {
+            collect_expr_semantic(cond, node_types, top_env, variant_env, false, out);
+            collect_expr_semantic(then_branch, node_types, top_env, variant_env, false, out);
+            collect_expr_semantic(else_branch, node_types, top_env, variant_env, false, out);
+        }
+        ExprKind::LetIn { pattern, value, body } => {
+            collect_pattern_semantic(pattern, node_types, top_env, variant_env, false, out);
+            collect_expr_semantic(value, node_types, top_env, variant_env, false, out);
+            collect_expr_semantic(body, node_types, top_env, variant_env, false, out);
+        }
+        ExprKind::Match(arms) => {
+            for arm in arms {
+                collect_pattern_semantic(
+                    &arm.pattern,
+                    node_types,
+                    top_env,
+                    variant_env,
+                    true,
+                    out,
+                );
+                if let Some(g) = &arm.guard {
+                    collect_expr_semantic(g, node_types, top_env, variant_env, false, out);
+                }
+                collect_expr_semantic(&arm.body, node_types, top_env, variant_env, false, out);
+            }
+        }
+        ExprKind::MatchExpr { scrutinee, arms } => {
+            collect_expr_semantic(scrutinee, node_types, top_env, variant_env, false, out);
+            for arm in arms {
+                collect_pattern_semantic(
+                    &arm.pattern,
+                    node_types,
+                    top_env,
+                    variant_env,
+                    true,
+                    out,
+                );
+                if let Some(g) = &arm.guard {
+                    collect_expr_semantic(g, node_types, top_env, variant_env, false, out);
+                }
+                collect_expr_semantic(&arm.body, node_types, top_env, variant_env, false, out);
+            }
+        }
+        ExprKind::Record { entries } => {
+            for entry in entries {
+                match entry {
+                    RecordEntry::Field(f) => {
+                        // Field name → property
+                        if f.name_span.len > 0 {
+                            out.push(SemanticSpan {
+                                span: f.name_span.clone(),
+                                class: SemanticClass::Property,
+                                mods: SemanticMod::empty(),
+                            });
+                        }
+                        if let Some(v) = &f.value {
+                            collect_expr_semantic(v, node_types, top_env, variant_env, false, out);
+                        }
+                    }
+                    RecordEntry::Spread(e) => {
+                        collect_expr_semantic(e, node_types, top_env, variant_env, false, out);
+                    }
+                }
+            }
+        }
+        ExprKind::FieldAccess { record, .. } => {
+            collect_expr_semantic(record, node_types, top_env, variant_env, false, out);
+            // No separate field span available; the field name is inside the expr span.
+        }
+        ExprKind::List { entries } => {
+            for entry in entries {
+                match entry {
+                    ast::ListEntry::Elem(e) | ast::ListEntry::Spread(e) => {
+                        collect_expr_semantic(e, node_types, top_env, variant_env, false, out);
+                    }
+                }
+            }
+        }
+        // Leaves: literals have no identifiers.
+        ExprKind::Number(_) | ExprKind::Text(_) | ExprKind::Bool(_) | ExprKind::Hole => {}
+    }
+}
+
+fn collect_pattern_semantic(
+    pat: &ast::Pattern,
+    node_types: &HashMap<NodeId, Ty>,
+    top_env: &TypeEnv,
+    variant_env: &VariantEnv,
+    is_param: bool,
+    out: &mut Vec<SemanticSpan>,
+) {
+    match pat {
+        ast::Pattern::Ident(_, span, _) => {
+            if span.len > 0 {
+                out.push(SemanticSpan {
+                    span: span.clone(),
+                    class: if is_param { SemanticClass::Parameter } else { SemanticClass::Variable },
+                    mods: SemanticMod::DECLARATION,
+                });
+            }
+        }
+        ast::Pattern::Variant { payload, .. } => {
+            if let Some(p) = payload {
+                collect_pattern_semantic(p, node_types, top_env, variant_env, is_param, out);
+            }
+        }
+        ast::Pattern::Record(rp) => {
+            for fp in &rp.fields {
+                if fp.span.len > 0 {
+                    out.push(SemanticSpan {
+                        span: fp.span.clone(),
+                        class: SemanticClass::Property,
+                        mods: SemanticMod::empty(),
+                    });
+                }
+                if let Some(p) = &fp.pattern {
+                    collect_pattern_semantic(p, node_types, top_env, variant_env, is_param, out);
+                }
+            }
+        }
+        ast::Pattern::List(lp) => {
+            for p in &lp.elements {
+                collect_pattern_semantic(p, node_types, top_env, variant_env, is_param, out);
+            }
+        }
+        ast::Pattern::Wildcard | ast::Pattern::Literal(_) => {}
+    }
 }
 
 // ── Conversion helpers ───────────────────────────────────────────────────────
@@ -138,6 +530,9 @@ pub fn analyse(uri: &Url, src: &str) -> (Option<DocInfo>, Vec<Diagnostic>) {
         collect_unannotated_bindings(&program, &top_env, &var_name_hints);
     let match_exprs = collect_match_exprs(&program);
     let imports = collect_imports(&program, path.as_deref());
+    let fixity_table =
+        collect_fixity_with_imports(&program, path.as_deref());
+    let semantic_spans = collect_semantic_spans(&program, &node_types, &top_env, &variant_env);
     let doc_info = Some(DocInfo {
         node_types,
         span_index,
@@ -154,6 +549,8 @@ pub fn analyse(uri: &Url, src: &str) -> (Option<DocInfo>, Vec<Diagnostic>) {
         variant_env,
         match_exprs,
         imports,
+        fixity_table,
+        semantic_spans,
     });
     let mut diagnostics: Vec<Diagnostic> = pragma_warnings
         .iter()
@@ -567,6 +964,61 @@ fn collect_definitions(program: &Program) -> HashMap<String, Span> {
 }
 
 // ── Import resolution ────────────────────────────────────────────────────────
+
+/// Build the fixity table for a file, including fixity propagated from imports.
+///
+/// Rules:
+/// - The current file's own fixity declarations are always included.
+/// - Trait method fixity from any directly imported module is included (traits
+///   propagate implicitly via their impls being brought into scope).
+/// - For `use { (op), ... } = "..."` (explicit destructure imports), fixity
+///   declared on the imported binding itself is also included.
+fn collect_fixity_with_imports(program: &Program, base_path: Option<&Path>) -> fixity::FixityTable {
+    let mut table = fixity::collect_for_program(program);
+    let base = match base_path {
+        Some(p) => p,
+        None => return table,
+    };
+    for u in &program.uses {
+        if u.path.starts_with("lume:") {
+            continue;
+        }
+        let import_path = match resolve_path(&u.path, base) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        let src = match std::fs::read_to_string(&import_path) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let imported = match lume_core::loader::Loader::parse(&src) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+
+        // Always: trait method fixity propagates implicitly.
+        let imported_all = fixity::collect_for_program(&imported);
+        for item in &imported.items {
+            if let ast::TopItem::TraitDef(td) = item {
+                for method in &td.methods {
+                    if let Some(entry) = imported_all.get(&method.name) {
+                        table.insert(method.name.clone(), entry.clone());
+                    }
+                }
+            }
+        }
+
+        // Explicit destructure imports: also include fixity for named operators.
+        if let ast::UseBinding::Record(rp) = &u.binding {
+            for fp in &rp.fields {
+                if let Some(entry) = imported_all.get(&fp.name) {
+                    table.insert(fp.name.clone(), entry.clone());
+                }
+            }
+        }
+    }
+    table
+}
 
 /// Map each imported name to the resolved file path of its source module.
 /// This enables cross-file go-to-definition.
@@ -984,4 +1436,12 @@ fn collect_match_exprs(program: &Program) -> Vec<MatchExprInfo> {
     }
     walk(&program.exports, &mut out);
     out
+}
+
+// ── Operator helpers ─────────────────────────────────────────────────────────
+
+/// Returns `true` if every character in `s` is an operator character.
+/// Mirrors `is_operator_name` in the parser (kept private there).
+pub(crate) fn is_op_name(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| "!#$%&*+./<=>?@\\^|~-:".contains(c))
 }

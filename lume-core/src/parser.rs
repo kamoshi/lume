@@ -110,7 +110,6 @@ fn token_to_op_name(tok: &Token) -> Option<String> {
         Token::LtEq => Some("<=".to_string()),
         Token::GtEq => Some(">=".to_string()),
         Token::Pipe => Some("|>".to_string()),
-        Token::ResultPipe => Some("?>".to_string()),
         Token::AmpAmp => Some("&&".to_string()),
         Token::PipePipe => Some("||".to_string()),
         Token::Operator(s) => Some(s.clone()),
@@ -471,8 +470,15 @@ fn parse_trait_def(tokens: &[Spanned]) -> Result<(usize, TraitDef), ParseError> 
         let (method_doc_n, method_doc) = collect_doc_comments(&tokens[ptr..]);
         ptr += method_doc_n;
         ptr += consume(&tokens[ptr..], &Token::Let)?;
-        let method_name_span = span(&tokens[ptr..]);
+        let name_tok_ptr = ptr;
         let (n, method_name) = consume_ident_or_op(&tokens[ptr..])?;
+        // For a parenthesized operator `(##)` the operator token is at +1;
+        // use that span so hover works when the cursor is on the operator itself.
+        let method_name_span = if n == 3 {
+            span(&tokens[name_tok_ptr + 1..])
+        } else {
+            span(&tokens[name_tok_ptr..])
+        };
         ptr += n;
         // If the method name is an operator, parse optional fixity declaration.
         let method_fixity = if is_operator_name(&method_name) {
@@ -557,8 +563,14 @@ fn parse_impl_def(tokens: &[Spanned]) -> Result<(usize, ImplDef), ParseError> {
         let (method_doc_n, method_doc) = collect_doc_comments(&tokens[ptr..]);
         ptr += method_doc_n;
         ptr += consume(&tokens[ptr..], &Token::Let)?;
-        let name_span = span(&tokens[ptr..]);
+        let name_tok_ptr = ptr;
         let (n, method_name) = consume_ident_or_op(&tokens[ptr..])?;
+        // For a parenthesized operator `(##)`, use the operator token span.
+        let name_span = if n == 3 {
+            span(&tokens[name_tok_ptr + 1..])
+        } else {
+            span(&tokens[name_tok_ptr..])
+        };
         ptr += n;
 
         // optional type annotation
@@ -1124,7 +1136,6 @@ fn infix_bp(tok: &Token) -> Option<(u8, u8)> {
     // Built-in / default precedences.
     match tok {
         Token::Pipe => Some((10, 11)),       // |>  left-assoc
-        Token::ResultPipe => Some((12, 13)), // ?>  left-assoc
         Token::PipePipe => Some((20, 21)),   // || left-assoc
         Token::AmpAmp => Some((30, 31)),     // && left-assoc
         Token::EqEq | Token::BangEq => Some((40, 41)),
@@ -1140,7 +1151,6 @@ fn infix_bp(tok: &Token) -> Option<(u8, u8)> {
 fn token_to_binop(tok: &Token) -> Option<BinOp> {
     match tok {
         Token::Pipe => Some(BinOp::Pipe),
-        Token::ResultPipe => Some(BinOp::ResultPipe),
         Token::PipePipe => Some(BinOp::Or),
         Token::AmpAmp => Some(BinOp::And),
         Token::EqEq => Some(BinOp::Eq),

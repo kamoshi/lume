@@ -1,12 +1,12 @@
 use lume_core::{
-    ast::{TraitDef, Type},
+    ast::{FixityAssoc, TraitDef, Type},
     ast::NodeId,
     types::{format_ty_with_hints, unify, Scheme, Subst, Ty},
     types::infer::TypeEnv,
 };
 use tower_lsp::lsp_types::*;
 
-use crate::analysis::DocInfo;
+use crate::analysis::{is_op_name, DocInfo};
 
 // ── Hover lookup ─────────────────────────────────────────────────────────────
 
@@ -36,13 +36,17 @@ pub fn utf16_to_byte(line: &str, utf16_offset: u32) -> usize {
     line.len()
 }
 
-/// Return the identifier word under the cursor (for the hover label).
+/// Return the identifier OR operator word under the cursor (for the hover label).
+///
+/// First tries alphanumeric identifier characters. If no identifier is found,
+/// looks for a contiguous run of operator characters at the cursor position.
 pub fn word_at(text: &str, line: u32, character: u32) -> Option<&str> {
     let line_text = text.lines().nth(line as usize)?;
     let col = utf16_to_byte(line_text, character);
     if col > line_text.len() {
         return None;
     }
+
     let is_ident = |c: char| c.is_alphanumeric() || c == '_';
     let start = line_text[..col]
         .rfind(|c: char| !is_ident(c))
@@ -52,10 +56,24 @@ pub fn word_at(text: &str, line: u32, character: u32) -> Option<&str> {
         .find(|c: char| !is_ident(c))
         .map(|i| i + col)
         .unwrap_or(line_text.len());
-    if start >= end {
-        None
+    if start < end {
+        return Some(&line_text[start..end]);
+    }
+
+    // No identifier found — try operator characters.
+    let is_op = |c: char| "!#$%&*+./<=>?@\\^|~-:".contains(c);
+    let op_start = line_text[..col]
+        .rfind(|c: char| !is_op(c))
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    let op_end = line_text[col..]
+        .find(|c: char| !is_op(c))
+        .map(|i| i + col)
+        .unwrap_or(line_text.len());
+    if op_start < op_end {
+        Some(&line_text[op_start..op_end])
     } else {
-        Some(&line_text[start..end])
+        None
     }
 }
 
@@ -200,11 +218,39 @@ pub fn hover_label(pos: Position, text: &str, doc: &DocInfo) -> Option<String> {
                 }
                 Some(label)
             }
-            Some(w) if w.starts_with(|c: char| c.is_alphabetic() || c == '_') => {
+            Some(w) => {
+                let (display, fixity_suffix) = operator_display(w, doc);
                 if let Some(scheme) = doc.top_env.lookup(w) {
-                    Some(format!("{w} : {scheme}"))
+                    Some(format!("{display} : {scheme}{fixity_suffix}"))
+                } else if is_op_name(w) {
+                    // Operator not in top_env — it may be a trait method operator.
+                    // Search trait_env for an unambiguous match.
+                    let mut matches: Vec<(&str, &str, &lume_core::ast::Type)> = doc
+                        .trait_env
+                        .values()
+                        .flat_map(|td| {
+                            td.methods.iter().filter(|m| m.name == w).map(move |m| {
+                                (td.name.as_str(), td.type_param.as_str(), &m.ty)
+                            })
+                        })
+                        .collect();
+                    if matches.len() == 1 {
+                        let (trait_name, type_param, method_ty) = matches.remove(0);
+                        Some(format!(
+                            "{display} : ({trait_name} {type_param}) => {method_ty}{fixity_suffix}"
+                        ))
+                    } else if !matches.is_empty() {
+                        // Ambiguous — list all candidates.
+                        let options: Vec<String> = matches
+                            .iter()
+                            .map(|(tn, tp, _)| format!("({tn} {tp})"))
+                            .collect();
+                        Some(format!("{display} : {ty_str}  -- ambiguous: {}{fixity_suffix}", options.join(", ")))
+                    } else {
+                        Some(format!("{display} : {ty_str}{fixity_suffix}"))
+                    }
                 } else {
-                    Some(format!("{w} : {ty_str}"))
+                    Some(format!("{display} : {ty_str}{fixity_suffix}"))
                 }
             }
             _ => Some(ty_str),
@@ -218,12 +264,68 @@ pub fn hover_label(pos: Position, text: &str, doc: &DocInfo) -> Option<String> {
         }) {
             return Some(label.clone());
         }
-        // Last resort: try top_env by word under cursor
+        // Last resort: try top_env by word under cursor (identifier or operator).
         match word_at(text, pos.line, pos.character) {
-            Some(w) if w.starts_with(|c: char| c.is_alphabetic() || c == '_') => {
-                doc.top_env.lookup(w).map(|scheme| format!("{w} : {scheme}"))
+            Some(w) => {
+                let (display, fixity_suffix) = operator_display(w, doc);
+                doc.top_env.lookup(w).map(|scheme| format!("{display} : {scheme}{fixity_suffix}"))
             }
             _ => None,
         }
+    }
+}
+
+/// Returns `true` if the word consists entirely of operator characters.
+fn is_operator_word(w: &str) -> bool {
+    !w.is_empty() && w.chars().all(|c| "!#$%&*+./<=>?@\\^|~-:".contains(c))
+}
+
+/// Built-in operator fixity descriptions (operator → "assoc prec" string).
+///
+/// Derived from `infix_bp` in parser.rs.  User-defined operators override
+/// these via the `fixity_table` in `DocInfo`.
+fn builtin_fixity(op: &str) -> Option<&'static str> {
+    match op {
+        "|>" => Some("infixl 1"),
+        "||" => Some("infixl 2"),
+        "&&" => Some("infixl 3"),
+        "==" | "!=" | "<" | ">" | "<=" | ">=" => Some("infixl 5"),
+        "++" => Some("infixr 6"),
+        "+" | "-" => Some("infixl 7"),
+        "*" | "/" => Some("infixl 8"),
+        _ => None,
+    }
+}
+
+/// For a word under the cursor, return:
+/// - the display name (wrapped in parens for operators, plain otherwise)
+/// - a fixity suffix string (e.g. `"\ninfixl 2"`) for ALL operators (builtin or user-defined)
+fn operator_display<'a>(w: &'a str, doc: &DocInfo) -> (String, String) {
+    if is_operator_word(w) {
+        let display = format!("({})", w);
+        let fixity_str = if let Some(entry) = doc.fixity_table.get(w) {
+            format_fixity(entry.bps, &entry.assoc)
+        } else if let Some(s) = builtin_fixity(w) {
+            s.to_string()
+        } else {
+            // Unknown operator — show default precedence matching parser.rs default
+            "infixr 6".to_string()
+        };
+        (display, format!("\n{fixity_str}"))
+    } else {
+        (w.to_string(), String::new())
+    }
+}
+
+/// Format the fixity of an operator for display in hover info.
+///
+/// Recovers the precedence from binding-power pair: `prec = bps.0 / 8`.
+/// Returns e.g. `"infixl 2"`, `"infixr 6"`, `"infix 5"`.
+pub fn format_fixity(bps: (u8, u8), assoc: &FixityAssoc) -> String {
+    let prec = bps.0 / 8;
+    match assoc {
+        FixityAssoc::Left => format!("infixl {prec}"),
+        FixityAssoc::Right => format!("infixr {prec}"),
+        FixityAssoc::None => format!("infix {prec}"),
     }
 }

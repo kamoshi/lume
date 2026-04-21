@@ -580,6 +580,7 @@ version = "0.1.0"
 name = "lume-lsp"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.11.1",
  "dashmap 6.1.0",
  "lume-core",
  "tokio",

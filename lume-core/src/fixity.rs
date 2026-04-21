@@ -64,6 +64,16 @@ pub fn collect_fixities(modules: &[BundleModule]) -> FixityTable {
     table
 }
 
+/// Collect operator fixity declarations from a single program into `table`.
+///
+/// Useful for the LSP, which analyses files individually rather than as a
+/// full bundle.
+pub fn collect_for_program(program: &Program) -> FixityTable {
+    let mut table = FixityTable::new();
+    collect_from_program(program, &mut table);
+    table
+}
+
 fn collect_from_program(program: &Program, table: &mut FixityTable) {
     for item in &program.items {
         match item {
@@ -284,7 +294,6 @@ fn check_flat_for_errors(items: &[FlatItem], table: &FixityTable) -> Result<(), 
 fn op_display(op: &BinOp) -> &str {
     match op {
         BinOp::Pipe => "|>",
-        BinOp::ResultPipe => "?>",
         BinOp::Add => "+",
         BinOp::Sub => "-",
         BinOp::Mul => "*",
@@ -313,7 +322,6 @@ fn op_display(op: &BinOp) -> &str {
 pub fn bp_for_op(op: &BinOp, table: &FixityTable) -> (u8, u8) {
     match op {
         BinOp::Pipe => (10, 11),
-        BinOp::ResultPipe => (12, 13),
         BinOp::Or => (20, 21),
         BinOp::And => (30, 31),
         BinOp::Eq | BinOp::NotEq => (40, 41),

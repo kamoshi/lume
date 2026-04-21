@@ -299,7 +299,9 @@ const LUA_RESERVED: &[&str] = &[
 /// `["keyword"]` for Lua reserved words.
 fn lua_field_key(name: &str) -> String {
     if LUA_RESERVED.contains(&name) || !is_lua_ident(name) {
-        format!("[\"{}\"]", name)
+        // Escape backslashes inside the Lua string key.
+        let escaped = name.replace('\\', "\\\\");
+        format!("[\"{}\"]", escaped)
     } else {
         name.to_string()
     }
@@ -347,6 +349,10 @@ fn mangle_op(name: &str) -> String {
             '$' => buf.push_str("dollar"),
             '#' => buf.push_str("hash"),
             '@' => buf.push_str("at"),
+            '%' => buf.push_str("pct"),
+            '\\' => buf.push_str("bslash"),
+            '.' => buf.push_str("dot"),
+            ':' => buf.push_str("colon"),
             _ => buf.push(c),
         }
     }
@@ -1257,14 +1263,6 @@ impl Emitter {
 
     fn emit_binary(&mut self, op: &BinOp, left: &ir::Expr, right: &ir::Expr) {
         match op {
-            BinOp::ResultPipe => {
-                self.needs_result_bind = true;
-                self.out.push_str("_resultBind(");
-                self.emit_expr(left);
-                self.out.push_str(", ");
-                self.emit_expr(right);
-                self.out.push(')');
-            }
             BinOp::Concat => {
                 self.needs_concat = true;
                 self.out.push_str("_concat(");

@@ -304,7 +304,7 @@ pub(crate) fn compile_repl(
         }
     }
 
-    let ir_mod = lower::lower(program, &node_types, &type_env, &global, &resolved_trait_methods, &resolved_op_types);
+    let ir_mod = lower::lower(program, &node_types, &type_env, &global, &resolved_trait_methods, &resolved_op_types, &[]);
     let ir_mod = ir::dict_hoist::hoist_dict_applications(ir_mod);
     let ir_mod = ir::eta::eta_reduce(ir_mod);
 

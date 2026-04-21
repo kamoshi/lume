@@ -96,7 +96,7 @@ fn highlight_line(line: &str) -> String {
             Token::Text(_) => format!("{FG_GREEN}{lexeme}{RESET}"),
             Token::Number(_) => format!("{FG_CYAN}{lexeme}{RESET}"),
             Token::DocComment(_) => format!("{DIM}{lexeme}{RESET}"),
-            Token::Pipe | Token::ResultPipe => format!("{FG_MAGENTA}{lexeme}{RESET}"),
+            Token::Pipe => format!("{FG_MAGENTA}{lexeme}{RESET}"),
             Token::Arrow | Token::FatArrow => format!("{FG_RED}{lexeme}{RESET}"),
             Token::Plus | Token::Minus | Token::Star | Token::Slash
             | Token::EqEq | Token::BangEq | Token::Lt | Token::Gt

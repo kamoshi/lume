@@ -83,7 +83,7 @@ fn contains_outside_string(line: &str, needle: &str) -> bool {
     find_outside_string(line, needle).is_some()
 }
 
-/// Split a line on ` |> ` and ` ?> ` boundaries outside string literals,
+/// Split a line on ` |> ` boundaries outside string literals,
 /// keeping the operator with the right-hand segment.
 fn split_on_pipes_aware(s: &str) -> Vec<&str> {
     let mut parts = Vec::new();
@@ -539,23 +539,23 @@ fn find_last_lambda_arrow(line: &str) -> Option<usize> {
 }
 
 /// Check if source lines for this item (between item_start and item_end, 1-based)
-/// contain `|>` or `?>` at the start of a line (after whitespace).
+/// contain `|>` at the start of a line (after whitespace).
 fn source_has_vertical_pipes(src_lines: &[&str], item_start: usize, item_end: usize) -> bool {
     let start_idx = item_start.saturating_sub(1);
     let end_idx = item_end.min(src_lines.len());
     src_lines[start_idx..end_idx].iter().any(|l| {
         let t = l.trim_start();
-        t.starts_with("|>") || t.starts_with("?>")
+        t.starts_with("|>")
     })
 }
 
 /// Expand horizontal pipe chains into vertical format.
-/// For each line containing ` |> ` or ` ?> ` outside string literals, split so
+/// For each line containing ` |> ` outside string literals, split so
 /// each pipe step is on its own line indented 2 more than the base expression.
 fn expand_pipes_vertical(text: &str) -> String {
     let mut result = String::with_capacity(text.len() + 64);
     for line in text.lines() {
-        if contains_outside_string(line, " |> ") || contains_outside_string(line, " ?> ") {
+        if contains_outside_string(line, " |> ") {
             let indent_len = line.len() - line.trim_start().len();
             let indent = &line[..indent_len];
             let content = line.trim_start();
@@ -1173,7 +1173,7 @@ fn expr_prec(expr: &Expr) -> u8 {
 
 fn binop_prec(op: &BinOp) -> u8 {
     match op {
-        BinOp::Pipe | BinOp::ResultPipe => 10,
+        BinOp::Pipe => 10,
         BinOp::Or => 20,
         BinOp::And => 30,
         BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq => 40,
@@ -1186,7 +1186,6 @@ fn binop_prec(op: &BinOp) -> u8 {
 fn binop_str(op: &BinOp) -> &str {
     match op {
         BinOp::Pipe => "|>",
-        BinOp::ResultPipe => "?>",
         BinOp::Or => "||",
         BinOp::And => "&&",
         BinOp::Eq => "==",
@@ -1297,7 +1296,7 @@ fn fmt_expr_inner(expr: &Expr) -> Doc {
             let op_s = binop_str(op);
 
             // Pipe chains: collect all chained pipes and format as a unit.
-            if matches!(op, BinOp::Pipe | BinOp::ResultPipe) {
+            if matches!(op, BinOp::Pipe) {
                 let (base, steps) = collect_pipe_chain(expr);
                 let base_doc = fmt_expr(base, prec);
                 if steps.len() == 1 {
@@ -1423,7 +1422,7 @@ fn collect_pipe_chain(expr: &Expr) -> (&Expr, Vec<(BinOp, &Expr)>) {
     let mut steps: Vec<(BinOp, &Expr)> = Vec::new();
     let mut cur = expr;
     while let ExprKind::Binary { op, left, right } = &cur.kind {
-        if matches!(op, BinOp::Pipe | BinOp::ResultPipe) {
+        if matches!(op, BinOp::Pipe) {
             steps.push((op.clone(), right));
             cur = left;
         } else {

@@ -8,7 +8,6 @@ use lume_core::{
     error::Span,
     lexer::Lexer,
     loader::{parse_pragmas, stdlib_path, stdlib_source, use_path_context, Loader, UsePathKind, STDLIB_MODULES},
-    lower,
     parser,
     pipeline,
     types::{self, format_ty_with_hints, infer::builtin_env, infer::elaborate_with_env_partial, Ty},

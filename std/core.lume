@@ -2,6 +2,13 @@
 
 let id = x -> x
 
+-- Result pipe: threads a Result through a function; propagates Err unchanged.
+-- Equivalent to Haskell's >>= on the Result/Either monad.
+let (?>) infixl 2 = result -> f ->
+  match result in
+    | Ok v -> f v
+    | Err e -> Err e
+
 -- Concat
 
 trait Concat a {
@@ -109,5 +116,6 @@ use Monad in List {
 }
 
 pub {
-  id
+  id,
+  (?>)
 }

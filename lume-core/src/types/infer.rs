@@ -1637,7 +1637,6 @@ impl Checker {
                 )?;
                 Ok(self.subst.apply(&ret_c))
             }
-            BinOp::ResultPipe => self.infer_result_pipe(env, left, right),
         }
     }
 
@@ -1733,41 +1732,6 @@ impl Checker {
         self.check(env, right, tr_expected)?;
 
         Ok(self.subst.apply(&ret))
-    }
-
-    fn infer_result_pipe(
-        &mut self,
-        env: &TypeEnv,
-        left: &Expr,
-        right: &Expr,
-    ) -> Result<Ty, TypeErrorAt> {
-        // left : Result a e ;  right : a -> Result b e ;  result : Result b e
-        let tl = self.infer(env, left)?;
-        let tl = self.subst.apply(&tl);
-        let a = self.fresh_ty();
-        let e = self.fresh_ty();
-        let b = self.fresh_ty();
-        let tl_c = tl.clone();
-        self.unify(tl, Ty::mk_con("Result", &[a.clone(), e.clone()]))
-            .map_err(|_| {
-                TypeErrorAt::new(TypeError::ResultPipeNonResult(tl_c), left.span.clone())
-            })?;
-        let tr = self.infer(env, right)?;
-        let tr = self.subst.apply(&tr);
-        let a = self.subst.apply(&a);
-        let e = self.subst.apply(&e);
-        let b_c = b.clone();
-        self.unify_at(
-            tr,
-            Ty::Func(
-                Box::new(a),
-                Box::new(Ty::mk_con("Result", &[b, e.clone()])),
-            ),
-            &right.span,
-        )?;
-        let b = self.subst.apply(&b_c);
-        let e = self.subst.apply(&e);
-        Ok(Ty::mk_con("Result", &[b, e]))
     }
 
     // A top-level `| pat -> body` chain is treated as a lambda:

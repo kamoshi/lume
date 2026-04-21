@@ -34,7 +34,6 @@ pub enum Token {
     Arrow,      // ->
     FatArrow,   // =>
     Pipe,       // |>
-    ResultPipe, // ?>
     Concat,     // ++
     Plus,       // +
     Minus,      // -
@@ -280,35 +279,22 @@ impl<'src> Lexer<'src> {
 
             // - or -> (special: not a general operator char because of comment syntax --)
             b'-' => {
-                self.advance();
-                if self.peek() == Some(b'>') {
-                    self.advance();
-                    Token::Arrow
-                } else {
-                    Token::Minus
-                }
+                // Comments (-- and ---) are already consumed before this dispatch.
+                // Route into lex_operator so that sequences like -< or -| become operators.
+                self.lex_operator()
             }
 
-            // . or ..
-            b'.' => {
-                self.advance();
-                if self.peek() == Some(b'.') {
-                    self.advance();
-                    Token::DotDot
-                } else {
-                    Token::Dot
-                }
-            }
-
-            // : (reserved for type annotations, not an operator char)
+            // : can appear inside multi-char operators (e.g. ::, <:, :>),
+            // but standalone ":" remains Token::Colon.
             b':' => {
-                self.advance();
-                Token::Colon
+                self.lex_operator()
             }
 
             // Operator characters — greedily collect and classify.
+            // '.' is included here: standalone "." and ".." are still reserved tokens,
+            // but "." may appear inside multi-char operators (e.g. <.>).
             b'+' | b'*' | b'/' | b'=' | b'!' | b'<' | b'>' | b'|'
-            | b'&' | b'?' | b'$' | b'#' | b'@' | b'^' | b'~' => {
+            | b'&' | b'?' | b'$' | b'#' | b'@' | b'^' | b'~' | b'%' | b'\\' | b'.' => {
                 self.lex_operator()
             }
 
@@ -344,11 +330,22 @@ impl<'src> Lexer<'src> {
     fn lex_operator(&mut self) -> Token {
         let start = self.pos;
         while matches!(self.peek(), Some(b'+' | b'*' | b'/' | b'=' | b'!' | b'<' | b'>'
-                                       | b'|' | b'&' | b'?' | b'$' | b'#' | b'@' | b'^' | b'~')) {
+                                       | b'|' | b'&' | b'?' | b'$' | b'#' | b'@' | b'^' | b'~'
+                                       | b'%' | b'\\' | b'.' | b'-' | b':')) {
+            // Don't consume "--" or "---" as part of an operator (they're comments).
+            // If the next two bytes are "--", stop here.
+            if self.peek() == Some(b'-') && self.peek2() == Some(b'-') {
+                break;
+            }
             self.advance();
         }
         let s = std::str::from_utf8(&self.src[start..self.pos]).unwrap();
         match s {
+            "." => Token::Dot,
+            ".." => Token::DotDot,
+            "-" => Token::Minus,
+            "->" => Token::Arrow,
+            ":" => Token::Colon,
             "++" => Token::Concat,
             "+" => Token::Plus,
             "*" => Token::Star,
@@ -365,7 +362,6 @@ impl<'src> Lexer<'src> {
             "||" => Token::PipePipe,
             "|" => Token::Bar,
             "&&" => Token::AmpAmp,
-            "?>" => Token::ResultPipe,
             "?" => Token::Question,
             _ => Token::Operator(s.to_string()),
         }

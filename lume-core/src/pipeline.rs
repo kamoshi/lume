@@ -5,14 +5,17 @@
 //! Adding a new IR pass means editing only this file.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use crate::ast::TopItem;
 use crate::bundle::BundleModule;
 use crate::codegen::IrModule;
 use crate::fixity;
 use crate::ir;
+use crate::loader::Loader;
 use crate::lower;
 use crate::types;
+use crate::types::Ty;
 
 /// Type-check, lower, and optimise every module in a bundle.
 ///
@@ -94,6 +97,24 @@ pub fn lower_bundle(
     }
 
     // ── 2. Lower and optimise each module ────────────────────────────────────
+    // Pre-compute prelude export field names once so each module's synthesized
+    // prelude import imports all exports (not just a hardcoded subset).
+    let prelude_fields: Vec<String> = {
+        let mut loader = Loader::new();
+        let dummy_base = PathBuf::from(".");
+        loader
+            .load("lume:prelude", &dummy_base)
+            .ok()
+            .and_then(|exports| {
+                if let Ty::Record(row) = &exports.scheme.ty {
+                    Some(row.fields.iter().map(|(k, _)| k.clone()).collect())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default()
+    };
+
     let mut ir_modules = Vec::new();
 
     for m in b.iter() {
@@ -146,6 +167,7 @@ pub fn lower_bundle(
             &local_global,
             &resolved_trait_methods,
             &resolved_op_types,
+            &prelude_fields,
         );
 
         // ── IR optimisation passes (add new passes here) ──────────────────

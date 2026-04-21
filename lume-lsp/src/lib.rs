@@ -19,7 +19,7 @@ use completion::{
     stdlib_path_completions, trait_completions, CompletionCtx,
 };
 use hover::{hover_label, word_at};
-use semantic_tokens::{compute_semantic_tokens, LEGEND_TOKEN_TYPES};
+use semantic_tokens::{compute_semantic_tokens, LEGEND_TOKEN_MODIFIERS, LEGEND_TOKEN_TYPES};
 
 const DEBOUNCE_MS: u64 = 150;
 
@@ -98,7 +98,7 @@ impl LanguageServer for Backend {
                         SemanticTokensOptions {
                             legend: SemanticTokensLegend {
                                 token_types: LEGEND_TOKEN_TYPES.to_vec(),
-                                token_modifiers: vec![],
+                                token_modifiers: LEGEND_TOKEN_MODIFIERS.to_vec(),
                             },
                             full: Some(SemanticTokensFullOptions::Bool(true)),
                             range: None,
@@ -253,7 +253,8 @@ impl LanguageServer for Backend {
             Some(t) => t.clone(),
             None => return Ok(None),
         };
-        let tokens = compute_semantic_tokens(&text);
+        let doc = self.doc_info.get(uri);
+        let tokens = compute_semantic_tokens(&text, doc.as_deref());
         Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
             result_id: None,
             data: tokens,
