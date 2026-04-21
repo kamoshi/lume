@@ -1,6 +1,7 @@
 use lume_core::{
     ast::{FixityAssoc, TraitDef, Type},
     ast::NodeId,
+    error::Span,
     types::{format_ty_with_hints, unify, Scheme, Subst, Ty},
     types::infer::TypeEnv,
 };
@@ -24,6 +25,15 @@ pub fn type_at_with_id(pos: Position, doc: &DocInfo) -> Option<(NodeId, Ty)> {
 }
 
 fn paren_type_at_with_id(pos: Position, text: &str, doc: &DocInfo) -> Option<(NodeId, Ty)> {
+    let span = paren_hover_span(pos, text, doc)?;
+    doc.paren_span_index
+        .get(&span.line)?
+        .iter()
+        .find(|(s, _)| s.line == span.line && s.col == span.col && s.len == span.len)
+        .and_then(|(_, id)| doc.node_types.get(id).map(|ty| (*id, ty.clone())))
+}
+
+pub fn paren_hover_span(pos: Position, text: &str, doc: &DocInfo) -> Option<Span> {
     let line_text = text.lines().nth(pos.line as usize)?;
     let byte_col = utf16_to_byte(line_text, pos.character);
     let line = pos.line as usize + 1;
@@ -42,7 +52,7 @@ fn paren_type_at_with_id(pos: Position, text: &str, doc: &DocInfo) -> Option<(No
             .get(&line)?
             .iter()
             .find(|(span, _)| span.col <= col && col <= span.col + span.len)
-            .and_then(|(_, id)| doc.node_types.get(id).map(|ty| (*id, ty.clone())))
+            .map(|(span, _)| span.clone())
         {
             return Some(found);
         }
@@ -337,7 +347,7 @@ fn builtin_fixity(op: &str) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::hover_label;
+    use super::{hover_label, paren_hover_span};
     use crate::analysis::analyse;
     use tower_lsp::lsp_types::{Position, Url};
 
@@ -351,6 +361,10 @@ mod tests {
 
         let label = hover_label(Position::new(0, 8), src, &doc).unwrap();
         assert_eq!(label, "```lume\nNum\n```");
+        let span = paren_hover_span(Position::new(0, 8), src, &doc).unwrap();
+        assert_eq!(span.line, 1);
+        assert_eq!(span.col, 9);
+        assert_eq!(span.len, 7);
     }
 
     #[test]
@@ -363,6 +377,10 @@ mod tests {
 
         let label = hover_label(Position::new(0, 14), src, &doc).unwrap();
         assert_eq!(label, "```lume\nNum\n```");
+        let span = paren_hover_span(Position::new(0, 14), src, &doc).unwrap();
+        assert_eq!(span.line, 1);
+        assert_eq!(span.col, 9);
+        assert_eq!(span.len, 7);
     }
 }
 

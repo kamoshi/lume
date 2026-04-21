@@ -18,7 +18,7 @@ use completion::{
     completion_ctx, field_completions, file_path_completions, ident_completions,
     stdlib_path_completions, trait_completions, CompletionCtx,
 };
-use hover::{hover_label, word_at};
+use hover::{hover_label, paren_hover_span, word_at};
 use semantic_tokens::{compute_semantic_tokens, LEGEND_TOKEN_MODIFIERS, LEGEND_TOKEN_TYPES};
 
 const DEBOUNCE_MS: u64 = 150;
@@ -355,6 +355,7 @@ impl LanguageServer for Backend {
             Some(l) => l,
             None => return Ok(None),
         };
+        let hover_range = paren_hover_span(pos, &text, &doc).map(|span| span_to_range(&span));
 
         let doc_comment = word_at(&text, pos.line, pos.character)
             .and_then(|w| doc.doc_comments.get(w))
@@ -372,7 +373,7 @@ impl LanguageServer for Backend {
                 kind: MarkupKind::Markdown,
                 value,
             }),
-            range: None,
+            range: hover_range,
         }))
     }
 
