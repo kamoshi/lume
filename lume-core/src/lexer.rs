@@ -62,6 +62,7 @@ pub enum Token {
     LBracket,
     RBracket,
     Comma,
+    Semicolon, // ;
 
     // Doc comment: --- text
     DocComment(String),
@@ -275,6 +276,10 @@ impl<'src> Lexer<'src> {
             b',' => {
                 self.advance();
                 Token::Comma
+            }
+            b';' => {
+                self.advance();
+                Token::Semicolon
             }
 
             // - or -> (special: not a general operator char because of comment syntax --)

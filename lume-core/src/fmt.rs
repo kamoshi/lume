@@ -1127,6 +1127,19 @@ fn fmt_expr_binding_rhs(expr: &Expr, ind: usize) -> Doc {
         }
     }
 
+    // Sequence body: each expression on its own indented line, separated by `;`.
+    if let ExprKind::Sequence(exprs) = &expr.kind {
+        let mut parts: Vec<Doc> = Vec::new();
+        for (i, e) in exprs.iter().enumerate() {
+            parts.push(fmt_expr(e, 0));
+            if i < exprs.len() - 1 {
+                parts.push(text(";"));
+                parts.push(hardline());
+            }
+        }
+        return nest(ind, concat(hardline(), concat_all(parts)));
+    }
+
     // Let-in chain: lets at one indent, final body indented one more.
     // e.g. `let aaa =\n  let x = 1 in\n  let y = 2 in\n    z`
     if let ExprKind::LetIn { .. } = &expr.kind {
@@ -1159,6 +1172,7 @@ fn fmt_expr_binding_rhs(expr: &Expr, ind: usize) -> Doc {
 
 fn expr_prec(expr: &Expr) -> u8 {
     match &expr.kind {
+        ExprKind::Sequence(_) => 0,
         ExprKind::Lambda { .. } => 0,
         ExprKind::LetIn { .. } => 1,
         ExprKind::If { .. } => 1,
@@ -1392,6 +1406,18 @@ fn fmt_expr_inner(expr: &Expr) -> Doc {
         }
 
         ExprKind::Hole => text("_"),
+
+        ExprKind::Sequence(exprs) => {
+            let mut parts: Vec<Doc> = Vec::new();
+            for (i, expr) in exprs.iter().enumerate() {
+                parts.push(fmt_expr(expr, 0));
+                if i < exprs.len() - 1 {
+                    parts.push(text(";"));
+                    parts.push(hardline());
+                }
+            }
+            concat_all(parts)
+        }
     }
 }
 

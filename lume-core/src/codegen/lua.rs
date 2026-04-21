@@ -1141,6 +1141,7 @@ impl Emitter {
                         self.emit_tail_expr(body, indent);
                     }
                     ir::Pat::Wild => {
+                        self.out.push_str("local _ = ");
                         self.emit_expr(value);
                         self.out.push_str(&format!("\n{}", indent));
                         self.emit_tail_expr(body, indent);

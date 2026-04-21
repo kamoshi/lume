@@ -493,6 +493,15 @@ impl<'a> Cx<'a> {
                     Box::new(self.expr(*body)),
                 )
             }
+
+            ExprKind::Sequence(exprs) => {
+                let mut lowered: Vec<ir::Expr> = exprs.into_iter().map(|e| self.expr(e)).collect();
+                let last = lowered.pop().expect("sequence is non-empty");
+                // Build right-nested: let _ = e1 in let _ = e2 in ... en
+                lowered.into_iter().rfold(last, |acc, e| {
+                    ir::Expr::Let(ir::Pat::Wild, Box::new(e), Box::new(acc))
+                })
+            }
         }
     }
 

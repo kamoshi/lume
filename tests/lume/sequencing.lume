@@ -1,0 +1,30 @@
+-- Tests expression sequencing: `e1; e2` evaluates e1 (discards it) and returns e2.
+-- Also tests `let x = e1; rest` as sugar for `let x = e1 in rest`.
+
+-- Simple sequence: discards a + b, returns a * b.
+let last a b =
+  a + b;
+  a * b
+
+-- Chained let-bindings via semicolons.
+let bind_seq a b =
+  let x = a + b;
+  let y = x * 2;
+  x + y
+
+-- Side-effecting sequence: print intermediate results, return final value.
+let compute_and_log a b =
+  print (showNum (a + b));
+  print (showNum (a * b));
+  a + b + (a * b)
+
+-- Side-effecting sequence: print intermediate results, return {} (unit).
+let just_side_effect a b =
+  print (showNum (a + b));
+  print (showNum (a * b));
+  {}
+
+let _ = last 3 4 |> showNum |> print
+let _ = bind_seq 3 4 |> showNum |> print
+let _ = compute_and_log 2 5 |> showNum |> print
+let _ = just_side_effect 10 3

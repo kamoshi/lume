@@ -298,6 +298,10 @@ pub enum ExprKind {
         method_name: String,
     },
 
+    /// `e1; e2; …; en` — evaluate each expression for its side effects,
+    /// returning only the final expression's value.
+    Sequence(Vec<Expr>),
+
     /// A typed hole `_` in expression position.
     /// The type checker infers the expected type and reports it as a diagnostic.
     Hole,
@@ -666,6 +670,11 @@ fn assign_ids_expr(expr: &mut Expr, counter: &mut NodeId) {
             assign_ids_expr(body, counter);
         }
         // Leaves: Number, Text, Bool, Ident, Variant { payload: None }
+        ExprKind::Sequence(exprs) => {
+            for e in exprs {
+                assign_ids_expr(e, counter);
+            }
+        }
         _ => {}
     }
 }

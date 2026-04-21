@@ -411,6 +411,11 @@ fn collect_expr_semantic(
         }
         // Leaves: literals have no identifiers.
         ExprKind::Number(_) | ExprKind::Text(_) | ExprKind::Bool(_) | ExprKind::Hole => {}
+        ExprKind::Sequence(exprs) => {
+            for e in exprs {
+                collect_expr_semantic(e, node_types, top_env, variant_env, false, out);
+            }
+        }
     }
 }
 

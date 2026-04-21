@@ -686,3 +686,16 @@ a1
 11
 2
 """
+
+[tests.sequencing]
+path = "tests/lume/sequencing.lume"
+expect = "typecheck"
+output = """
+12
+21
+7
+10
+17
+13
+30
+"""

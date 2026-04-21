@@ -1039,10 +1039,13 @@ fn synthesise_sugar_binding_type(
 /// look like a pattern followed by `->` we commit to that branch.
 /// Otherwise we fall through to the Pratt parser.
 pub fn parse_expr(tokens: &[Spanned]) -> Result<(usize, Expr), ParseError> {
+    let mut ptr = 0;
+
     // `let pattern = value in body`
     if matches!(first_token(tokens), Some(Token::Let)) {
         if let Ok((n, expr)) = try_parse_let_in(tokens) {
-            return Ok((n, expr));
+            ptr += n;
+            return collect_sequence(&tokens[..], ptr, expr);
         }
     }
 
@@ -1050,14 +1053,78 @@ pub fn parse_expr(tokens: &[Spanned]) -> Result<(usize, Expr), ParseError> {
     //   - record destructure lambda:  `{ .. } ->`  or tuple: `(a, b) ->`
     //   - simple ident lambda:        `n ->`
     if let Ok((n, expr)) = try_parse_lambda(tokens) {
-        return Ok((n, expr));
+        ptr += n;
+        return collect_sequence(&tokens[..], ptr, expr);
     }
 
     // fall through to Pratt for binary / pipe / apply expressions
-    parse_pratt(tokens, 0)
+    let (n, expr) = parse_pratt(tokens, 0)?;
+    ptr += n;
+    collect_sequence(&tokens[..], ptr, expr)
+}
+
+/// Like `parse_expr` but does NOT collect trailing `;` sequences.
+///
+/// Used for the *value* position of `let x = <value>;` sugar so that the `;`
+/// is left as a separator for `try_parse_let_in` rather than being greedily
+/// consumed as part of the value expression.
+fn parse_expr_no_seq(tokens: &[Spanned]) -> Result<(usize, Expr), ParseError> {
+    let mut ptr = 0;
+
+    if matches!(first_token(tokens), Some(Token::Let)) {
+        if let Ok((n, expr)) = try_parse_let_in(tokens) {
+            return Ok((ptr + n, expr));
+        }
+    }
+
+    if let Ok((n, expr)) = try_parse_lambda(tokens) {
+        return Ok((ptr + n, expr));
+    }
+
+    let (n, expr) = parse_pratt(tokens, 0)?;
+    ptr += n;
+    Ok((ptr, expr))
+}
+
+/// If the next token is `;`, consume it and following expressions, returning
+/// a `Sequence` node.  Otherwise returns the original expression unchanged.
+///
+/// Every `;` must be followed by an expression — trailing `;` without a
+/// continuation is a parse error.  Use `{}` explicitly to return unit.
+fn collect_sequence(tokens: &[Spanned], mut ptr: usize, first: Expr) -> Result<(usize, Expr), ParseError> {
+    if !matches!(first_token(&tokens[ptr..]), Some(Token::Semicolon)) {
+        return Ok((ptr, first));
+    }
+
+    let seq_span = first.span.clone();
+    let mut exprs = vec![first];
+
+    while matches!(first_token(&tokens[ptr..]), Some(Token::Semicolon)) {
+        ptr += 1; // consume `;`
+        let (n, next) = parse_expr(&tokens[ptr..])?;
+        ptr += n;
+        // Flatten nested sequences so `a; (b; c)` becomes `Sequence([a, b, c])`.
+        match next.kind {
+            ExprKind::Sequence(inner) => exprs.extend(inner),
+            _ => exprs.push(next),
+        }
+    }
+
+    Ok((
+        ptr,
+        Expr {
+            id: 0,
+            kind: ExprKind::Sequence(exprs),
+            span: seq_span,
+        },
+    ))
 }
 
 /// Try to parse `let pattern (: type)? = value in body` without committing on failure.
+///
+/// Also accepts `;` in place of `in` as syntactic sugar:
+///   `let x = expr; rest`  →  `let x = expr in rest`
+///   `let x = expr;`       →  `let x = expr in {}`  (unit body)
 fn try_parse_let_in(tokens: &[Spanned]) -> Result<(usize, Expr), ParseError> {
     let let_span = span(tokens);
     let mut ptr = 0;
@@ -1075,15 +1142,43 @@ fn try_parse_let_in(tokens: &[Spanned]) -> Result<(usize, Expr), ParseError> {
 
     ptr += consume(&tokens[ptr..], &Token::Equal)?;
 
-    let (n, value) = parse_expr(&tokens[ptr..])?;
+    // Parse the value without consuming trailing `;` — that semicolon is the
+    // separator between the binding and its continuation, not part of the value.
+    let (n, value) = parse_expr_no_seq(&tokens[ptr..])?;
     ptr += n;
 
-    // Require `in` - if absent, this is a top-level binding, not a let-in expr.
-    consume(&tokens[ptr..], &Token::In)?;
-    ptr += 1;
-
-    let (n, body) = parse_expr(&tokens[ptr..])?;
-    ptr += n;
+    let body = if matches!(first_token(&tokens[ptr..]), Some(Token::In)) {
+        // Traditional `let x = val in body`
+        ptr += 1;
+        let (n, body) = parse_expr(&tokens[ptr..])?;
+        ptr += n;
+        body
+    } else if matches!(first_token(&tokens[ptr..]), Some(Token::Semicolon)) {
+        // Sugar: `let x = val; body`  — `;` acts as `in`.
+        ptr += 1; // consume `;`
+        if tokens[ptr..].is_empty() {
+            // `let x = val;` with nothing after — body is unit `{}`
+            Expr {
+                id: 0,
+                kind: ExprKind::Record { entries: vec![] },
+                span: let_span.clone(),
+            }
+        } else {
+            let (n, body) = parse_expr(&tokens[ptr..])?;
+            ptr += n;
+            body
+        }
+    } else {
+        // No `in` and no `;` — this is a top-level binding, not a let-in expr.
+        return Err(ParseError::unexpected(
+            format!(
+                "{:?}",
+                first_token(&tokens[ptr..]).unwrap_or(&Token::Ident("<eof>".into()))
+            ),
+            "in",
+            span(&tokens[ptr..]),
+        ));
+    };
 
     Ok((
         ptr,

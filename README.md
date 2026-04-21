@@ -23,7 +23,7 @@ Lume draws from Lua (small core, files as values), Elm and PureScript (row polym
 -- single-line comment (no multi-line comments)
 ```
 
-**Keywords:** `let` `pub` `type` `use` `trait` `in` `if` `then` `else` `match` `true` `false` `and` `or` `not`
+**Keywords:** `let` `pub` `type` `use` `trait` `in` `if` `then` `else` `match` `true` `false` `and` `not`
 
 **Identifiers:** `[a-z][a-zA-Z0-9_]*` for values and fields  
 **Type names / variant names:** `[A-Z][a-zA-Z0-9]*`  
@@ -54,13 +54,42 @@ let double = n -> n * 2
 -- multi-argument (curried by default)
 let add = a -> b -> a + b
 
+-- function definition sugar: `let f x y = body` is shorthand for `let f = x -> y -> body`
+let add a b = a + b
+
 -- with optional type annotation
 let greet : Text -> Text = name -> "Hello, " ++ name
+
+-- annotated sugar form (parameter types inline, return type after ->)
+let scale (x: Num) (factor: Num) -> Num = x * factor
 ```
 
 All bindings are immutable. There is no assignment or mutation.
 
 Lume is **expression-oriented** - everything evaluates to a value. There are no statements.
+
+### 3.1 Let-in expressions
+
+`let` can be used inside an expression with `in` to introduce a local binding:
+
+```lume
+let result = let x = 10 in x * x   -- 100
+
+let hypotenuse a b =
+  let a2 = a * a in
+  let b2 = b * b in
+    (a2 + b2)
+```
+
+### 3.2 Mutual recursion
+
+Two or more bindings that call each other must be declared together using `and`:
+
+```lume
+let even = n -> if n == 0 then true  else odd  (n - 1)
+and
+let odd  = n -> if n == 0 then false else even (n - 1)
+```
 
 ---
 
@@ -110,8 +139,8 @@ if x > 0 then "positive" else "non-positive"
 
 -- multi-line
 if b == 0
-  then Err { reason: "cannot divide by zero" }
-  else Ok { value: a / b }
+  then Err "cannot divide by zero"
+  else Ok (a / b)
 ```
 
 ---
@@ -124,8 +153,8 @@ if b == 0
 | `Text` | UTF-8 string             | `"hello"`            |
 | `Bool` | Boolean                  | `true`  `false`      |
 | `List a` | Homogeneous list       | `[1, 2, 3]`          |
-| `Maybe a` | Optional value        | `Some { value: x }` / `None` |
-| `Result a b` | Success or failure | `Ok { value: x }` / `Err { reason: e }` |
+| `Maybe a` | Optional value        | `Some x` / `None`   |
+| `Result a b` | Success or failure | `Ok x` / `Err e`   |
 
 ---
 
@@ -148,11 +177,22 @@ alice.name   -- "Alice"
 alice.age    -- 30
 ```
 
-### 6.3 Update (immutable)
+### 6.3 Spread and update
+
+The `..expr` spread syntax copies all fields from a record into a new record literal. Fields listed after a spread override the spread's values; fields before a spread are included first:
 
 ```lume
--- creates a new record; alice is unchanged
-let older = { alice | age: 31 }
+-- update: creates a new record; alice is unchanged
+let older = { ..alice, age: 31 }
+
+-- extend with a new field
+let scored = { ..alice, score: 100 }
+
+-- multiple spreads: later entries win on conflict
+let merged = { ..defaults, ..overrides }
+
+-- interleave static fields and spreads freely
+let r = { a: 0, ..base, b: 9 }
 ```
 
 ### 6.4 Row polymorphism
@@ -175,7 +215,7 @@ A function that adds a field:
 
 ```lume
 let withScore : { name: Text, .. } -> { name: Text, score: Num, .. }
-let withScore = rec -> { rec | score: 100 }
+let withScore = rec -> { ..rec, score: 100 }
 ```
 
 ---
@@ -192,26 +232,33 @@ type Direction =
   | East
   | West
 
+-- variants with a single wrapped value
+type Shape =
+  | Circle Num           -- wraps a Num (the radius)
+  | Rect   Num Num       -- not supported: only one payload allowed per variant
+
 -- variants with labelled record payloads
 type Shape =
-  | Circle   { radius: Num }
-  | Rect     { width: Num, height: Num }
-  | Triangle { base: Num, height: Num }
+  | Circle { radius: Num }
+  | Rect   { width: Num, height: Num }
 
 -- mixed
 type Answer =
   | Yes
   | No
-  | Maybe { reason: Text }
+  | Maybe Text           -- wraps a Text reason
 
 -- recursive
 type Expr =
-  | Num { value: Num }
+  | Num Num
   | Add { left: Expr, right: Expr }
   | Mul { left: Expr, right: Expr }
 ```
 
-Variant payloads are always labelled records. There are no positional tuple variants.
+A variant payload is either:
+- **absent** (unit variant): `| North`
+- **a single wrapped value** (wrapper variant): `| Circle Num`, `| Ok a`
+- **a labelled record** (record variant): `| Circle { radius: Num }`
 
 ### 7.2 Generic types
 
@@ -223,23 +270,26 @@ type Tree a =
   | Node { value: a, left: Tree a, right: Tree a }
 
 type Result a b =
-  | Ok  { value: a }
-  | Err { reason: b }
+  | Ok  a
+  | Err b
 
 type Maybe a =
-  | Some { value: a }
+  | Some a
   | None
 ```
 
 ### 7.3 Construction
 
 ```lume
-let c = Circle { radius: 5 }
-let r = Rect   { width: 10, height: 4 }
-let d = North            -- unit variant: no braces needed
-let n = None
+let c  = Circle { radius: 5 }  -- record variant
+let r  = Rect   { width: 10, height: 4 }
+let d  = North                 -- unit variant: no braces needed
+let n  = None
+let v  = Ok 42                 -- wrapper variant
+let e  = Err "oops"
+let s  = Some "hello"
 
--- field shorthand works here too
+-- field shorthand works for record variants
 let radius = 7
 let c2 = Circle { radius }   -- same as Circle { radius: radius }
 ```
@@ -268,9 +318,8 @@ Pattern matching uses `|` arms, consistent with type definitions:
 ```lume
 let describe : Shape -> Text
 let describe =
-  | Circle   { radius }        -> "circle, r=" ++ show radius
-  | Rect     { width, height } -> "rect " ++ show width ++ "x" ++ show height
-  | Triangle { base, height }  -> "triangle"
+  | Circle { radius }        -> "circle, r=" ++ show radius
+  | Rect   { width, height } -> "rect " ++ show width ++ "x" ++ show height
 ```
 
 Pattern matching supports guards and destructuring. Exhaustiveness checking is not currently guaranteed by this implementation.
@@ -316,24 +365,43 @@ let classify =
 
 `Variant _` matches any payload without binding it.
 
-### 8.5 List patterns
+### 8.5 Wrapper variant patterns
+
+Wrapper variants (single-value payload) bind the inner value directly:
+
+```lume
+let safeHead : List a -> Maybe a
+let safeHead =
+  | []       -> None
+  | [x, ..]  -> Some x
+
+let getOrElse : a -> Maybe a -> a = default ->
+  | None    -> default
+  | Some x  -> x
+
+let handleResult =
+  | Ok  value  -> "got " ++ show value
+  | Err reason -> "failed: " ++ reason
+```
+
+### 8.6 List patterns
 
 ```lume
 let first =
-  | []       -> Err { reason: "empty list" }
-  | [x, ..]  -> Ok { value: x }
+  | []       -> None
+  | [x, ..]  -> Some x
 
 let second =
-  | [_, x, ..] -> Ok { value: x }
-  | _          -> Err { reason: "need at least two" }
+  | [_, x, ..] -> Some x
+  | _          -> None
 
 -- bind the tail
 let headTail =
-  | [x, ..rest] -> Ok { head: x, tail: rest }
-  | []           -> Err { reason: "empty" }
+  | [x, ..rest] -> Some { head: x, tail: rest }
+  | []           -> None
 ```
 
-### 8.6 Destructuring in let bindings
+### 8.7 Destructuring in let bindings
 
 The same patterns work in `let`:
 
@@ -354,41 +422,96 @@ let [first, ..rest] = myList
 | `\|>`    | Pipe - pass value into function      |
 | `?>`     | Result pipe - pipe only if `Ok`      |
 | `->`     | Lambda / function arrow              |
-| `++`     | Concatenate (text, lists, records)   |
+| `++`     | Concatenate (text, lists)            |
 | `\|`     | Match arm / type variant separator   |
 | `:`      | Type annotation                      |
 | `==` `!=`| Structural equality                  |
 | `<` `>` `<=` `>=` | Comparison (Num only)    |
 | `+` `-` `*` `/` | Arithmetic (Num only)      |
-| `and` `or` `not` | Boolean logic             |
+| `&&` `\|\|` | Boolean and / or              |
+| `not`    | Boolean negation (prefix)            |
 
 `+` is **numbers only**. Text and list concatenation always uses `++`. This avoids the classic beginner footgun of `"5" + 3`.
 
 ### 9.1 The result pipe `?>`
 
-`?>` chains operations that return `Result`, short-circuiting on the first `Err`:
+`?>` chains operations that return `Result`, short-circuiting on the first `Err`. It is defined in the standard library with fixity `infixl 2`:
 
 ```lume
 let safeDivide = a -> b ->
   if b == 0
-    then Err { reason: "division by zero" }
-    else Ok { value: a / b }
+    then Err "division by zero"
+    else Ok (a / b)
 
-10 |> safeDivide 2
-   ?> (n -> Ok { value: n + 1 })   -- Ok { value: 6 }
+safeDivide 10 2
+  ?> (n -> Ok (n + 1))   -- Ok 6
 
-10 |> safeDivide 0
-   ?> (n -> Ok { value: n + 1 })   -- Err { reason: "division by zero" }
+safeDivide 10 0
+  ?> (n -> Ok (n + 1))   -- Err "division by zero"
 ```
+
+### 9.2 Custom operators and fixity
+
+Any sequence of operator characters (e.g. `<>`, `|>>`, `~=`) can be used as an infix operator by wrapping it in parentheses in a `let` binding. An optional fixity declaration controls associativity and precedence (0–9, default 9):
+
+```lume
+-- right-associative at precedence 6
+let (++) infixr 6 = concat_text
+
+-- left-associative at default precedence (9)
+let (<>) infixl = a -> b -> a ++ b ++ a
+
+-- non-associative at precedence 2 (chaining disallowed)
+let (=?) infix 2 = a -> b -> a == b
+```
+
+Fixity declarations on trait methods are also supported:
+
+```lume
+trait Concat a {
+  let (++) infixr 6 : a -> a -> a
+}
+```
+
+Precedence levels and their relationship to built-in operators:
+
+| Prec | `infixl` bp | vs built-ins |
+|------|-------------|--------------|
+| 0    | (0, 1)      | below `\|>` (10) |
+| 5    | (40, 41)    | same level as `==` (40) |
+| 7    | (56, 57)    | between `++` (50) and `+` (60) |
+| 9    | (72, 73)    | above `*` (70) |
 
 ---
 
-## 10. Type system
+## 10. Spread syntax
+
+The `..expr` spread works in both list and record literals.
+
+### 10.1 List spread
+
+```lume
+let xs = [1, 2, 3]
+let ys = [4, 5]
+
+let r1 = [..xs, 6]          -- [1, 2, 3, 6]
+let r2 = [0, ..xs]          -- [0, 1, 2, 3]
+let r3 = [..xs, ..ys]       -- [1, 2, 3, 4, 5]
+let r4 = [0, ..xs, 99, ..ys]
+```
+
+### 10.2 Record spread
+
+See §6.3 for record spread examples.
+
+---
+
+## 11. Type system
 
 - **Inferred** - the compiler infers all types. Annotations are optional and serve as documentation.
 - **Sound** - if the program compiles, it is type-correct. No runtime type errors.
 - **Row polymorphic** - functions can be polymorphic over the "rest" of a record's fields (see §6.4).
-- **Trait-constrained** - type annotations can require trait implementations (see §13).
+- **Trait-constrained** - type annotations can require trait implementations (see §14).
 - **No implicit coercions** - `Num` never becomes `Text` silently.
 - **No `null` or `undefined`** - absence is represented by `Maybe`.
 
@@ -403,9 +526,9 @@ let depth : Tree a -> Num
 
 ---
 
-## 11. Modules
+## 12. Modules
 
-### 11.1 A module is a file with an optional `pub` export
+### 12.1 A module is a file with an optional `pub` export
 
 ```lume
 -- math.lume
@@ -438,7 +561,7 @@ let area =
 pub { area }
 ```
 
-### 11.2 Importing with `use`
+### 12.2 Importing with `use`
 
 ```lume
 -- bind the whole module as a record
@@ -464,7 +587,13 @@ use cfg   = "../config"
 
 `use` is a static declaration - always at the top of the file, never inside a function or branch.
 
-### 11.3 Circular imports
+Operators defined in a module can be imported by wrapping the operator in parentheses:
+
+```lume
+use { (?>), (++) } = "lume:core"
+```
+
+### 12.3 Circular imports
 
 Circular dependencies are a **hard compile error**. The compiler reports the full cycle:
 
@@ -477,7 +606,7 @@ Error: circular import detected
 
 Resolve by extracting the shared definitions into a third module that neither imports.
 
-### 11.4 Re-exporting
+### 12.4 Re-exporting
 
 A module can re-export selected bindings by importing them and publishing a new record:
 
@@ -490,7 +619,7 @@ pub { area, pi }
 
 ---
 
-## 12. Standard library (core)
+## 13. Standard library (core)
 
 The following are available globally - no import needed:
 
@@ -554,11 +683,11 @@ The following are available globally - no import needed:
 
 ---
 
-## 13. Traits
+## 14. Traits
 
 Traits provide ad-hoc polymorphism — a way to define a shared interface that different types can implement independently. They are Lume's mechanism for overloading: the same function name (e.g. `show`) can behave differently depending on the type it is called with.
 
-### 13.1 Defining a trait
+### 14.1 Defining a trait
 
 A trait declares one or more method signatures parameterised over a type variable:
 
@@ -572,7 +701,7 @@ trait Eq a {
 }
 ```
 
-### 13.2 Implementing a trait
+### 14.2 Implementing a trait
 
 The `use ... in` form provides an implementation for a concrete type:
 
@@ -590,14 +719,14 @@ use Show in Bool {
 Implementations can target applied types (type constructors applied to arguments):
 
 ```lume
-type Box a = | MyBox { inner: a }
+type Box a = | MyBox a
 
 use Show in Box Num {
-  let show = MyBox { inner } -> "MyBox(" ++ Show.show inner ++ ")"
+  let show = MyBox inner -> "MyBox(" ++ Show.show inner ++ ")"
 }
 ```
 
-### 13.3 Constrained implementations
+### 14.3 Constrained implementations
 
 An impl can require that its type parameter already implements another trait. Constraints appear before `=>`:
 
@@ -615,7 +744,7 @@ use Printable in (Show a, Eq a) => Pair a {
 }
 ```
 
-### 13.4 Calling trait methods
+### 14.4 Calling trait methods
 
 Use `Trait.method` syntax to call a trait method. The compiler resolves which implementation to use based on the argument type:
 
@@ -624,7 +753,7 @@ Show.show 42          -- uses Show in Num
 Show.show [1, 2, 3]   -- uses Show in List a (which requires Show in Num)
 ```
 
-### 13.5 Constrained functions
+### 14.5 Constrained functions
 
 Functions can require trait implementations on their type parameters using constraint annotations:
 
@@ -640,7 +769,7 @@ let display : Show a => a -> Text
 let display = x -> Show.show x
 ```
 
-### 13.6 Soundness guarantees
+### 14.6 Soundness guarantees
 
 The compiler enforces several rules at type-check time:
 
@@ -651,7 +780,7 @@ The compiler enforces several rules at type-check time:
 
 ---
 
-## 14. Error handling
+## 15. Error handling
 
 Errors are values. There are no exceptions.
 
@@ -660,26 +789,26 @@ Errors are values. There are no exceptions.
 let safeDivide : Num -> Num -> Result Num Text
 let safeDivide = a -> b ->
   if b == 0
-    then Err { reason: "division by zero" }
-    else Ok  { value: a / b }
+    then Err "division by zero"
+    else Ok  (a / b)
 
 -- handle with pattern matching
 let result = safeDivide 10 2
-| Ok  { value }  -> "got " ++ show value
-| Err { reason } -> "failed: " ++ reason
+| Ok  value  -> "got " ++ show value
+| Err reason -> "failed: " ++ reason
 
 -- or chain with ?>
 safeDivide 10 2
-  ?> ({ value } -> safeDivide value 2)
-  ?> (value -> Ok { value: value + 1 })
--- Ok { value: 3.5 }
+  ?> (n -> Ok (n / 2))
+  ?> (n -> Ok (n + 1))
+-- Ok 3.5
 ```
 
-`Result` values are ordinary values. `?>` is the built-in operator for chaining computations that may fail.
+`Result` values are ordinary values. `?>` is defined in the prelude and chains computations that may fail.
 
 ---
 
-## 15. Complete example
+## 16. Complete example
 
 A small program that reads a list of quiz scores, filters and grades them, and summarises the results:
 
@@ -739,7 +868,7 @@ students
 
 ---
 
-## 16. What Lume intentionally omits
+## 17. What Lume intentionally omits
 
 | Feature               | Reason omitted                                              |
 |-----------------------|-------------------------------------------------------------|
@@ -754,17 +883,18 @@ students
 
 ---
 
-## 17. Grammar summary
+## 18. Grammar summary
 
 ```
-program     = use* (typedef | traitdef | impldef | binding)* ("pub" expr)?
+program     = use* (typedef | traitdef | impldef | binding_or_group)* ("pub" expr)?
 
 use         = "use" (ident "=" | record_pattern "=") string
 typedef     = "type" TypeName typevars "=" ("|" variant)+
-variant     = VariantName record_type?
+variant     = VariantName type?
+            | VariantName record_type
 
 traitdef    = "trait" TypeName ident "{" trait_method* "}"
-trait_method = "let" ident ":" type
+trait_method = "let" ("(" op ")" fixity?)? ident ":" type
 
 impldef     = "use" TypeName "in" constraints? impl_type "{" impl_method* "}"
 impl_type   = TypeName type_primary*
@@ -773,12 +903,19 @@ constraints = constraint ("," constraint)* "=>"
             | "(" constraint ("," constraint)* ")" "=>"
 constraint  = TypeName ident
 
-binding     = "let" pattern (":" constraints? type)? "=" expr
+binding_or_group = binding ("and" binding)*
+binding     = "let" binding_lhs (":" constraints? type)? "=" expr
+binding_lhs = pattern
+            | ident param+                    -- sugar: `let f x y = body`
 
-expr        = lambda | pipe_expr
+fixity      = ("infixl" | "infixr" | "infix") [0-9]?
+
+expr        = lambda | let_in | pipe_expr
 
 lambda      = pattern "->" expr
-pipe_expr   = result_pipe ("|>" result_pipe)*
+let_in      = "let" pattern (":" type)? "=" expr "in" expr
+pipe_expr   = apply ("|>" apply)*
+apply       = result_pipe_expr
 result_pipe = apply ("?>" apply)*
 apply       = atom atom*
             | apply record_expr
@@ -802,6 +939,12 @@ pattern     = "_"
 record_pattern = "{" (field_pattern ",")* (".." ident? )? "}"
 field_pattern  = ident (":" pattern)?
 list_pattern   = "[" (pattern ",")* (".." ident?)? "]"
+
+list_expr   = "[" list_entry* "]"
+list_entry  = expr | ".." expr
+
+record_expr = "{" record_entry* "}"
+record_entry = ".." expr | ident (":" expr)?   -- spread or field
 
 type        = TypeName type*           -- applied type
             | ident                    -- type variable

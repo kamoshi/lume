@@ -476,6 +476,10 @@ fn map_children_owned(
             value: Box::new(f(*value)?),
             body: Box::new(f(*body)?),
         },
+
+        ExprKind::Sequence(exprs) => ExprKind::Sequence(
+            exprs.into_iter().map(f).collect::<Result<Vec<_>, _>>()?,
+        ),
     };
     Ok(Expr { id, kind, span })
 }

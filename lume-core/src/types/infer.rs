@@ -1370,6 +1370,14 @@ impl Checker {
                 }
                 self.infer(&new_env, body)
             }
+
+            ExprKind::Sequence(exprs) => {
+                let mut ty = Ty::Record(crate::types::Row { fields: vec![], tail: crate::types::RowTail::Closed });
+                for expr in exprs {
+                    ty = self.infer(env, expr)?;
+                }
+                Ok(ty)
+            }
         }
     }
 
@@ -1974,6 +1982,14 @@ impl Checker {
                     new_env.insert(name, scheme);
                 }
                 self.check(&new_env, body, expected)
+            }
+            // ── Sequence in check mode: propagate expected type to last expr ──
+            ExprKind::Sequence(exprs) => {
+                let (last, init) = exprs.split_last().expect("sequence is non-empty");
+                for expr in init {
+                    self.infer(env, expr)?;
+                }
+                self.check(env, last, expected)
             }
             // ── Bare match arms in check mode: propagate function type ────
             ExprKind::Match(arms) => {
