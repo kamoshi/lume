@@ -12,6 +12,10 @@
 "then" @keyword.control
 "else" @keyword.control
 
+"infix" @keyword
+"infixl" @keyword
+"infixr" @keyword
+
 ; Operators
 "->" @operator
 "|>" @operator
