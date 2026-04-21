@@ -37,7 +37,11 @@
 "<=" @operator
 ">=" @operator
 ".." @operator
+
 ":" @punctuation.delimiter
+
+; Custom operators (user-defined via infix/infixl/infixr declarations)
+(operator) @operator
 
 ; Literals
 (string) @string
