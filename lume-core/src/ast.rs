@@ -12,6 +12,8 @@ pub struct ModulePragmas {
     pub internal: bool,
     /// Module skips the automatic prelude import.
     pub no_prelude: bool,
+    /// Module receives Map primitive builtins (only `lume:map` uses this).
+    pub map_internal: bool,
 }
 
 /// The complete AST for a Lume source file.

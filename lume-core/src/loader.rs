@@ -7,7 +7,7 @@ use crate::lexer::Lexer;
 use crate::parser;
 use crate::types::error::{TypeError, TypeErrorAt};
 use crate::types::{
-    infer::{build_variant_env, builtin_env, inject_internal_builtins, Checker, VariantEnv},
+    infer::{build_variant_env, builtin_env, inject_internal_builtins, inject_map_builtins, Checker, VariantEnv},
     Scheme, Subst,
 };
 
@@ -18,6 +18,7 @@ use crate::types::{
 pub const STDLIB_MODULES: &[&str] = &[
     "lume:core",
     "lume:list",
+    "lume:map",
     "lume:math",
     "lume:maybe",
     "lume:prelude",
@@ -134,6 +135,7 @@ pub fn stdlib_source(name: &str) -> Option<&'static str> {
     match name {
         "lume:core" => Some(include_str!("../../std/core.lume")),
         "lume:list" => Some(include_str!("../../std/list.lume")),
+        "lume:map" => Some(include_str!("../../std/map.lume")),
         "lume:text" => Some(include_str!("../../std/text.lume")),
         "lume:math" => Some(include_str!("../../std/math.lume")),
         "lume:maybe" => Some(include_str!("../../std/maybe.lume")),
@@ -204,6 +206,7 @@ pub fn parse_pragmas(src: &str) -> (crate::ast::ModulePragmas, Vec<PragmaWarning
             match word {
                 "internal" => pragmas.internal = true,
                 "no_prelude" => pragmas.no_prelude = true,
+                "map_internal" => pragmas.map_internal = true,
                 _ => {
                     // Find the byte offset of this word in the original line
                     // to compute an accurate column.
@@ -355,6 +358,9 @@ impl Loader {
         let (mut env, mut var_env) = builtin_env(&mut subst);
         if program.pragmas.internal {
             inject_internal_builtins(&mut subst, &mut env);
+        }
+        if path == stdlib_path("lume:map").as_path() {
+            inject_map_builtins(&mut subst, &mut env);
         }
         let prog_vars = build_variant_env(&program.items);
         var_env.merge(prog_vars.clone());

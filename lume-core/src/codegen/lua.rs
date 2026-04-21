@@ -1,4 +1,4 @@
-use crate::builtin::BUILTINS;
+use crate::builtin::{BUILTINS, MAP_BUILTINS};
 use crate::codegen::IrModule;
 use crate::ir;
 use crate::ir::{BinOp, UnOp};
@@ -413,7 +413,7 @@ pub fn full_prelude() -> String {
     }
 
     // BUILTINS: bare assignment.
-    for b in BUILTINS {
+    for b in BUILTINS.iter().chain(MAP_BUILTINS.iter()) {
         out.push_str(&format!("{} = {}\n\n", b.lua_name(), b.lua));
     }
 
@@ -591,7 +591,7 @@ pub fn emit(bundle: &[IrModule], variant_env: VariantEnv) -> String {
             preamble.push_str(impl_str);
         }
     }
-    for b in BUILTINS {
+    for b in BUILTINS.iter().chain(MAP_BUILTINS.iter()) {
         if e.needed_stdlib.contains(b.name) {
             preamble.push_str(&format!("local {} = {}\n\n", b.lua_name(), b.lua));
         }
@@ -949,7 +949,7 @@ impl Emitter {
                 {
                     self.needed_stdlib.insert(name.clone());
                     self.out.push_str(lua_name);
-                } else if let Some(b) = BUILTINS.iter().find(|b| b.name == name.as_str()) {
+                } else if let Some(b) = BUILTINS.iter().chain(MAP_BUILTINS.iter()).find(|b| b.name == name.as_str()) {
                     self.needed_stdlib.insert(name.clone());
                     self.out.push_str(&b.lua_name());
                 } else {

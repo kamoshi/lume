@@ -361,7 +361,7 @@ impl LanguageServer for Backend {
             .cloned()
             .unwrap_or_default();
 
-        let mut value = format!("```\n{label}\n```");
+        let mut value = label;
         if !doc_comment.is_empty() {
             value.push_str("\n\n---\n\n");
             value.push_str(&doc_comment);

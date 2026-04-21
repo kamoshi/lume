@@ -652,3 +652,30 @@ expect = "typecheck"
 output = """
 A[B]C
 """
+
+[tests.map_basics]
+path = "tests/lume/map_basics.lume"
+expect = "typecheck"
+output = """
+3
+2
+missing
+true
+false
+2
+false
+1
+2
+6
+3
+3
+3
+3
+100
+2
+2
+1
+a1
+11
+2
+"""

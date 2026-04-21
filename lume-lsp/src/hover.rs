@@ -167,6 +167,11 @@ fn suggest_for_hole<'e>(
     matches
 }
 
+/// Wrap `content` in a Lume fenced code block for syntax-highlighted hover display.
+fn lume_block(content: &str) -> String {
+    format!("```lume\n{content}\n```")
+}
+
 /// Build the hover label for a given cursor position.
 ///
 /// Returns `None` when no hover information is available.
@@ -183,8 +188,8 @@ pub fn hover_label(pos: Position, text: &str, doc: &DocInfo) -> Option<String> {
                     doc.extra_hovers
                         .iter()
                         .find(|(_, l)| l.starts_with(&format!("trait {} ", trait_name)))
-                        .map(|(_, l)| l.clone())
-                        .unwrap_or_else(|| format!("trait {trait_name}")),
+                        .map(|(_, l)| lume_block(l))
+                        .unwrap_or_else(|| lume_block(&format!("trait {trait_name}"))),
                 );
             }
             // Cursor is on the method name (e.g. "render" in Render.render)
@@ -197,10 +202,10 @@ pub fn hover_label(pos: Position, text: &str, doc: &DocInfo) -> Option<String> {
                         Some(pt) => format_constraint(trait_name, pt),
                         None => format!("{} {}", trait_name, trait_def.type_param),
                     };
-                    return Some(format!("{method_name} : {constraint} => {ty}"));
+                    return Some(lume_block(&format!("{method_name} : {constraint} => {ty}")));
                 }
             }
-            return Some(format!("{method_name} : {ty}"));
+            return Some(lume_block(&format!("{method_name} : {ty}")));
         }
 
         // Regular expression — show word : type.
@@ -208,7 +213,7 @@ pub fn hover_label(pos: Position, text: &str, doc: &DocInfo) -> Option<String> {
         match word_at(text, pos.line, pos.character) {
             Some("_") => {
                 // Typed hole: show the expected type and suggest fitting bindings.
-                let mut label = format!("_ : {ty_str}");
+                let mut label = lume_block(&format!("_ : {ty_str}"));
                 let suggestions = suggest_for_hole(&ty, &doc.top_env, 5);
                 if !suggestions.is_empty() {
                     label.push_str("\n\n**Fits:**");
@@ -221,7 +226,7 @@ pub fn hover_label(pos: Position, text: &str, doc: &DocInfo) -> Option<String> {
             Some(w) => {
                 let (display, fixity_suffix) = operator_display(w, doc);
                 if let Some(scheme) = doc.top_env.lookup(w) {
-                    Some(format!("{display} : {scheme}{fixity_suffix}"))
+                    Some(lume_block(&format!("{display} : {scheme}{fixity_suffix}")))
                 } else if is_op_name(w) {
                     // Operator not in top_env — it may be a trait method operator.
                     // Search trait_env for an unambiguous match.
@@ -236,24 +241,24 @@ pub fn hover_label(pos: Position, text: &str, doc: &DocInfo) -> Option<String> {
                         .collect();
                     if matches.len() == 1 {
                         let (trait_name, type_param, method_ty) = matches.remove(0);
-                        Some(format!(
+                        Some(lume_block(&format!(
                             "{display} : ({trait_name} {type_param}) => {method_ty}{fixity_suffix}"
-                        ))
+                        )))
                     } else if !matches.is_empty() {
                         // Ambiguous — list all candidates.
                         let options: Vec<String> = matches
                             .iter()
                             .map(|(tn, tp, _)| format!("({tn} {tp})"))
                             .collect();
-                        Some(format!("{display} : {ty_str}  -- ambiguous: {}{fixity_suffix}", options.join(", ")))
+                        Some(lume_block(&format!("{display} : {ty_str}  -- ambiguous: {}{fixity_suffix}", options.join(", "))))
                     } else {
-                        Some(format!("{display} : {ty_str}{fixity_suffix}"))
+                        Some(lume_block(&format!("{display} : {ty_str}{fixity_suffix}")))
                     }
                 } else {
-                    Some(format!("{display} : {ty_str}{fixity_suffix}"))
+                    Some(lume_block(&format!("{display} : {ty_str}{fixity_suffix}")))
                 }
             }
-            _ => Some(ty_str),
+            _ => Some(lume_block(&ty_str)),
         }
     } else {
         // No type in node_types — try extra_hovers (trait methods, etc.)
@@ -262,13 +267,13 @@ pub fn hover_label(pos: Position, text: &str, doc: &DocInfo) -> Option<String> {
         if let Some((_, label)) = doc.extra_hovers.iter().find(|(span, _)| {
             span.line == lsp_line && span.col <= lsp_col && lsp_col < span.col + span.len
         }) {
-            return Some(label.clone());
+            return Some(lume_block(label));
         }
         // Last resort: try top_env by word under cursor (identifier or operator).
         match word_at(text, pos.line, pos.character) {
             Some(w) => {
                 let (display, fixity_suffix) = operator_display(w, doc);
-                doc.top_env.lookup(w).map(|scheme| format!("{display} : {scheme}{fixity_suffix}"))
+                doc.top_env.lookup(w).map(|scheme| lume_block(&format!("{display} : {scheme}{fixity_suffix}")))
             }
             _ => None,
         }

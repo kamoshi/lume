@@ -1,4 +1,4 @@
-use crate::builtin::BUILTINS;
+use crate::builtin::{BUILTINS, MAP_BUILTINS};
 use crate::ir;
 use crate::codegen::IrModule;
 use crate::types::infer::VariantEnv;
@@ -155,7 +155,7 @@ pub fn emit(bundle: &[IrModule], variant_env: VariantEnv) -> String {
             preamble.push_str(impl_str);
         }
     }
-    for b in BUILTINS {
+    for b in BUILTINS.iter().chain(MAP_BUILTINS.iter()) {
         if e.needed_stdlib.contains(b.name) {
             preamble.push_str(&format!("const {} = {};\n\n", b.js_name(), b.js));
         }
@@ -356,7 +356,7 @@ impl Emitter {
             ir::Expr::Var(name) => {
                 if JS_STDLIB.iter().any(|(n, _, _)| *n == name.as_str()) {
                     self.needed_stdlib.insert(name.clone());
-                } else if let Some(b) = BUILTINS.iter().find(|b| b.name == name.as_str()) {
+                } else if let Some(b) = BUILTINS.iter().chain(MAP_BUILTINS.iter()).find(|b| b.name == name.as_str()) {
                     self.needed_stdlib.insert(name.clone());
                     self.out.push_str(&b.js_name());
                     return;

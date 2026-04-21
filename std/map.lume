@@ -1,0 +1,79 @@
+-- lume no_prelude map_internal
+-- Map k v: immutable key-value map backed by Lua tables / JS objects.
+-- Keys must be comparable (Num or Text work best with LuaJIT).
+--
+-- Note: all mutating operations copy the underlying table (O(n)).
+-- A future HAMT implementation will replace these with O(log n) ops.
+--
+-- Usage: use map = "lume:map"  then  map.insert key val m
+
+-- Aliases for built-in primitives (strip the "map_" prefix)
+let empty      = map_empty
+let insert     = map_insert
+let get        = map_get
+let delete     = map_delete
+let member     = map_member
+let size       = map_size
+let keys       = map_keys
+let values     = map_values
+let to_list    = map_to_list
+let from_list  = map_from_list
+let union      = map_union
+let map_vals   = map_map
+let fold       = map_fold
+
+-- filter : (k -> v -> Bool) -> Map k v -> Map k v
+let filter f m =
+  fold empty (acc -> k -> v -> if f k v then insert k v acc else acc) m
+
+-- filter_keys : (k -> Bool) -> Map k v -> Map k v
+let filter_keys f = filter (k -> _ -> f k)
+
+-- filter_values : (v -> Bool) -> Map k v -> Map k v
+let filter_values f = filter (_ -> v -> f v)
+
+-- map_with_key : (k -> v -> c) -> Map k v -> Map k c
+let map_with_key f m =
+  fold empty (acc -> k -> v -> insert k (f k v) acc) m
+
+-- elems : Map k v -> List v  (alias for values)
+let elems = map_values
+
+-- singleton : k -> v -> Map k v
+let singleton k v = insert k v empty
+
+-- insert_with : (v -> v -> v) -> k -> v -> Map k v -> Map k v
+-- If key exists, combine old and new value with f; otherwise insert.
+let insert_with f k v m =
+  match get k m in
+    | Some old -> insert k (f old v) m
+    | None     -> insert k v m
+
+-- union_with : (v -> v -> v) -> Map k v -> Map k v -> Map k v
+-- Like union but combines duplicate keys with f instead of left-biasing.
+let union_with f m1 m2 =
+  fold m2 (acc -> k -> v -> insert_with f k v acc) m1
+
+pub {
+  empty,
+  insert,
+  get,
+  delete,
+  member,
+  size,
+  keys,
+  values,
+  elems,
+  to_list,
+  from_list,
+  union,
+  map_vals,
+  fold,
+  filter,
+  filter_keys,
+  filter_values,
+  map_with_key,
+  singleton,
+  insert_with,
+  union_with,
+}

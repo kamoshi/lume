@@ -783,6 +783,25 @@ fn collect_extra_hovers(
     program: &Program,
 ) -> Vec<(Span, String)> {
     let mut out = Vec::new();
+
+    // ── Use declarations ─────────────────────────────────────────────────────
+    // Hovering over a module alias shows the import declaration rather than
+    // the raw module record type (which is verbose and unreadable).
+    for u in &program.uses {
+        match &u.binding {
+            ast::UseBinding::Ident(name, span, _) => {
+                out.push((span.clone(), format!("use {} = \"{}\"", name, u.path)));
+            }
+            ast::UseBinding::Record(rp) => {
+                // For destructure imports, each field hover shows where it
+                // came from so the user can navigate to the source module.
+                for fp in &rp.fields {
+                    out.push((fp.span.clone(), format!("-- from \"{}\"\n{}", u.path, fp.name)));
+                }
+            }
+        }
+    }
+
     // Collect all impls for richer trait name hovers
     let mut impls_by_trait: HashMap<String, Vec<String>> = HashMap::new();
     for item in &program.items {
@@ -796,6 +815,34 @@ fn collect_extra_hovers(
 
     for item in &program.items {
         match item {
+            TopItem::TypeDef(td) => {
+                // Hover on type name → show the full type definition
+                let mut label = format!("type {} ", td.name);
+                for p in &td.params {
+                    label.push_str(p);
+                    label.push(' ');
+                }
+                label.push('=');
+                for v in &td.variants {
+                    label.push_str("\n  | ");
+                    label.push_str(&v.name);
+                    if let Some(ref wraps) = v.wraps {
+                        label.push(' ');
+                        label.push_str(&wraps.to_string());
+                    }
+                }
+                out.push((td.name_span.clone(), label.clone()));
+
+                // Hover on each variant name → show which type it belongs to
+                for v in &td.variants {
+                    let variant_label = if let Some(ref wraps) = v.wraps {
+                        format!("| {} {} : {} {}", v.name, wraps, td.name, td.params.join(" "))
+                    } else {
+                        format!("| {} : {} {}", v.name, td.name, td.params.join(" "))
+                    };
+                    out.push((v.name_span.clone(), variant_label.trim_end().to_string()));
+                }
+            }
             TopItem::TraitDef(td) => {
                 // Hover on trait name → show full trait signature with methods
                 let methods_str: Vec<String> = td

@@ -624,6 +624,13 @@ pub fn inject_internal_builtins(s: &mut Subst, env: &mut TypeEnv) {
     );
 }
 
+/// Inject map-primitive builtins into `env`.
+/// Only called when type-checking the `lume:map` stdlib module so these names
+/// are not visible in user code.
+pub fn inject_map_builtins(s: &mut Subst, env: &mut TypeEnv) {
+    crate::builtin::populate_map_env(s, env);
+}
+
 /// Return type of `instantiate_variant`: (result_type, optional wraps type).
 type VariantInstance = (Ty, Option<Ty>);
 
@@ -638,13 +645,10 @@ pub type ArityEnv = HashMap<String, usize>;
 /// Pre-populate built-in arities and scan user TypeDefs to build the ArityEnv.
 pub fn build_arity_env(items: &[TopItem]) -> ArityEnv {
     let mut env: ArityEnv = HashMap::new();
-    // Built-in types
-    env.insert("Num".into(), 0);
-    env.insert("Text".into(), 0);
-    env.insert("Bool".into(), 0);
-    env.insert("List".into(), 1);
-    env.insert("Maybe".into(), 1);
-    env.insert("Result".into(), 2);
+    // Built-in types (sourced from builtin.rs so Map etc. stay in one place)
+    for (name, arity) in crate::builtin::BUILTIN_TYPE_ARITIES {
+        env.insert((*name).into(), *arity);
+    }
     // Scan user-defined ADTs
     for item in items {
         if let TopItem::TypeDef(td) = item {
@@ -2799,6 +2803,9 @@ pub fn check_program(program: &Program, path: Option<&Path>) -> Result<Ty, TypeE
     if program.pragmas.internal {
         inject_internal_builtins(&mut subst, &mut env);
     }
+    if program.pragmas.map_internal {
+        inject_map_builtins(&mut subst, &mut env);
+    }
     let prog_vars = build_variant_env(&program.items);
     var_env.merge(prog_vars);
     let mut checker = Checker::with_subst(var_env, subst);
@@ -3184,6 +3191,9 @@ pub fn elaborate_bindings(
     if program.pragmas.internal {
         inject_internal_builtins(&mut subst, &mut env);
     }
+    if program.pragmas.map_internal {
+        inject_map_builtins(&mut subst, &mut env);
+    }
     let prog_vars = build_variant_env(&program.items);
     var_env.merge(prog_vars);
     let mut checker = Checker::with_subst(var_env, subst);
@@ -3299,6 +3309,9 @@ pub fn elaborate(
     if program.pragmas.internal {
         inject_internal_builtins(&mut subst, &mut env);
     }
+    if program.pragmas.map_internal {
+        inject_map_builtins(&mut subst, &mut env);
+    }
     let prog_vars = build_variant_env(&program.items);
     var_env.merge(prog_vars);
     let mut checker = Checker::with_subst(var_env, subst);
@@ -3365,6 +3378,9 @@ pub fn elaborate_with_env(
     let mut env = base_env;
     if program.pragmas.internal {
         inject_internal_builtins(&mut subst, &mut env);
+    }
+    if program.pragmas.map_internal {
+        inject_map_builtins(&mut subst, &mut env);
     }
     let prog_vars = build_variant_env(&program.items);
     var_env.merge(prog_vars);
@@ -3477,6 +3493,9 @@ pub fn elaborate_with_env_partial(
     let mut env = base_env;
     if program.pragmas.internal {
         inject_internal_builtins(&mut subst, &mut env);
+    }
+    if program.pragmas.map_internal {
+        inject_map_builtins(&mut subst, &mut env);
     }
     let prog_vars = build_variant_env(&program.items);
     var_env.merge(prog_vars);

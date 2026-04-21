@@ -1,0 +1,93 @@
+-- Test: Map a b — basic operations from lume:map.
+use map = "lume:map"
+
+-- empty + insert + size
+let m0 = map.empty
+let m1 = map.insert "a" 1 m0
+let m2 = map.insert "b" 2 m1
+let m3 = map.insert "c" 3 m2
+
+let _ = map.size m3 |> showNum |> print
+
+-- get (found / not found)
+let _ = match map.get "b" m3 in
+  | Some v -> showNum v |> print
+  | None   -> print "missing"
+
+let _ = match map.get "z" m3 in
+  | Some _ -> print "found"
+  | None   -> print "missing"
+
+-- member
+let _ = map.member "a" m3 |> showBool |> print
+let _ = map.member "z" m3 |> showBool |> print
+
+-- delete
+let m4 = map.delete "b" m3
+let _ = map.size m4 |> showNum |> print
+let _ = map.member "b" m4 |> showBool |> print
+
+-- singleton
+let ms = map.singleton "x" 42
+let _ = map.size ms |> showNum |> print
+
+-- map_vals
+let m5 = map.map_vals (n -> n * 2) m3
+let _ = match map.get "a" m5 in
+  | Some v -> showNum v |> print
+  | None   -> print "missing"
+
+-- fold (sum all values)
+let total = map.fold 0 (acc -> _ -> v -> acc + v) m3
+let _ = showNum total |> print
+
+-- keys / values / elems (just check sizes)
+let ks = map.keys m3
+let vs = map.values m3
+let es = map.elems m3
+let _ = length ks |> showNum |> print
+let _ = length vs |> showNum |> print
+let _ = length es |> showNum |> print
+
+-- to_list / from_list round-trip
+let pairs = map.to_list m3
+let m6    = map.from_list pairs
+let _ = map.size m6 |> showNum |> print
+
+-- union (left-biased: "a" from m1 wins)
+let ma = map.insert "a" 100 map.empty
+let mb = map.insert "a" 200 map.empty
+let mu = map.union ma mb
+let _ = match map.get "a" mu in
+  | Some v -> showNum v |> print
+  | None   -> print "missing"
+
+-- filter
+let mf = map.filter (_ -> v -> v > 1) m3
+let _ = map.size mf |> showNum |> print
+
+-- filter_keys
+let mk = map.filter_keys (k -> k != "a") m3
+let _ = map.size mk |> showNum |> print
+
+-- filter_values
+let mv = map.filter_values (v -> v == 3) m3
+let _ = map.size mv |> showNum |> print
+
+-- map_with_key
+let mwk = map.map_with_key (k -> v -> k ++ showNum v) m3
+let _ = match map.get "a" mwk in
+  | Some s -> print s
+  | None   -> print "missing"
+
+-- insert_with (combine on collision)
+let mi = map.insert_with (old -> new -> old + new) "a" 10 m3
+let _ = match map.get "a" mi in
+  | Some v -> showNum v |> print
+  | None   -> print "missing"
+
+-- union_with
+let muw = map.union_with (a -> b -> a + b) m3 m3
+let _ = match map.get "a" muw in
+  | Some v -> showNum v |> print
+  | None   -> print "missing"
