@@ -44,7 +44,17 @@ pub struct DocInfo {
     /// Document symbols for file outline.
     pub symbols: Vec<DocumentSymbol>,
     /// All identifier references: name → list of spans where it's used.
+    /// Kept for top-level / trait / variant names (string-keyed, no scope).
     pub references: HashMap<String, Vec<Span>>,
+    /// Scope-aware references: binding-site NodeId → all USE spans for that binding.
+    /// More precise than `references` for local variables that shadow each other.
+    pub scoped_refs: HashMap<NodeId, Vec<Span>>,
+    /// Maps every reference-expression NodeId to the NodeId of its binding site.
+    /// Used to normalise a cursor position into a canonical binding identity.
+    pub ref_to_def: HashMap<NodeId, NodeId>,
+    /// Maps every binding-site NodeId to the span of the name token at the
+    /// definition (for "highlight definition as Write" in document-highlight).
+    pub binding_defs: HashMap<NodeId, Span>,
     /// Bindings without type annotations (for "add type annotation" code action).
     /// Each entry is (name, span of name, inferred type string).
     pub unannotated_bindings: Vec<(String, Span, String)>,
@@ -551,6 +561,7 @@ pub fn analyse(uri: &Url, src: &str) -> (Option<DocInfo>, Vec<Diagnostic>) {
     let definitions = collect_definitions(&program);
     let symbols = collect_document_symbols(&program, &top_env, &var_name_hints);
     let references = collect_references(&program);
+    let (scoped_refs, ref_to_def, binding_defs) = collect_scoped_refs(&program);
     let unannotated_bindings =
         collect_unannotated_bindings(&program, &top_env, &var_name_hints);
     let match_exprs = collect_match_exprs(&program);
@@ -571,6 +582,9 @@ pub fn analyse(uri: &Url, src: &str) -> (Option<DocInfo>, Vec<Diagnostic>) {
         var_name_hints,
         symbols,
         references,
+        scoped_refs,
+        ref_to_def,
+        binding_defs,
         unannotated_bindings,
         variant_env,
         match_exprs,
@@ -1212,7 +1226,7 @@ fn collect_extra_hovers(
     collect_do_monad_spans(&program.exports, &mut do_monads);
 
     for (span, name) in do_monads {
-        // Build a label: show type def if known, then Monad impl info.
+        // Build a label: show type def if known, then Monad impl info (if in this file).
         let mut label = if let Some(tl) = type_labels.get(&name) {
             tl.clone()
         } else {
@@ -1220,8 +1234,6 @@ fn collect_extra_hovers(
         };
         if let Some(impl_label) = monad_impls.get(&name) {
             label.push_str(&format!("\n\n{}", impl_label));
-        } else {
-            label.push_str(&format!("\n\n-- (Monad {} required)", name));
         }
         out.push((span, label));
     }
@@ -1682,6 +1694,226 @@ fn collect_refs_expr(expr: &Expr, out: &mut HashMap<String, Vec<Span>>) {
             collect_refs_expr(tail, out);
         }
         _ => {}
+    }
+}
+
+// ── Scope-aware references ────────────────────────────────────────────────────
+
+/// Build scope-aware reference maps by walking the AST with a lexical scope
+/// stack. Returns three maps:
+/// - `scoped_refs`: binding NodeId → all USE-site spans
+/// - `ref_to_def`:  reference NodeId → binding NodeId
+/// - `binding_defs`: binding NodeId → the binding span (the name token)
+fn collect_scoped_refs(
+    program: &Program,
+) -> (HashMap<NodeId, Vec<Span>>, HashMap<NodeId, NodeId>, HashMap<NodeId, Span>) {
+    let mut collector = ScopeCollector::new();
+
+    // Build the global scope from top-level bindings so cross-function
+    // references to top-level names (e.g. `safeDiv`) are tracked too.
+    let mut global_scope: HashMap<String, NodeId> = HashMap::new();
+    for item in &program.items {
+        match item {
+            TopItem::Binding(b) => collector.collect_pat_nids(&b.pattern, &mut global_scope),
+            TopItem::BindingGroup(bs) => {
+                for b in bs {
+                    collector.collect_pat_nids(&b.pattern, &mut global_scope);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Walk each expression with the global scope as the outermost layer.
+    let base: &[HashMap<String, NodeId>] = std::slice::from_ref(&global_scope);
+    for item in &program.items {
+        match item {
+            TopItem::Binding(b) => collector.walk(&b.value, base),
+            TopItem::BindingGroup(bs) => {
+                for b in bs {
+                    collector.walk(&b.value, base);
+                }
+            }
+            TopItem::ImplDef(id) => {
+                for m in &id.methods {
+                    collector.walk(&m.value, base);
+                }
+            }
+            _ => {}
+        }
+    }
+    collector.walk(&program.exports, base);
+
+    (collector.scoped_refs, collector.ref_to_def, collector.binding_defs)
+}
+
+struct ScopeCollector {
+    scoped_refs: HashMap<NodeId, Vec<Span>>,
+    ref_to_def: HashMap<NodeId, NodeId>,
+    binding_defs: HashMap<NodeId, Span>,
+}
+
+impl ScopeCollector {
+    fn new() -> Self {
+        Self {
+            scoped_refs: HashMap::new(),
+            ref_to_def: HashMap::new(),
+            binding_defs: HashMap::new(),
+        }
+    }
+
+    /// Extract all bindings introduced by a pattern into `scope`.
+    /// Also records every binding's definition span in `self.binding_defs`.
+    fn collect_pat_nids(&mut self, pat: &ast::Pattern, scope: &mut HashMap<String, NodeId>) {
+        match pat {
+            ast::Pattern::Ident(name, span, nid) => {
+                self.binding_defs.insert(*nid, span.clone());
+                scope.insert(name.clone(), *nid);
+            }
+            ast::Pattern::Variant { payload: Some(inner), .. } => {
+                self.collect_pat_nids(inner, scope);
+            }
+            ast::Pattern::Record(rp) => {
+                for f in &rp.fields {
+                    match &f.pattern {
+                        None => {
+                            // Shorthand `{ age }` — binds `age` to `f.node_id`
+                            self.binding_defs.insert(f.node_id, f.span.clone());
+                            scope.insert(f.name.clone(), f.node_id);
+                        }
+                        Some(inner_pat) => {
+                            // `{ name: pat }` — bindings live inside inner_pat
+                            self.collect_pat_nids(inner_pat, scope);
+                        }
+                    }
+                }
+                if let Some(Some((name, span, nid))) = &rp.rest {
+                    self.binding_defs.insert(*nid, span.clone());
+                    scope.insert(name.clone(), *nid);
+                }
+            }
+            ast::Pattern::List(lp) => {
+                for p in &lp.elements {
+                    self.collect_pat_nids(p, scope);
+                }
+                if let Some(Some((name, span, nid))) = &lp.rest {
+                    self.binding_defs.insert(*nid, span.clone());
+                    scope.insert(name.clone(), *nid);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn scope_lookup(scope: &[HashMap<String, NodeId>], name: &str) -> Option<NodeId> {
+        scope.iter().rev().find_map(|s| s.get(name).copied())
+    }
+
+    fn walk(&mut self, expr: &Expr, scope: &[HashMap<String, NodeId>]) {
+        match &expr.kind {
+            ExprKind::Ident(name) => {
+                if let Some(binding_nid) = Self::scope_lookup(scope, name) {
+                    if expr.span.len > 0 {
+                        self.scoped_refs.entry(binding_nid).or_default().push(expr.span.clone());
+                        self.ref_to_def.insert(expr.id, binding_nid);
+                    }
+                }
+            }
+            ExprKind::Lambda { param, body } => {
+                let mut local: HashMap<String, NodeId> = HashMap::new();
+                self.collect_pat_nids(param, &mut local);
+                let mut new_scope = scope.to_vec();
+                new_scope.push(local);
+                self.walk(body, &new_scope);
+            }
+            ExprKind::LetIn { pattern, value, body } => {
+                self.walk(value, scope);
+                let mut local: HashMap<String, NodeId> = HashMap::new();
+                self.collect_pat_nids(pattern, &mut local);
+                let mut new_scope = scope.to_vec();
+                new_scope.push(local);
+                self.walk(body, &new_scope);
+            }
+            ExprKind::Do { stmts, tail, .. } => {
+                let mut scope_vec = scope.to_vec();
+                for stmt in stmts {
+                    match stmt {
+                        ast::DoStmt::Let { pattern, value } | ast::DoStmt::Bind { pattern, value } => {
+                            self.walk(value, &scope_vec);
+                            let mut local: HashMap<String, NodeId> = HashMap::new();
+                            self.collect_pat_nids(pattern, &mut local);
+                            scope_vec.push(local);
+                        }
+                        ast::DoStmt::Seq(e) => self.walk(e, &scope_vec),
+                    }
+                }
+                self.walk(tail, &scope_vec);
+            }
+            ExprKind::MatchExpr { scrutinee, arms } => {
+                self.walk(scrutinee, scope);
+                self.walk_arms(arms, scope);
+            }
+            ExprKind::Match(arms) => self.walk_arms(arms, scope),
+            ExprKind::Apply { func, arg } => {
+                self.walk(func, scope);
+                self.walk(arg, scope);
+            }
+            ExprKind::Paren(inner) => self.walk(inner, scope),
+            ExprKind::Binary { left, right, .. } => {
+                self.walk(left, scope);
+                self.walk(right, scope);
+            }
+            ExprKind::Unary { operand, .. } => self.walk(operand, scope),
+            ExprKind::If { cond, then_branch, else_branch } => {
+                self.walk(cond, scope);
+                self.walk(then_branch, scope);
+                self.walk(else_branch, scope);
+            }
+            ExprKind::Sequence(exprs) => exprs.iter().for_each(|e| self.walk(e, scope)),
+            ExprKind::FieldAccess { record, .. } => self.walk(record, scope),
+            ExprKind::Variant { payload: Some(p), .. } => self.walk(p, scope),
+            ExprKind::List { entries } => {
+                for e in entries {
+                    match e {
+                        ast::ListEntry::Elem(x) | ast::ListEntry::Spread(x) => self.walk(x, scope),
+                    }
+                }
+            }
+            ExprKind::Record { entries } => {
+                for e in entries {
+                    match e {
+                        ast::RecordEntry::Field(f) => {
+                            if let Some(v) = &f.value {
+                                self.walk(v, scope);
+                            } else {
+                                // Shorthand `{ age }` — reference to `age`
+                                if let Some(binding_nid) = Self::scope_lookup(scope, &f.name) {
+                                    if f.name_span.len > 0 {
+                                        self.scoped_refs.entry(binding_nid).or_default().push(f.name_span.clone());
+                                        self.ref_to_def.insert(f.name_node_id, binding_nid);
+                                    }
+                                }
+                            }
+                        }
+                        ast::RecordEntry::Spread(v) => self.walk(v, scope),
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn walk_arms(&mut self, arms: &[ast::MatchArm], scope: &[HashMap<String, NodeId>]) {
+        for arm in arms {
+            let mut local: HashMap<String, NodeId> = HashMap::new();
+            self.collect_pat_nids(&arm.pattern, &mut local);
+            let mut arm_scope = scope.to_vec();
+            arm_scope.push(local);
+            if let Some(g) = &arm.guard {
+                self.walk(g, &arm_scope);
+            }
+            self.walk(&arm.body, &arm_scope);
+        }
     }
 }
 

@@ -11,17 +11,29 @@ use crate::analysis::{is_op_name, DocInfo};
 
 // ── Hover lookup ─────────────────────────────────────────────────────────────
 
-/// Find the type and NodeId of the innermost expression at `pos`.
+/// Find the innermost `(span, NodeId)` pair covering `pos` in the span index.
 ///
 /// Spans are 1-indexed (line and col); LSP positions are 0-indexed.
-pub fn type_at_with_id(pos: Position, doc: &DocInfo) -> Option<(NodeId, Ty)> {
+fn span_at(pos: Position, doc: &DocInfo) -> Option<(Span, NodeId)> {
     let line = pos.line as usize + 1;
     let col = pos.character as usize + 1;
     doc.span_index
         .get(&line)?
         .iter()
         .find(|(span, _)| span.col <= col && col < span.col + span.len)
-        .and_then(|(_, id)| doc.node_types.get(id).map(|ty| (*id, ty.clone())))
+        .map(|(span, id)| (span.clone(), *id))
+}
+
+/// Find the type and NodeId of the innermost expression at `pos`.
+pub fn type_at_with_id(pos: Position, doc: &DocInfo) -> Option<(NodeId, Ty)> {
+    let (_, id) = span_at(pos, doc)?;
+    doc.node_types.get(&id).map(|ty| (id, ty.clone()))
+}
+
+/// Like `type_at_with_id` but returns the NodeId even if `node_types` has no
+/// entry for it (e.g. binding-site nodes from patterns).
+pub fn raw_node_id_at(pos: Position, doc: &DocInfo) -> Option<NodeId> {
+    span_at(pos, doc).map(|(_, id)| id)
 }
 
 fn paren_type_at_with_id(pos: Position, text: &str, doc: &DocInfo) -> Option<(NodeId, Ty)> {
@@ -323,28 +335,6 @@ pub fn hover_label(pos: Position, text: &str, doc: &DocInfo) -> Option<String> {
     }
 }
 
-/// Returns `true` if the word consists entirely of operator characters.
-fn is_operator_word(w: &str) -> bool {
-    !w.is_empty() && w.chars().all(|c| "!#$%&*+./<=>?@\\^|~-:".contains(c))
-}
-
-/// Built-in operator fixity descriptions (operator → "assoc prec" string).
-///
-/// Derived from `infix_bp` in parser.rs.  User-defined operators override
-/// these via the `fixity_table` in `DocInfo`.
-fn builtin_fixity(op: &str) -> Option<&'static str> {
-    match op {
-        "|>" => Some("infixl 1"),
-        "||" => Some("infixl 2"),
-        "&&" => Some("infixl 3"),
-        "==" | "!=" | "<" | ">" | "<=" | ">=" => Some("infixl 5"),
-        "++" => Some("infixr 6"),
-        "+" | "-" => Some("infixl 7"),
-        "*" | "/" => Some("infixl 8"),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{hover_label, paren_hover_span};
@@ -384,9 +374,28 @@ mod tests {
     }
 }
 
-/// For a word under the cursor, return:
-/// - the display name (wrapped in parens for operators, plain otherwise)
-/// - a fixity suffix string (e.g. `"\ninfixl 2"`) for ALL operators (builtin or user-defined)
+fn is_operator_word(w: &str) -> bool {
+    !w.is_empty() && w.chars().all(|c| "!#$%&*+./<=>?@\\^|~-:".contains(c))
+}
+
+/// Derived from `infix_bp` in parser.rs. User-defined operators override these
+/// via `fixity_table` in `DocInfo`.
+fn builtin_fixity(op: &str) -> Option<&'static str> {
+    match op {
+        "|>" => Some("infixl 1"),
+        "||" => Some("infixl 2"),
+        "&&" => Some("infixl 3"),
+        "==" | "!=" | "<" | ">" | "<=" | ">=" => Some("infixl 5"),
+        "++" => Some("infixr 6"),
+        "+" | "-" => Some("infixl 7"),
+        "*" | "/" => Some("infixl 8"),
+        _ => None,
+    }
+}
+
+/// Recover the display name and fixity suffix for a word under the cursor.
+/// Operators are wrapped in parens and get a fixity annotation; plain names
+/// get neither.
 fn operator_display<'a>(w: &'a str, doc: &DocInfo) -> (String, String) {
     if is_operator_word(w) {
         let display = format!("({})", w);

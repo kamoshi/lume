@@ -1413,6 +1413,28 @@ impl Checker {
                                 Box::new(Ty::Var(m_var)),
                                 Box::new(Ty::Var(a_var)),
                             );
+                            // Before unifying, check whether val_ty is obviously
+                            // a bare (non-applied) type — catches `let a <- 6`
+                            // early and gives a much clearer error.
+                            let resolved_val = self.subst.apply(&val_ty);
+                            let is_bare = matches!(
+                                &resolved_val,
+                                Ty::Num | Ty::Text | Ty::Bool | Ty::Con(_) | Ty::Func(..)
+                            );
+                            if is_bare {
+                                // Try to resolve the monad name for the hint.
+                                let monad_hint = match self.subst.apply(&Ty::Var(m_var)) {
+                                    Ty::Con(name) => Some(name),
+                                    _ => None,
+                                };
+                                return Err(TypeErrorAt::new(
+                                    TypeError::BindNotMonadic {
+                                        got: resolved_val,
+                                        monad: monad_hint,
+                                    },
+                                    value.span.clone(),
+                                ));
+                            }
                             self.unify_at(val_ty, expected, &value.span)?;
                             self.constraint_map.push(("Monad".to_string(), m_var));
                             self.trait_call_constraints.push((

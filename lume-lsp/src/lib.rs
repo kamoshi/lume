@@ -18,7 +18,7 @@ use completion::{
     completion_ctx, field_completions, file_path_completions, ident_completions,
     stdlib_path_completions, trait_completions, CompletionCtx,
 };
-use hover::{hover_label, paren_hover_span, word_at};
+use hover::{hover_label, paren_hover_span, raw_node_id_at, word_at};
 use semantic_tokens::{compute_semantic_tokens, LEGEND_TOKEN_MODIFIERS, LEGEND_TOKEN_TYPES};
 
 const DEBOUNCE_MS: u64 = 150;
@@ -156,19 +156,17 @@ impl LanguageServer for Backend {
         let uri = &params.text_document_position.text_document.uri;
         let pos = params.text_document_position.position;
 
-        let text = match self.documents.get(uri) {
-            Some(t) => t.clone(),
-            None => return Ok(None),
+        let Some(text) = self.documents.get(uri).map(|t| t.clone()) else {
+            return Ok(None);
         };
 
         let ctx = completion_ctx(&text, pos);
-
         if matches!(ctx, CompletionCtx::None) {
             return Ok(None);
         }
 
+        // Path completions don't need doc_info — handle them before the lock.
         if let CompletionCtx::UsePath(up) = ctx {
-            let ctx_label = format!("UsePath(prefix={:?})", up.prefix);
             let items = match up.kind {
                 UsePathKind::Stdlib => stdlib_path_completions(&up.prefix, up.prefix_col, pos),
                 UsePathKind::File => file_path_completions(uri, &up.prefix, up.prefix_col, pos),
@@ -176,12 +174,7 @@ impl LanguageServer for Backend {
             self.client
                 .log_message(
                     MessageType::LOG,
-                    format!(
-                        "completion pos={},{} ctx={ctx_label} items={}",
-                        pos.line,
-                        pos.character,
-                        items.len()
-                    ),
+                    format!("completion pos={},{} ctx=UsePath(prefix={:?}) items={}", pos.line, pos.character, up.prefix, items.len()),
                 )
                 .await;
             return Ok(Some(CompletionResponse::List(CompletionList {
@@ -190,51 +183,30 @@ impl LanguageServer for Backend {
             })));
         }
 
-        let doc = match self.doc_info.get(uri) {
-            Some(d) => d,
-            None => return Ok(None),
+        let Some(doc) = self.doc_info.get(uri) else {
+            return Ok(None);
         };
 
-        let ctx_label = match &ctx {
-            CompletionCtx::FieldAccess { record, prefix, .. } => {
-                format!("FieldAccess(record={record}, prefix={prefix:?})")
-            }
-            CompletionCtx::TraitAccess {
-                trait_name, prefix, ..
-            } => {
-                format!("TraitAccess(trait={trait_name}, prefix={prefix:?})")
-            }
-            CompletionCtx::Ident { prefix, .. } => format!("Ident(prefix={prefix:?})"),
-            CompletionCtx::None | CompletionCtx::UsePath(_) => unreachable!(),
-        };
-
-        let items = match ctx {
-            CompletionCtx::FieldAccess {
-                record,
-                prefix,
-                replace_range,
-            } => field_completions(&record, &prefix, replace_range, &doc),
-            CompletionCtx::TraitAccess {
-                trait_name,
-                prefix,
-                replace_range,
-            } => trait_completions(&trait_name, &prefix, replace_range, &doc),
-            CompletionCtx::Ident {
-                prefix,
-                replace_range,
-            } => ident_completions(&doc, &prefix, replace_range),
+        let (ctx_label, items) = match ctx {
+            CompletionCtx::FieldAccess { record, prefix, replace_range } => (
+                format!("FieldAccess(record={record}, prefix={prefix:?})"),
+                field_completions(&record, &prefix, replace_range, &doc),
+            ),
+            CompletionCtx::TraitAccess { trait_name, prefix, replace_range } => (
+                format!("TraitAccess(trait={trait_name}, prefix={prefix:?})"),
+                trait_completions(&trait_name, &prefix, replace_range, &doc),
+            ),
+            CompletionCtx::Ident { prefix, replace_range } => (
+                format!("Ident(prefix={prefix:?})"),
+                ident_completions(&doc, &prefix, replace_range),
+            ),
             CompletionCtx::None | CompletionCtx::UsePath(_) => unreachable!(),
         };
 
         self.client
             .log_message(
                 MessageType::LOG,
-                format!(
-                    "completion pos={},{} ctx={ctx_label} items={}",
-                    pos.line,
-                    pos.character,
-                    items.len()
-                ),
+                format!("completion pos={},{} ctx={ctx_label} items={}", pos.line, pos.character, items.len()),
             )
             .await;
 
@@ -249,9 +221,8 @@ impl LanguageServer for Backend {
         params: SemanticTokensParams,
     ) -> Result<Option<SemanticTokensResult>> {
         let uri = &params.text_document.uri;
-        let text = match self.documents.get(uri) {
-            Some(t) => t.clone(),
-            None => return Ok(None),
+        let Some(text) = self.documents.get(uri).map(|t| t.clone()) else {
+            return Ok(None);
         };
         let doc = self.doc_info.get(uri);
         let tokens = compute_semantic_tokens(&text, doc.as_deref());
@@ -268,19 +239,14 @@ impl LanguageServer for Backend {
         let uri = &params.text_document_position_params.text_document.uri;
         let pos = params.text_document_position_params.position;
 
-        let text = match self.documents.get(uri) {
-            Some(t) => t.clone(),
-            None => return Ok(None),
+        let Some(text) = self.documents.get(uri).map(|t| t.clone()) else {
+            return Ok(None);
         };
-
-        let doc = match self.doc_info.get(uri) {
-            Some(d) => d,
-            None => return Ok(None),
+        let Some(doc) = self.doc_info.get(uri) else {
+            return Ok(None);
         };
-
-        let word = match word_at(&text, pos.line, pos.character) {
-            Some(w) => w.to_string(),
-            None => return Ok(None),
+        let Some(word) = word_at(&text, pos.line, pos.character).map(str::to_string) else {
+            return Ok(None);
         };
 
         // Check if this name is imported from another file.
@@ -341,19 +307,14 @@ impl LanguageServer for Backend {
         let uri = &params.text_document_position_params.text_document.uri;
         let pos = params.text_document_position_params.position;
 
-        let text = match self.documents.get(uri) {
-            Some(entry) => entry.clone(),
-            None => return Ok(None),
+        let Some(text) = self.documents.get(uri).map(|t| t.clone()) else {
+            return Ok(None);
         };
-
-        let doc = match self.doc_info.get(uri) {
-            Some(entry) => entry,
-            None => return Ok(None),
+        let Some(doc) = self.doc_info.get(uri) else {
+            return Ok(None);
         };
-
-        let label = match hover_label(pos, &text, &doc) {
-            Some(l) => l,
-            None => return Ok(None),
+        let Some(label) = hover_label(pos, &text, &doc) else {
+            return Ok(None);
         };
         let hover_range = paren_hover_span(pos, &text, &doc).map(|span| span_to_range(&span));
 
@@ -382,9 +343,8 @@ impl LanguageServer for Backend {
         params: DocumentSymbolParams,
     ) -> Result<Option<DocumentSymbolResponse>> {
         let uri = &params.text_document.uri;
-        let doc = match self.doc_info.get(uri) {
-            Some(d) => d,
-            None => return Ok(None),
+        let Some(doc) = self.doc_info.get(uri) else {
+            return Ok(None);
         };
         Ok(Some(DocumentSymbolResponse::Nested(doc.symbols.clone())))
     }
@@ -393,48 +353,53 @@ impl LanguageServer for Backend {
         let uri = &params.text_document_position.text_document.uri;
         let pos = params.text_document_position.position;
 
-        let text = match self.documents.get(uri) {
-            Some(t) => t.clone(),
-            None => return Ok(None),
+        let Some(text) = self.documents.get(uri).map(|t| t.clone()) else {
+            return Ok(None);
         };
-
-        let doc = match self.doc_info.get(uri) {
-            Some(d) => d,
-            None => return Ok(None),
+        let Some(doc) = self.doc_info.get(uri) else {
+            return Ok(None);
         };
-
-        let word = match word_at(&text, pos.line, pos.character) {
-            Some(w) => w.to_string(),
-            None => return Ok(None),
+        let Some(word) = word_at(&text, pos.line, pos.character).map(str::to_string) else {
+            return Ok(None);
         };
 
         let mut locations = Vec::new();
 
-        // Include the definition site if requested
+        // Try scope-aware lookup first: cursor NodeId → canonical binding NodeId.
+        let binding_nid = raw_node_id_at(pos, &*doc).map(|raw| {
+            doc.ref_to_def.get(&raw).copied().unwrap_or(raw)
+        });
+
+        if let Some(bnd) = binding_nid {
+            if let Some(refs) = doc.scoped_refs.get(&bnd) {
+                // Include the definition site if requested
+                if params.context.include_declaration {
+                    if let Some(def_span) = doc.binding_defs.get(&bnd) {
+                        locations.push(Location { uri: uri.clone(), range: span_to_range(def_span) });
+                    }
+                }
+                for r in refs {
+                    locations.push(Location { uri: uri.clone(), range: span_to_range(r) });
+                }
+                if !locations.is_empty() {
+                    return Ok(Some(locations));
+                }
+            }
+        }
+
+        // Fall back to string-based lookup for trait methods, variants, etc.
         if params.context.include_declaration {
             if let Some(def_span) = doc.definitions.get(&word) {
-                locations.push(Location {
-                    uri: uri.clone(),
-                    range: span_to_range(def_span),
-                });
+                locations.push(Location { uri: uri.clone(), range: span_to_range(def_span) });
             }
         }
-
-        // Include all reference sites
         if let Some(refs) = doc.references.get(&word) {
             for r in refs {
-                locations.push(Location {
-                    uri: uri.clone(),
-                    range: span_to_range(r),
-                });
+                locations.push(Location { uri: uri.clone(), range: span_to_range(r) });
             }
         }
 
-        if locations.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(locations))
-        }
+        if locations.is_empty() { Ok(None) } else { Ok(Some(locations)) }
     }
 
     async fn document_highlight(
@@ -444,32 +409,52 @@ impl LanguageServer for Backend {
         let uri = &params.text_document_position_params.text_document.uri;
         let pos = params.text_document_position_params.position;
 
-        let text = match self.documents.get(uri) {
-            Some(t) => t.clone(),
-            None => return Ok(None),
+        let Some(text) = self.documents.get(uri).map(|t| t.clone()) else {
+            return Ok(None);
         };
-
-        let doc = match self.doc_info.get(uri) {
-            Some(d) => d,
-            None => return Ok(None),
+        let Some(doc) = self.doc_info.get(uri) else {
+            return Ok(None);
         };
-
-        let word = match word_at(&text, pos.line, pos.character) {
-            Some(w) => w.to_string(),
-            None => return Ok(None),
+        let Some(word) = word_at(&text, pos.line, pos.character).map(str::to_string) else {
+            return Ok(None);
         };
 
         let mut highlights = Vec::new();
 
-        // Highlight the definition site as Write
+        // Try scope-aware lookup first.
+        let binding_nid = raw_node_id_at(pos, &*doc).map(|raw| {
+            doc.ref_to_def.get(&raw).copied().unwrap_or(raw)
+        });
+
+        if let Some(bnd) = binding_nid {
+            if let Some(refs) = doc.scoped_refs.get(&bnd) {
+                // Highlight the definition site as Write
+                if let Some(def_span) = doc.binding_defs.get(&bnd) {
+                    highlights.push(DocumentHighlight {
+                        range: span_to_range(def_span),
+                        kind: Some(DocumentHighlightKind::WRITE),
+                    });
+                }
+                // Highlight all USE sites as Read
+                for r in refs {
+                    highlights.push(DocumentHighlight {
+                        range: span_to_range(r),
+                        kind: Some(DocumentHighlightKind::READ),
+                    });
+                }
+                if !highlights.is_empty() {
+                    return Ok(Some(highlights));
+                }
+            }
+        }
+
+        // Fall back to string-based (trait methods, variants, etc.)
         if let Some(def_span) = doc.definitions.get(&word) {
             highlights.push(DocumentHighlight {
                 range: span_to_range(def_span),
                 kind: Some(DocumentHighlightKind::WRITE),
             });
         }
-
-        // Highlight all reference sites as Read
         if let Some(refs) = doc.references.get(&word) {
             for r in refs {
                 highlights.push(DocumentHighlight {
@@ -479,47 +464,31 @@ impl LanguageServer for Backend {
             }
         }
 
-        if highlights.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(highlights))
-        }
+        if highlights.is_empty() { Ok(None) } else { Ok(Some(highlights)) }
     }
 
     async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let pos = params.text_document_position_params.position;
 
-        let text = match self.documents.get(uri) {
-            Some(t) => t.clone(),
-            None => return Ok(None),
+        let Some(text) = self.documents.get(uri).map(|t| t.clone()) else {
+            return Ok(None);
+        };
+        let Some(doc) = self.doc_info.get(uri) else {
+            return Ok(None);
         };
 
-        let doc = match self.doc_info.get(uri) {
-            Some(d) => d,
-            None => return Ok(None),
-        };
-
-        // Find the function being called at the cursor position.
-        // Look backwards from cursor to find the function name.
-        let line = match text.lines().nth(pos.line as usize) {
-            Some(l) => l,
-            None => return Ok(None),
+        let Some(line) = text.lines().nth(pos.line as usize) else {
+            return Ok(None);
         };
         let col = hover::utf16_to_byte(line, pos.character);
         let before = &line[..col.min(line.len())];
 
-        // Find the last function-like identifier before the cursor
-        // by scanning backward past arguments.
-        let func_name = find_func_at_cursor(before);
-        let func_name = match func_name {
-            Some(n) => n,
-            None => return Ok(None),
+        let Some(func_name) = find_func_at_cursor(before) else {
+            return Ok(None);
         };
-
-        let scheme = match doc.top_env.lookup(func_name) {
-            Some(s) => s,
-            None => return Ok(None),
+        let Some(scheme) = doc.top_env.lookup(func_name) else {
+            return Ok(None);
         };
 
         // Build the signature string and parameter info
@@ -552,14 +521,11 @@ impl LanguageServer for Backend {
         let uri = &params.text_document.uri;
         let range = params.range;
 
-        let text = match self.documents.get(uri) {
-            Some(t) => t.clone(),
-            None => return Ok(None),
+        let Some(text) = self.documents.get(uri).map(|t| t.clone()) else {
+            return Ok(None);
         };
-
-        let doc = match self.doc_info.get(uri) {
-            Some(d) => d,
-            None => return Ok(None),
+        let Some(doc) = self.doc_info.get(uri) else {
+            return Ok(None);
         };
 
         let mut actions = Vec::new();
@@ -595,7 +561,7 @@ impl LanguageServer for Backend {
         }
 
         // "Fill match arms" — when cursor is on a `match ... in` with missing arms
-        if let Some(action) = fill_match_arms_action(uri, &range, &text, &doc) {
+        if let Some(action) = fill_match_arms_action(uri, &range, &doc) {
             actions.push(CodeActionOrCommand::CodeAction(action));
         }
 
@@ -613,47 +579,38 @@ impl LanguageServer for Backend {
         let uri = &params.text_document.uri;
         let pos = params.position;
 
-        let text = match self.documents.get(uri) {
-            Some(t) => t.clone(),
-            None => return Ok(None),
+        let Some(text) = self.documents.get(uri).map(|t| t.clone()) else {
+            return Ok(None);
+        };
+        let Some(doc) = self.doc_info.get(uri) else {
+            return Ok(None);
+        };
+        let Some(word) = word_at(&text, pos.line, pos.character).map(str::to_string) else {
+            return Ok(None);
         };
 
-        let doc = match self.doc_info.get(uri) {
-            Some(d) => d,
-            None => return Ok(None),
-        };
+        // Allow rename if the cursor is on a known binding (scoped or top-level).
+        let is_renameable = raw_node_id_at(pos, &*doc)
+            .map(|raw| {
+                let bnd = doc.ref_to_def.get(&raw).copied().unwrap_or(raw);
+                doc.binding_defs.contains_key(&bnd)
+            })
+            .unwrap_or(false)
+            || doc.definitions.contains_key(&word);
 
-        let word = match word_at(&text, pos.line, pos.character) {
-            Some(w) => w.to_string(),
-            None => return Ok(None),
-        };
-
-        // Only allow rename if the symbol has a definition in this file
-        if doc.definitions.contains_key(&word) {
-            let line = text.lines().nth(pos.line as usize).unwrap_or("");
-            let col = hover::utf16_to_byte(line, pos.character);
-            let is_ident = |c: char| c.is_alphanumeric() || c == '_';
-            let start = line[..col]
-                .rfind(|c: char| !is_ident(c))
-                .map(|i| i + 1)
-                .unwrap_or(0);
-            let end = line[col..]
-                .find(|c: char| !is_ident(c))
-                .map(|i| i + col)
-                .unwrap_or(line.len());
-            Ok(Some(PrepareRenameResponse::Range(Range {
-                start: Position {
-                    line: pos.line,
-                    character: start as u32,
-                },
-                end: Position {
-                    line: pos.line,
-                    character: end as u32,
-                },
-            })))
-        } else {
-            Ok(None)
+        if !is_renameable {
+            return Ok(None);
         }
+
+        let line = text.lines().nth(pos.line as usize).unwrap_or("");
+        let col = hover::utf16_to_byte(line, pos.character);
+        let is_ident = |c: char| c.is_alphanumeric() || c == '_';
+        let start = line[..col].rfind(|c: char| !is_ident(c)).map(|i| i + 1).unwrap_or(0);
+        let end = line[col..].find(|c: char| !is_ident(c)).map(|i| i + col).unwrap_or(line.len());
+        Ok(Some(PrepareRenameResponse::Range(Range {
+            start: Position { line: pos.line, character: start as u32 },
+            end: Position { line: pos.line, character: end as u32 },
+        })))
     }
 
     async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
@@ -661,50 +618,54 @@ impl LanguageServer for Backend {
         let pos = params.text_document_position.position;
         let new_name = &params.new_name;
 
-        let text = match self.documents.get(uri) {
-            Some(t) => t.clone(),
-            None => return Ok(None),
+        let Some(text) = self.documents.get(uri).map(|t| t.clone()) else {
+            return Ok(None);
+        };
+        let Some(doc) = self.doc_info.get(uri) else {
+            return Ok(None);
+        };
+        let Some(word) = word_at(&text, pos.line, pos.character).map(str::to_string) else {
+            return Ok(None);
         };
 
-        let doc = match self.doc_info.get(uri) {
-            Some(d) => d,
-            None => return Ok(None),
-        };
+        let mut edits: Vec<TextEdit> = Vec::new();
 
-        let word = match word_at(&text, pos.line, pos.character) {
-            Some(w) => w.to_string(),
-            None => return Ok(None),
-        };
-
-        // Collect all locations to rename: definition + references
-        let mut edits = Vec::new();
-
-        if let Some(def_span) = doc.definitions.get(&word) {
-            edits.push(TextEdit {
-                range: span_to_range(def_span),
-                new_text: new_name.clone(),
-            });
+        // Scope-aware rename: resolve cursor → canonical binding, then rename all its sites.
+        let binding_nid = raw_node_id_at(pos, &*doc).map(|raw| {
+            doc.ref_to_def.get(&raw).copied().unwrap_or(raw)
+        });
+        if let Some(bnd) = binding_nid {
+            if let Some(def_span) = doc.binding_defs.get(&bnd) {
+                edits.push(TextEdit { range: span_to_range(def_span), new_text: new_name.clone() });
+            }
+            if let Some(refs) = doc.scoped_refs.get(&bnd) {
+                for r in refs {
+                    edits.push(TextEdit { range: span_to_range(r), new_text: new_name.clone() });
+                }
+            }
+            if !edits.is_empty() {
+                let mut changes = HashMap::new();
+                changes.insert(uri.clone(), edits);
+                return Ok(Some(WorkspaceEdit { changes: Some(changes), ..Default::default() }));
+            }
         }
 
+        // Fall back to string-based rename for top-level / trait / variant names.
+        if let Some(def_span) = doc.definitions.get(&word) {
+            edits.push(TextEdit { range: span_to_range(def_span), new_text: new_name.clone() });
+        }
         if let Some(refs) = doc.references.get(&word) {
             for r in refs {
-                edits.push(TextEdit {
-                    range: span_to_range(r),
-                    new_text: new_name.clone(),
-                });
+                edits.push(TextEdit { range: span_to_range(r), new_text: new_name.clone() });
             }
         }
 
         if edits.is_empty() {
             return Ok(None);
         }
-
         let mut changes = HashMap::new();
         changes.insert(uri.clone(), edits);
-        Ok(Some(WorkspaceEdit {
-            changes: Some(changes),
-            ..Default::default()
-        }))
+        Ok(Some(WorkspaceEdit { changes: Some(changes), ..Default::default() }))
     }
 }
 
@@ -776,12 +737,7 @@ fn extract_param_labels(ty: &Ty) -> Vec<ParameterInformation> {
 
 /// Generate a "Fill match arms" code action if the cursor is inside a
 /// `match ... in` expression with missing variant arms.
-fn fill_match_arms_action(
-    uri: &Url,
-    range: &Range,
-    _text: &str,
-    doc: &DocInfo,
-) -> Option<CodeAction> {
+fn fill_match_arms_action(uri: &Url, range: &Range, doc: &DocInfo) -> Option<CodeAction> {
     // Find a match expression whose span contains the cursor.
     let cursor_line = range.start.line as usize + 1; // Span uses 1-indexed lines
     let match_info = doc.match_exprs.iter().find(|m| {

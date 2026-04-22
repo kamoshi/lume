@@ -75,6 +75,13 @@ pub enum TypeError {
     DuplicateField(String),
     /// A unit variant (no payload) was given a payload pattern.
     UnitVariantWithPayload(String),
+    /// The right-hand side of `<-` in a do-block is not a monadic value.
+    /// e.g. `let a <- 6` where `6 : Num` cannot be a wrapped `m a`.
+    BindNotMonadic {
+        got: Ty,
+        /// Resolved monad name if known, e.g. `"Maybe"`.
+        monad: Option<String>,
+    },
 }
 
 impl fmt::Display for TypeError {
@@ -179,6 +186,21 @@ impl fmt::Display for TypeError {
             }
             TypeError::UnitVariantWithPayload(name) => {
                 write!(f, "variant '{}' takes no payload, but a pattern was given", name)
+            }
+            TypeError::BindNotMonadic { got, monad } => {
+                match monad {
+                    Some(m) => write!(
+                        f,
+                        "`<-` expects a `{} _` value, got `{}` - wrap it: `{} {}`",
+                        m, got, m, got
+                    ),
+                    None => write!(
+                        f,
+                        "`<-` expects a wrapped monadic value, got `{}` - \
+                         did you mean `let .. = {}` (plain binding) or `pure {}` (lift into the monad)?",
+                        got, got, got
+                    ),
+                }
             }
         }
     }
