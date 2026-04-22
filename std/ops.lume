@@ -1,0 +1,33 @@
+-- lume no_prelude internal
+
+trait Add a {
+  let (+) infixl 6 : a -> a -> a
+}
+
+use Add in Num {
+  let (+) = float_add
+}
+
+trait Sub a {
+  let (-) infixl 6 : a -> a -> a
+}
+
+use Sub in Num {
+  let (-) = float_sub
+}
+
+trait Mul a {
+  let (*) infixl 7 : a -> a -> a
+}
+
+use Mul in Num {
+  let (*) = float_mul
+}
+
+trait Div a {
+  let (/) infixl 7 : a -> a -> a
+}
+
+use Div in Num {
+  let (/) = float_div
+}

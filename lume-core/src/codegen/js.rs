@@ -598,10 +598,6 @@ impl Emitter {
             }
             other => {
                 let js = match other {
-                    ir::BinOp::Add => " + ",
-                    ir::BinOp::Sub => " - ",
-                    ir::BinOp::Mul => " * ",
-                    ir::BinOp::Div => " / ",
                     ir::BinOp::Eq => " === ",
                     ir::BinOp::NotEq => " !== ",
                     ir::BinOp::Lt => " < ",

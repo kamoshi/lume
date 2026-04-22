@@ -7,7 +7,10 @@ use crate::lexer::Lexer;
 use crate::parser;
 use crate::types::error::{TypeError, TypeErrorAt};
 use crate::types::{
-    infer::{build_variant_env, builtin_env, inject_internal_builtins, inject_map_builtins, Checker, VariantEnv},
+    infer::{
+        build_variant_env, builtin_env, inject_internal_builtins, inject_map_builtins, Checker,
+        VariantEnv,
+    },
     Scheme, Subst,
 };
 
@@ -17,6 +20,7 @@ use crate::types::{
 /// This is the single source of truth for tooling (LSP completions, WASM, etc.).
 pub const STDLIB_MODULES: &[&str] = &[
     "lume:core",
+    "lume:ops",
     "lume:list",
     "lume:map",
     "lume:math",
@@ -134,6 +138,7 @@ fn is_use_assignment(s: &str) -> bool {
 pub fn stdlib_source(name: &str) -> Option<&'static str> {
     match name {
         "lume:core" => Some(include_str!("../../std/core.lume")),
+        "lume:ops" => Some(include_str!("../../std/ops.lume")),
         "lume:list" => Some(include_str!("../../std/list.lume")),
         "lume:map" => Some(include_str!("../../std/map.lume")),
         "lume:text" => Some(include_str!("../../std/text.lume")),
@@ -196,9 +201,13 @@ pub fn parse_pragmas(src: &str) -> (crate::ast::ModulePragmas, Vec<PragmaWarning
         if trimmed.is_empty() {
             continue;
         }
-        let Some(rest) = trimmed.strip_prefix("--") else { break };
+        let Some(rest) = trimmed.strip_prefix("--") else {
+            break;
+        };
         let rest = rest.trim();
-        let Some(directives) = rest.strip_prefix("lume") else { continue };
+        let Some(directives) = rest.strip_prefix("lume") else {
+            continue;
+        };
         if !directives.is_empty() && !directives.starts_with(' ') {
             continue;
         }
@@ -366,7 +375,12 @@ impl Loader {
         var_env.merge(prog_vars.clone());
         let mut checker = Checker::with_subst(var_env, subst);
         let export_ty = checker.check_program(program, env, Some(path), self)?;
-        let scheme = generalise_toplevel(&checker.subst, &export_ty, &checker.constraint_map, &checker.trait_env);
+        let scheme = generalise_toplevel(
+            &checker.subst,
+            &export_ty,
+            &checker.constraint_map,
+            &checker.trait_env,
+        );
         // Export all in-scope traits (local + imported) so modules that
         // re-export (e.g. prelude re-exporting core) propagate trait defs.
         let trait_env = checker.trait_env;
@@ -374,10 +388,15 @@ impl Loader {
         // downstream duplicate-impl detection can distinguish diamond imports
         // (same source) from independent duplicates (different sources).
         let path_str = path.to_string_lossy().to_string();
-        let impl_env: HashMap<(String, String), String> = checker.impl_env
+        let impl_env: HashMap<(String, String), String> = checker
+            .impl_env
             .into_iter()
             .map(|(k, v)| {
-                if v == "<local>" { (k, path_str.clone()) } else { (k, v) }
+                if v == "<local>" {
+                    (k, path_str.clone())
+                } else {
+                    (k, v)
+                }
             })
             .collect();
         Ok(ModuleExports {
@@ -406,8 +425,8 @@ pub fn generalise_toplevel(
     let mut seen = std::collections::HashSet::new();
     let constraints: Vec<(String, crate::types::TyVar)> = constraint_map
         .iter()
-        .filter_map(|(trait_name, fresh_var)| {
-            match subst.apply(&Ty::Var(*fresh_var)) {
+        .filter_map(
+            |(trait_name, fresh_var)| match subst.apply(&Ty::Var(*fresh_var)) {
                 Ty::Var(v) if generalised.contains(&v) => {
                     let pair = (trait_name.clone(), v);
                     if seen.insert(pair.clone()) {
@@ -417,8 +436,8 @@ pub fn generalise_toplevel(
                     }
                 }
                 _ => None,
-            }
-        })
+            },
+        )
         .collect();
     let mut constraint_names = std::collections::HashMap::new();
     for (trait_name, var) in &constraints {

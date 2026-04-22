@@ -4,6 +4,8 @@
 --   apply maps Some f over Some x, and short-circuits on None
 
 use core = "lume:core"
+use _ = "lume:ops"
+
 
 -- wrap: lift a value
 let wrapped = Applicative.wrap 42

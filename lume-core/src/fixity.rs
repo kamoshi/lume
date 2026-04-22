@@ -302,10 +302,6 @@ fn check_flat_for_errors(items: &[FlatItem], table: &FixityTable) -> Result<(), 
 fn op_display(op: &BinOp) -> &str {
     match op {
         BinOp::Pipe => "|>",
-        BinOp::Add => "+",
-        BinOp::Sub => "-",
-        BinOp::Mul => "*",
-        BinOp::Div => "/",
         BinOp::Eq => "==",
         BinOp::NotEq => "!=",
         BinOp::Lt => "<",
@@ -335,8 +331,6 @@ pub fn bp_for_op(op: &BinOp, table: &FixityTable) -> (u8, u8) {
         BinOp::Eq | BinOp::NotEq => (40, 41),
         BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq => (42, 43),
         BinOp::Concat => (50, 50),
-        BinOp::Add | BinOp::Sub => (60, 61),
-        BinOp::Mul | BinOp::Div => (70, 71),
         BinOp::Custom(s) => table.get(s.as_str()).map(|e| e.bps).unwrap_or((50, 50)),
     }
 }

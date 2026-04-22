@@ -5,6 +5,8 @@
 -- Models safe chaining where any None short-circuits the rest.
 
 use core = "lume:core"
+use _ = "lume:ops"
+
 
 -- and_then Some -> applies the function
 let r1 = Monad.and_then (Some 21) (x -> Some (x * 2))

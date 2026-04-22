@@ -1194,8 +1194,6 @@ fn binop_prec(op: &BinOp) -> u8 {
         BinOp::And => 30,
         BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq => 40,
         BinOp::Concat | BinOp::Custom(_) => 45,
-        BinOp::Add | BinOp::Sub => 50,
-        BinOp::Mul | BinOp::Div => 55,
     }
 }
 
@@ -1210,10 +1208,6 @@ fn binop_str(op: &BinOp) -> &str {
         BinOp::Gt => ">",
         BinOp::LtEq => "<=",
         BinOp::GtEq => ">=",
-        BinOp::Add => "+",
-        BinOp::Sub => "-",
-        BinOp::Mul => "*",
-        BinOp::Div => "/",
         BinOp::Concat => "++",
         BinOp::Custom(s) => s.as_str(),
     }

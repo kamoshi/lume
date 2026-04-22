@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use crate::ast::TopItem;
+use crate::ast::{self, TopItem};
 use crate::bundle::BundleModule;
 use crate::codegen::IrModule;
 use crate::fixity;
@@ -94,6 +94,13 @@ pub fn lower_bundle(
         let fixities = fixity::collect_fixities(b);
         fixity::reassociate_bundle(b, &fixities)
             .map_err(|e| format!("fixity error: {e}"))?;
+    }
+
+    // Re-assign node IDs after fixity re-association: the fixity pass builds new
+    // Binary nodes with id=0, so IDs must be made unique again before type inference
+    // uses them as keys in resolved_trait_methods / resolved_op_types.
+    for m in b.iter_mut() {
+        ast::assign_node_ids(&mut m.program);
     }
 
     // ── 2. Lower and optimise each module ────────────────────────────────────

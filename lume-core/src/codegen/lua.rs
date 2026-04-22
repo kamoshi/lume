@@ -1274,10 +1274,6 @@ impl Emitter {
             }
             other => {
                 let lua = match other {
-                    BinOp::Add => " + ",
-                    BinOp::Sub => " - ",
-                    BinOp::Mul => " * ",
-                    BinOp::Div => " / ",
                     BinOp::Eq => " == ",
                     BinOp::NotEq => " ~= ",
                     BinOp::Lt => " < ",

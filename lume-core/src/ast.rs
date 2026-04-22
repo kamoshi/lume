@@ -366,12 +366,6 @@ pub enum BinOp {
     // Pipe
     Pipe, // |>
 
-    // Arithmetic
-    Add,
-    Sub,
-    Mul,
-    Div,
-
     // Comparison
     Eq,
     NotEq,

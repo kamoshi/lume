@@ -1682,15 +1682,6 @@ impl Checker {
         right: &Expr,
     ) -> Result<Ty, TypeErrorAt> {
         match op {
-            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => {
-                let tl = self.infer(env, left)?;
-                let tl = self.subst.apply(&tl);
-                self.unify_at(tl, Ty::Num, &left.span)?;
-                let tr = self.infer(env, right)?;
-                let tr = self.subst.apply(&tr);
-                self.unify_at(tr, Ty::Num, &right.span)?;
-                Ok(Ty::Num)
-            }
             BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq => {
                 let tl = self.infer(env, left)?;
                 let tl = self.subst.apply(&tl);

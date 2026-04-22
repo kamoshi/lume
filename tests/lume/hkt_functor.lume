@@ -2,6 +2,9 @@
 -- Tests higher-kinded Functor trait: f is a type constructor (* -> *).
 -- This is the canonical HKT test: `f a` unifies with `Maybe Num` to bind f=Maybe, a=Num.
 
+use _ = "lume:ops"
+
+
 let (++) = concat_text
 
 trait Functor f {

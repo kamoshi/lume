@@ -3,6 +3,7 @@
 -- type class hierarchy and polymorphic functions.
 
 use { id, (?>) } = "lume:core"
+use ops = "lume:ops"
 
 pub {
   id,

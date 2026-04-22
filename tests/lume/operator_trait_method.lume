@@ -1,6 +1,9 @@
 -- lume internal no_prelude
 -- Tests defining operators as trait methods and resolving them through traits.
 
+use _ = "lume:ops"
+
+
 let (++) = concat_text
 
 trait Mappable f {

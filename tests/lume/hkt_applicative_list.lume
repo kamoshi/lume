@@ -4,6 +4,8 @@
 --   apply applies each function to each value (cartesian product)
 
 use core = "lume:core"
+use _ = "lume:ops"
+
 
 -- wrap: singleton list
 let w = Applicative.wrap 7

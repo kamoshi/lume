@@ -377,7 +377,7 @@ mod tests {
     #[test]
     fn parse_binary_add() {
         let expr = parse_expr("1 + 2");
-        assert!(matches!(expr.kind, ExprKind::Binary { op: BinOp::Add, .. }));
+        assert!(matches!(expr.kind, ExprKind::Binary { op: BinOp::Custom(ref s), .. } if s == "+"));
     }
 
     #[test]
@@ -385,10 +385,10 @@ mod tests {
         // 1 + 2 * 3  should be  1 + (2 * 3)
         let expr = parse_expr("1 + 2 * 3");
         if let ExprKind::Binary { op, right, .. } = expr.kind {
-            assert_eq!(op, BinOp::Add);
+            assert_eq!(op, BinOp::Custom("+".to_string()));
             assert!(matches!(
                 right.kind,
-                ExprKind::Binary { op: BinOp::Mul, .. }
+                ExprKind::Binary { op: BinOp::Custom(ref s), .. } if s == "*"
             ));
         } else {
             panic!("expected Binary");

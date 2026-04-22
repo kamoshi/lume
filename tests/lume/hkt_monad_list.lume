@@ -4,6 +4,8 @@
 -- Each element is expanded by f and the results are concatenated.
 
 use core = "lume:core"
+use _ = "lume:ops"
+
 
 -- and_then: each element expands to two elements
 let r1 = Monad.and_then [1, 2, 3] (x -> [x, x * 10])

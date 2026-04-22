@@ -3,6 +3,9 @@
 -- Maps over the Ok (success) branch, passes Err through unchanged.
 -- Convention: Result e a = Err e | Ok a  (error param first, like Haskell's Either)
 
+use _ = "lume:ops"
+
+
 trait Functor f {
   let map : (a -> b) -> f a -> f b
 }

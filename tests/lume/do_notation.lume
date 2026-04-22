@@ -2,6 +2,8 @@
 -- Tests `do` notation desugaring for the Maybe monad.
 
 use core = "lume:core"
+use _ = "lume:ops"
+
 
 -- Safe integer division: returns None if denominator is zero.
 let safeDiv = num -> den ->

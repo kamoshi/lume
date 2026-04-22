@@ -146,7 +146,7 @@ struct Cx<'a> {
     type_env: &'a TypeEnv,
     global: &'a GlobalCtx,
     /// Inside a constrained binding: maps each TyVar to `(dict_param_name, trait_name)`.
-    dict_params: HashMap<TyVar, (String, String)>,
+    dict_params: HashMap<(TyVar, String), String>,
     /// Ident nodes that the type checker resolved to an unambiguous trait method.
     resolved_trait_methods: &'a HashMap<NodeId, (String, String)>,
     /// Operator expressions resolved through traits — stores the operator's instantiated type.
@@ -154,7 +154,7 @@ struct Cx<'a> {
 }
 
 impl<'a> Cx<'a> {
-    fn with_dict_params(&self, dict_params: HashMap<TyVar, (String, String)>) -> Cx<'a> {
+    fn with_dict_params(&self, dict_params: HashMap<(TyVar, String), String>) -> Cx<'a> {
         Cx {
             node_types: self.node_types,
             type_env: self.type_env,
@@ -180,14 +180,14 @@ impl<'a> Cx<'a> {
 
         let body = if let Some(scheme) = scheme {
             if !scheme.constraints.is_empty() {
-                let mut dict_params: HashMap<TyVar, (String, String)> = HashMap::new();
+                let mut dict_params: HashMap<(TyVar, String), String> = HashMap::new();
                 let mut dict_param_list: Vec<(String, TyVar, String)> = Vec::new();
                 let mut counter: HashMap<String, usize> = HashMap::new();
                 for (trait_name, var) in &scheme.constraints {
                     let idx = counter.entry(trait_name.clone()).or_insert(0);
                     let param_name = format!("__dict_{}_{}", trait_name, idx);
                     *idx += 1;
-                    dict_params.insert(*var, (param_name.clone(), trait_name.clone()));
+                    dict_params.insert((*var, trait_name.clone()), param_name.clone());
                     dict_param_list.push((param_name, *var, trait_name.clone()));
                 }
 
@@ -222,14 +222,14 @@ impl<'a> Cx<'a> {
 
         if has_constraints {
             let scheme = scheme.unwrap();
-            let mut dict_params_map: HashMap<TyVar, (String, String)> = HashMap::new();
+            let mut dict_params_map: HashMap<(TyVar, String), String> = HashMap::new();
             let mut dict_param_list: Vec<(String, TyVar, String)> = Vec::new();
             let mut counter: HashMap<String, usize> = HashMap::new();
             for (trait_name, var) in &scheme.constraints {
                 let idx = counter.entry(trait_name.clone()).or_insert(0);
                 let param_name = format!("__dict_{}_{}", trait_name, idx);
                 *idx += 1;
-                dict_params_map.insert(*var, (param_name.clone(), trait_name.clone()));
+                dict_params_map.insert((*var, trait_name.clone()), param_name.clone());
                 dict_param_list.push((param_name, *var, trait_name.clone()));
             }
 
@@ -451,6 +451,11 @@ impl<'a> Cx<'a> {
                     } else {
                         ir::Expr::Var(name)
                     }
+                } else if let Some(op_ty) = self.resolved_op_types.get(&id) {
+                    // User-defined constrained operator (e.g. `let (@@) : Mul a => a -> a -> a`).
+                    // Use the operator's instantiated function type for dict arg resolution.
+                    self.insert_dict_args_with_ty(&name, op_ty)
+                        .unwrap_or_else(|| ir::Expr::Var(name.clone()))
                 } else {
                     ir::Expr::Var(name)
                 };
@@ -665,19 +670,19 @@ impl<'a> Cx<'a> {
         method_name: &str,
         call_ty: &Ty,
     ) -> Option<ir::Expr> {
-        let type_name = self.extract_type_param(trait_name, method_name, call_ty)?;
-
-        // Exact match in concrete impls.
-        if let Some(entry) = self.global.impls.get(&(trait_name.to_string(), type_name.clone())) {
-            let dict_expr = make_dict_ref(&entry.dict_ident, &entry.module_var);
-            return Some(ir::Expr::Field(Box::new(dict_expr), method_name.to_string()));
-        }
-
-        // Fallback: parameterized impls.
         let trait_def = self.global.traits.get(trait_name)?;
         let method_decl = trait_def.methods.iter().find(|m| m.name == method_name)?;
         let type_at_param = find_ty_at_param(&method_decl.ty, &trait_def.type_param, call_ty)?;
 
+        // Exact match in concrete impls.
+        if let Some(type_name) = ty_canonical_name(&type_at_param) {
+            if let Some(entry) = self.global.impls.get(&(trait_name.to_string(), type_name)) {
+                let dict_expr = make_dict_ref(&entry.dict_ident, &entry.module_var);
+                return Some(ir::Expr::Field(Box::new(dict_expr), method_name.to_string()));
+            }
+        }
+
+        // Parameterized impls (e.g. `List a` or `Maybe a`).
         for pi in &self.global.param_impls {
             if pi.trait_name != trait_name {
                 continue;
@@ -702,11 +707,8 @@ impl<'a> Cx<'a> {
         }
 
         // Dict param resolution (polymorphic context).
-        let trait_def2 = self.global.traits.get(trait_name)?;
-        let method_decl2 = trait_def2.methods.iter().find(|m| m.name == method_name)?;
-        let ty_at_param = find_ty_at_param(&method_decl2.ty, &trait_def2.type_param, call_ty)?;
-        if let Ty::Var(v) = ty_at_param {
-            if let Some((dict_name, _)) = self.dict_params.get(&v) {
+        if let Ty::Var(v) = &type_at_param {
+            if let Some(dict_name) = self.dict_params.get(&(*v, trait_name.to_string())) {
                 return Some(ir::Expr::Field(
                     Box::new(ir::Expr::Var(dict_name.clone())),
                     method_name.to_string(),
@@ -728,7 +730,7 @@ impl<'a> Cx<'a> {
         let method_decl = trait_def.methods.iter().find(|m| m.name == method_name)?;
         let ty_at_param = find_ty_at_param(&method_decl.ty, &trait_def.type_param, call_ty)?;
         if let Ty::Var(v) = ty_at_param {
-            if let Some((dict_name, _)) = self.dict_params.get(&v) {
+            if let Some(dict_name) = self.dict_params.get(&(v, trait_name.to_string())) {
                 return Some(ir::Expr::Field(
                     Box::new(ir::Expr::Var(dict_name.clone())),
                     method_name.to_string(),
@@ -759,7 +761,7 @@ impl<'a> Cx<'a> {
         for (trait_name, var) in &scheme.constraints {
             let dict_arg = if let Some(concrete_ty) = var_map.get(var) {
                 if let Ty::Var(v) = concrete_ty {
-                    if let Some((dict_name, _)) = self.dict_params.get(v) {
+                    if let Some(dict_name) = self.dict_params.get(&(*v, trait_name.clone())) {
                         ir::Expr::Var(dict_name.clone())
                     } else {
                         // Type variable not in dict_params — the constraint is
@@ -786,6 +788,53 @@ impl<'a> Cx<'a> {
             } else {
                 // Constraint variable not in var_map — type is unknown at this
                 // site (still polymorphic); skip gracefully.
+                continue;
+            };
+
+            any_dict = true;
+            result = ir::Expr::App(Box::new(result), Box::new(dict_arg));
+        }
+
+        if any_dict { Some(result) } else { None }
+    }
+
+    /// Like `insert_dict_args` but uses the supplied `call_ty` instead of
+    /// looking it up from `node_types`.  Used for binary operator call sites
+    /// where the operator's instantiated function type (`resolved_op_types`)
+    /// is needed for correct constraint resolution.
+    fn insert_dict_args_with_ty(&self, name: &str, call_ty: &Ty) -> Option<ir::Expr> {
+        let scheme = self.type_env.lookup(name)?;
+        if scheme.constraints.is_empty() {
+            return None;
+        }
+
+        let mut var_map: HashMap<TyVar, Ty> = HashMap::new();
+        match_types(&scheme.ty, call_ty, &mut var_map);
+
+        let mut result = ir::Expr::Var(name.to_string());
+        let mut any_dict = false;
+
+        for (trait_name, var) in &scheme.constraints {
+            let dict_arg = if let Some(concrete_ty) = var_map.get(var) {
+                if let Ty::Var(v) = concrete_ty {
+                    if let Some(dict_name) = self.dict_params.get(&(*v, trait_name.clone())) {
+                        ir::Expr::Var(dict_name.clone())
+                    } else {
+                        continue;
+                    }
+                } else if let Some(arg) = self.resolve_dict_arg(trait_name, concrete_ty) {
+                    arg
+                } else {
+                    ir::Expr::App(
+                        Box::new(ir::Expr::Var("__error".into())),
+                        Box::new(ir::Expr::Str(format!(
+                            "missing impl: {} for {}",
+                            trait_name,
+                            ty_canonical_name(concrete_ty).unwrap_or_else(|| "unknown".into())
+                        ))),
+                    )
+                }
+            } else {
                 continue;
             };
 
