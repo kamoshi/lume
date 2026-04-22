@@ -29,10 +29,12 @@ pub enum Token {
     In,
     Trait,     // `trait`
     Match,     // `match`
+    Do,        // `do`
 
     // Operators
     Arrow,      // ->
     FatArrow,   // =>
+    LeftArrow,  // <-
     Pipe,       // |>
     Concat,     // ++
     Plus,       // +
@@ -363,6 +365,7 @@ impl<'src> Lexer<'src> {
             ">" => Token::Gt,
             "<=" => Token::LtEq,
             ">=" => Token::GtEq,
+            "<-" => Token::LeftArrow,
             "|>" => Token::Pipe,
             "||" => Token::PipePipe,
             "|" => Token::Bar,
@@ -444,6 +447,7 @@ impl<'src> Lexer<'src> {
             "in" => Token::In,
             "trait" => Token::Trait,
             "match" => Token::Match,
+            "do" => Token::Do,
             _ => Token::Ident(word.to_string()),
         })
     }

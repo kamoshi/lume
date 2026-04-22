@@ -30,7 +30,7 @@
 use std::collections::HashMap;
 
 use crate::ast::{
-    BinOp, Expr, ExprKind, FixityAssoc, ListEntry, MatchArm, Program, RecordEntry, TopItem,
+    BinOp, DoStmt, Expr, ExprKind, FixityAssoc, ListEntry, MatchArm, Program, RecordEntry, TopItem,
 };
 use crate::bundle::BundleModule;
 use crate::error::Span;
@@ -480,6 +480,19 @@ fn map_children_owned(
         ExprKind::Sequence(exprs) => ExprKind::Sequence(
             exprs.into_iter().map(f).collect::<Result<Vec<_>, _>>()?,
         ),
+
+        ExprKind::Do { monad, stmts, tail } => ExprKind::Do {
+            monad,
+            stmts: stmts
+                .into_iter()
+                .map(|stmt| match stmt {
+                    DoStmt::Let { pattern, value } => f(value).map(|v| DoStmt::Let { pattern, value: v }),
+                    DoStmt::Bind { pattern, value } => f(value).map(|v| DoStmt::Bind { pattern, value: v }),
+                    DoStmt::Seq(e) => f(e).map(DoStmt::Seq),
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            tail: Box::new(f(*tail)?),
+        },
     };
     Ok(Expr { id, kind, span })
 }

@@ -1173,6 +1173,7 @@ fn fmt_expr_binding_rhs(expr: &Expr, ind: usize) -> Doc {
 fn expr_prec(expr: &Expr) -> u8 {
     match &expr.kind {
         ExprKind::Sequence(_) => 0,
+        ExprKind::Do { .. } => 0,
         ExprKind::Lambda { .. } => 0,
         ExprKind::LetIn { .. } => 1,
         ExprKind::If { .. } => 1,
@@ -1417,6 +1418,47 @@ fn fmt_expr_inner(expr: &Expr) -> Doc {
                 }
             }
             concat_all(parts)
+        }
+
+        ExprKind::Do { monad, stmts, tail } => {
+            let header = match monad {
+                Some((m, _)) => text(format!("do {} {{", m)),
+                None => text("do {"),
+            };
+            let mut body_parts: Vec<Doc> = Vec::new();
+            for stmt in stmts {
+                match stmt {
+                    DoStmt::Let { pattern, value } => {
+                        body_parts.push(concat_all(vec![
+                            text("let "),
+                            fmt_pattern(pattern),
+                            text(" = "),
+                            fmt_expr(value, 0),
+                            text(";"),
+                        ]));
+                    }
+                    DoStmt::Bind { pattern, value } => {
+                        body_parts.push(concat_all(vec![
+                            text("let "),
+                            fmt_pattern(pattern),
+                            text(" <- "),
+                            fmt_expr(value, 0),
+                            text(";"),
+                        ]));
+                    }
+                    DoStmt::Seq(e) => {
+                        body_parts.push(concat(fmt_expr(e, 0), text(";")));
+                    }
+                }
+                body_parts.push(hardline());
+            }
+            body_parts.push(fmt_expr(tail, 0));
+            concat_all(vec![
+                header,
+                nest(2, concat(hardline(), concat_all(body_parts))),
+                hardline(),
+                text("}"),
+            ])
         }
     }
 }

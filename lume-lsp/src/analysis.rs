@@ -416,6 +416,20 @@ fn collect_expr_semantic(
                 collect_expr_semantic(e, node_types, top_env, variant_env, false, out);
             }
         }
+        ExprKind::Do { stmts, tail, .. } => {
+            for stmt in stmts {
+                match stmt {
+                    ast::DoStmt::Let { pattern, value } | ast::DoStmt::Bind { pattern, value } => {
+                        collect_pattern_semantic(pattern, node_types, top_env, variant_env, false, out);
+                        collect_expr_semantic(value, node_types, top_env, variant_env, false, out);
+                    }
+                    ast::DoStmt::Seq(e) => {
+                        collect_expr_semantic(e, node_types, top_env, variant_env, false, out);
+                    }
+                }
+            }
+            collect_expr_semantic(tail, node_types, top_env, variant_env, false, out);
+        }
     }
 }
 
@@ -621,6 +635,15 @@ fn collect_trait_calls(program: &Program) -> HashMap<NodeId, (String, String)> {
             }
             ExprKind::LetIn { value, body, .. } => { walk(value, out); walk(body, out); }
             ExprKind::Sequence(exprs) => exprs.iter().for_each(|e| walk(e, out)),
+            ExprKind::Do { stmts, tail, .. } => {
+                for stmt in stmts {
+                    match stmt {
+                        ast::DoStmt::Let { value, .. } | ast::DoStmt::Bind { value, .. } => walk(value, out),
+                        ast::DoStmt::Seq(e) => walk(e, out),
+                    }
+                }
+                walk(tail, out);
+            }
             _ => {}
         }
     }
@@ -784,6 +807,15 @@ fn collect_paren_spans(program: &Program) -> HashMap<usize, Vec<(Span, NodeId)>>
                 walk(body, out);
             }
             ExprKind::Sequence(exprs) => exprs.iter().for_each(|e| walk(e, out)),
+            ExprKind::Do { stmts, tail, .. } => {
+                for stmt in stmts {
+                    match stmt {
+                        ast::DoStmt::Let { value, .. } | ast::DoStmt::Bind { value, .. } => walk(value, out),
+                        ast::DoStmt::Seq(e) => walk(e, out),
+                    }
+                }
+                walk(tail, out);
+            }
             _ => {}
         }
     }
@@ -886,11 +918,115 @@ fn collect_expr_spans(expr: &Expr, out: &mut Vec<(Span, NodeId)>) {
             collect_expr_spans(body, out);
         }
         ExprKind::Sequence(exprs) => exprs.iter().for_each(|e| collect_expr_spans(e, out)),
+        ExprKind::Do { stmts, tail, .. } => {
+            for stmt in stmts {
+                match stmt {
+                    ast::DoStmt::Let { pattern, value } | ast::DoStmt::Bind { pattern, value } => {
+                        collect_pattern_spans(pattern, out);
+                        collect_expr_spans(value, out);
+                    }
+                    ast::DoStmt::Seq(e) => collect_expr_spans(e, out),
+                }
+            }
+            collect_expr_spans(tail, out);
+        }
         _ => {}
     }
 }
 
 // ── Extra hovers (trait declarations, type defs, etc.) ───────────────────────
+
+/// Walk an expression recursively and collect `(span, monad_name)` pairs for
+/// every `do MonadName { ... }` block.
+fn collect_do_monad_spans(expr: &Expr, out: &mut Vec<(Span, String)>) {
+    match &expr.kind {
+        ExprKind::Do { monad: Some((name, span)), stmts, tail } => {
+            out.push((span.clone(), name.clone()));
+            for stmt in stmts {
+                match stmt {
+                    ast::DoStmt::Let { value, .. } | ast::DoStmt::Bind { value, .. } => {
+                        collect_do_monad_spans(value, out);
+                    }
+                    ast::DoStmt::Seq(e) => collect_do_monad_spans(e, out),
+                }
+            }
+            collect_do_monad_spans(tail, out);
+        }
+        ExprKind::Do { monad: None, stmts, tail } => {
+            for stmt in stmts {
+                match stmt {
+                    ast::DoStmt::Let { value, .. } | ast::DoStmt::Bind { value, .. } => {
+                        collect_do_monad_spans(value, out);
+                    }
+                    ast::DoStmt::Seq(e) => collect_do_monad_spans(e, out),
+                }
+            }
+            collect_do_monad_spans(tail, out);
+        }
+        ExprKind::Lambda { body, .. } => collect_do_monad_spans(body, out),
+        ExprKind::Apply { func, arg } => {
+            collect_do_monad_spans(func, out);
+            collect_do_monad_spans(arg, out);
+        }
+        ExprKind::Paren(inner) => collect_do_monad_spans(inner, out),
+        ExprKind::Binary { left, right, .. } => {
+            collect_do_monad_spans(left, out);
+            collect_do_monad_spans(right, out);
+        }
+        ExprKind::Unary { operand, .. } => collect_do_monad_spans(operand, out),
+        ExprKind::If { cond, then_branch, else_branch } => {
+            collect_do_monad_spans(cond, out);
+            collect_do_monad_spans(then_branch, out);
+            collect_do_monad_spans(else_branch, out);
+        }
+        ExprKind::LetIn { value, body, .. } => {
+            collect_do_monad_spans(value, out);
+            collect_do_monad_spans(body, out);
+        }
+        ExprKind::Sequence(exprs) => exprs.iter().for_each(|e| collect_do_monad_spans(e, out)),
+        ExprKind::MatchExpr { scrutinee, arms } => {
+            collect_do_monad_spans(scrutinee, out);
+            for a in arms {
+                if let Some(g) = &a.guard {
+                    collect_do_monad_spans(g, out);
+                }
+                collect_do_monad_spans(&a.body, out);
+            }
+        }
+        ExprKind::Match(arms) => {
+            for a in arms {
+                if let Some(g) = &a.guard {
+                    collect_do_monad_spans(g, out);
+                }
+                collect_do_monad_spans(&a.body, out);
+            }
+        }
+        ExprKind::Variant { payload: Some(p), .. } => collect_do_monad_spans(p, out),
+        ExprKind::FieldAccess { record, .. } => collect_do_monad_spans(record, out),
+        ExprKind::List { entries } => {
+            for e in entries {
+                match e {
+                    ast::ListEntry::Elem(x) | ast::ListEntry::Spread(x) => {
+                        collect_do_monad_spans(x, out);
+                    }
+                }
+            }
+        }
+        ExprKind::Record { entries } => {
+            for e in entries {
+                match e {
+                    ast::RecordEntry::Field(f) => {
+                        if let Some(v) = &f.value {
+                            collect_do_monad_spans(v, out);
+                        }
+                    }
+                    ast::RecordEntry::Spread(v) => collect_do_monad_spans(v, out),
+                }
+            }
+        }
+        _ => {}
+    }
+}
 
 /// Build span-based hover entries for nodes that the type checker doesn't track
 /// in `node_types` — e.g. trait method declarations, trait names, impl headers.
@@ -1026,6 +1162,70 @@ fn collect_extra_hovers(
             _ => {}
         }
     }
+
+    // ── do Monad { ... } explicit monad name hovers ──────────────────────────
+    // Build lookup tables from what we already know about this program.
+    let mut type_labels: HashMap<String, String> = HashMap::new();
+    for item in &program.items {
+        if let TopItem::TypeDef(td) = item {
+            let mut label = format!("type {} ", td.name);
+            for p in &td.params {
+                label.push_str(p);
+                label.push(' ');
+            }
+            label.push('=');
+            for v in &td.variants {
+                label.push_str("\n  | ");
+                label.push_str(&v.name);
+                if let Some(ref wraps) = v.wraps {
+                    label.push(' ');
+                    label.push_str(&wraps.to_string());
+                }
+            }
+            type_labels.insert(td.name.clone(), label);
+        }
+    }
+    // Collect Monad impls by type name.
+    let mut monad_impls: HashMap<String, String> = HashMap::new();
+    for item in &program.items {
+        if let TopItem::ImplDef(id) = item {
+            if id.trait_name == "Monad" {
+                monad_impls.insert(id.type_name.clone(), format!("use Monad in {}", id.type_name));
+            }
+        }
+    }
+
+    // Walk every expression in the program looking for `do Name { ... }`.
+    let mut do_monads: Vec<(Span, String)> = Vec::new();
+    for item in &program.items {
+        match item {
+            TopItem::Binding(b) => collect_do_monad_spans(&b.value, &mut do_monads),
+            TopItem::BindingGroup(bs) => {
+                bs.iter().for_each(|b| collect_do_monad_spans(&b.value, &mut do_monads));
+            }
+            TopItem::ImplDef(id) => {
+                id.methods.iter().for_each(|m| collect_do_monad_spans(&m.value, &mut do_monads));
+            }
+            _ => {}
+        }
+    }
+    collect_do_monad_spans(&program.exports, &mut do_monads);
+
+    for (span, name) in do_monads {
+        // Build a label: show type def if known, then Monad impl info.
+        let mut label = if let Some(tl) = type_labels.get(&name) {
+            tl.clone()
+        } else {
+            format!("type {}", name)
+        };
+        if let Some(impl_label) = monad_impls.get(&name) {
+            label.push_str(&format!("\n\n{}", impl_label));
+        } else {
+            label.push_str(&format!("\n\n-- (Monad {} required)", name));
+        }
+        out.push((span, label));
+    }
+
     out
 }
 
@@ -1470,6 +1670,17 @@ fn collect_refs_expr(expr: &Expr, out: &mut HashMap<String, Vec<Span>>) {
             collect_refs_expr(body, out);
         }
         ExprKind::Sequence(exprs) => exprs.iter().for_each(|e| collect_refs_expr(e, out)),
+        ExprKind::Do { stmts, tail, .. } => {
+            for stmt in stmts {
+                match stmt {
+                    ast::DoStmt::Let { value, .. } | ast::DoStmt::Bind { value, .. } => {
+                        collect_refs_expr(value, out);
+                    }
+                    ast::DoStmt::Seq(e) => collect_refs_expr(e, out),
+                }
+            }
+            collect_refs_expr(tail, out);
+        }
         _ => {}
     }
 }
@@ -1588,6 +1799,15 @@ fn collect_match_exprs(program: &Program) -> Vec<MatchExprInfo> {
                 walk(body, out);
             }
             ExprKind::Sequence(exprs) => exprs.iter().for_each(|e| walk(e, out)),
+            ExprKind::Do { stmts, tail, .. } => {
+                for stmt in stmts {
+                    match stmt {
+                        ast::DoStmt::Let { value, .. } | ast::DoStmt::Bind { value, .. } => walk(value, out),
+                        ast::DoStmt::Seq(e) => walk(e, out),
+                    }
+                }
+                walk(tail, out);
+            }
             _ => {}
         }
     }

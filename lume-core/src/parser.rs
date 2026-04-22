@@ -1041,6 +1041,13 @@ fn synthesise_sugar_binding_type(
 pub fn parse_expr(tokens: &[Spanned]) -> Result<(usize, Expr), ParseError> {
     let mut ptr = 0;
 
+    // `do { ... }` or `do Monad { ... }`
+    if matches!(first_token(tokens), Some(Token::Do)) {
+        let (n, expr) = parse_do_block(tokens)?;
+        ptr += n;
+        return collect_sequence(&tokens[..], ptr, expr);
+    }
+
     // `let pattern = value in body`
     if matches!(first_token(tokens), Some(Token::Let)) {
         if let Ok((n, expr)) = try_parse_let_in(tokens) {
@@ -1070,6 +1077,11 @@ pub fn parse_expr(tokens: &[Spanned]) -> Result<(usize, Expr), ParseError> {
 /// consumed as part of the value expression.
 fn parse_expr_no_seq(tokens: &[Spanned]) -> Result<(usize, Expr), ParseError> {
     let mut ptr = 0;
+
+    if matches!(first_token(tokens), Some(Token::Do)) {
+        let (n, expr) = parse_do_block(tokens)?;
+        return Ok((ptr + n, expr));
+    }
 
     if matches!(first_token(tokens), Some(Token::Let)) {
         if let Ok((n, expr)) = try_parse_let_in(tokens) {
@@ -1190,6 +1202,136 @@ fn try_parse_let_in(tokens: &[Spanned]) -> Result<(usize, Expr), ParseError> {
                 body: Box::new(body),
             },
             span: let_span,
+        },
+    ))
+}
+
+/// Parse `do { stmts... tail }` or `do Monad { stmts... tail }`.
+///
+/// Syntax inside the braces mirrors `let`-sequencing:
+///   - `let pat = val;` — pure binding
+///   - `let pat <- val;` — monadic bind
+///   - `expr;` — sequence (discard result)
+///   - `expr` (no trailing `;`) — the monadic tail / return value
+///
+/// A trailing `;` after the last statement desugars the tail to `{}` (unit),
+/// allowing side-effecting `do` blocks that return `{}`.
+fn parse_do_block(tokens: &[Spanned]) -> Result<(usize, Expr), ParseError> {
+    let do_span = span(tokens);
+    let mut ptr = 0;
+    ptr += consume(&tokens[ptr..], &Token::Do)?;
+
+    // Optional explicit monad name: `do Maybe { ... }`
+    let monad: Option<(String, Span)> = if let Some(Token::TypeIdent(name)) = first_token(&tokens[ptr..]) {
+        let name = name.clone();
+        let monad_span = span(&tokens[ptr..]);
+        ptr += 1;
+        Some((name, monad_span))
+    } else {
+        None
+    };
+
+    ptr += consume(&tokens[ptr..], &Token::LBrace)?;
+
+    let mut stmts: Vec<DoStmt> = Vec::new();
+
+    loop {
+        // End of block
+        if matches!(first_token(&tokens[ptr..]), Some(Token::RBrace) | None) {
+            break;
+        }
+
+        // `let pat = val;` or `let pat <- val;`
+        if matches!(first_token(&tokens[ptr..]), Some(Token::Let)) {
+            let let_start = ptr;
+            ptr += 1; // consume `let`
+
+            let (n, pattern) = parse_pattern(&tokens[ptr..])?;
+            ptr += n;
+
+            // Optional type annotation
+            if matches!(first_token(&tokens[ptr..]), Some(Token::Colon)) {
+                ptr += 1;
+                let (n, _) = parse_type(&tokens[ptr..])?;
+                ptr += n;
+            }
+
+            if matches!(first_token(&tokens[ptr..]), Some(Token::LeftArrow)) {
+                // Monadic bind: `let pat <- val;`
+                ptr += 1; // consume `<-`
+                let (n, value) = parse_expr_no_seq(&tokens[ptr..])?;
+                ptr += n;
+                ptr += consume(&tokens[ptr..], &Token::Semicolon)?;
+                stmts.push(DoStmt::Bind { pattern, value });
+            } else if matches!(first_token(&tokens[ptr..]), Some(Token::Equal)) {
+                // Pure binding: `let pat = val;`
+                ptr += 1; // consume `=`
+                let (n, value) = parse_expr_no_seq(&tokens[ptr..])?;
+                ptr += n;
+                ptr += consume(&tokens[ptr..], &Token::Semicolon)?;
+                stmts.push(DoStmt::Let { pattern, value });
+            } else {
+                return Err(ParseError::unexpected(
+                    format!(
+                        "{:?}",
+                        first_token(&tokens[ptr..]).unwrap_or(&Token::Ident("<eof>".into()))
+                    ),
+                    "= or <-",
+                    span(&tokens[let_start..]),
+                ));
+            }
+            continue;
+        }
+
+        // Expression statement: `expr;` or the tail `expr`
+        let (n, expr) = parse_expr_no_seq(&tokens[ptr..])?;
+        ptr += n;
+
+        if matches!(first_token(&tokens[ptr..]), Some(Token::Semicolon)) {
+            ptr += 1; // consume `;`
+            // If next is `}`, this was a trailing `;`: tail is unit `{}`
+            if matches!(first_token(&tokens[ptr..]), Some(Token::RBrace) | None) {
+                stmts.push(DoStmt::Seq(expr));
+                break;
+            }
+            stmts.push(DoStmt::Seq(expr));
+        } else {
+            // No `;` — this is the tail expression
+            let tail = expr;
+            ptr += consume(&tokens[ptr..], &Token::RBrace)?;
+            return Ok((
+                ptr,
+                Expr {
+                    id: 0,
+                    kind: ExprKind::Do {
+                        monad,
+                        stmts,
+                        tail: Box::new(tail),
+                    },
+                    span: do_span,
+                },
+            ));
+        }
+    }
+
+    ptr += consume(&tokens[ptr..], &Token::RBrace)?;
+
+    // If we ended via trailing `;` or empty body, the tail is unit `{}`
+    let tail = Expr {
+        id: 0,
+        kind: ExprKind::Record { entries: vec![] },
+        span: do_span.clone(),
+    };
+    Ok((
+        ptr,
+        Expr {
+            id: 0,
+            kind: ExprKind::Do {
+                monad,
+                stmts,
+                tail: Box::new(tail),
+            },
+            span: do_span,
         },
     ))
 }

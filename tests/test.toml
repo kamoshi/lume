@@ -699,3 +699,14 @@ output = """
 13
 30
 """
+
+[tests.do_notation]
+path = "tests/lume/do_notation.lume"
+expect = "typecheck"
+output = """
+20
+none
+12
+7
+none
+"""

@@ -1,0 +1,67 @@
+-- lume internal no_prelude
+-- Tests `do` notation desugaring for the Maybe monad.
+
+use core = "lume:core"
+
+-- Safe integer division: returns None if denominator is zero.
+let safeDiv = num -> den ->
+  if den == 0 then None else Some (num / den)
+
+-- ── Explicit monad annotation ─────────────────────────────────────────────────
+
+-- Desugars to: and_then (Some 10) (a -> and_then (safeDiv 100 a) (b -> Some (a + b))) = Some 20
+let r1 = do Maybe {
+  let a <- Some 10;
+  let b <- safeDiv 100 a;
+  Some (a + b)
+}
+
+let _ = match r1 in
+  | Some n -> showNum n |> print
+  | None -> print "none"
+
+-- Short-circuits on None (explicit monad)
+let r2 = do Maybe {
+  let a <- None;
+  let b <- Some 5;
+  Some (a + b)
+}
+
+let _ = match r2 in
+  | Some n -> showNum n |> print
+  | None -> print "none"
+
+-- Pure let binding inside do (explicit monad)
+let r3 = do Maybe {
+  let a <- Some 6;
+  let b = a * 2;
+  Some b
+}
+
+let _ = match r3 in
+  | Some n -> showNum n |> print
+  | None -> print "none"
+
+-- ── Inferred monad (no explicit annotation) ───────────────────────────────────
+
+-- Monad inferred as Maybe from usage
+let r4 = do {
+  let a <- Some 3;
+  let b <- Some 4;
+  Some (a + b)
+}
+
+let _ = match r4 in
+  | Some n -> showNum n |> print
+  | None -> print "none"
+
+-- Short-circuits on None (inferred monad)
+let r5 = do {
+  let a <- Some 10;
+  let b <- None;
+  Some (a + b)
+}
+
+let _ = match r5 in
+  | Some n -> showNum n |> print
+  | None -> print "none"

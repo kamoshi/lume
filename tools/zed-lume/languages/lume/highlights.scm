@@ -6,6 +6,7 @@
 "and" @keyword
 "trait" @keyword
 "in" @keyword
+"do" @keyword
 "match" @keyword.control
 
 "if" @keyword.control
@@ -18,6 +19,7 @@
 
 ; Operators
 "->" @operator
+"<-" @operator
 "|>" @operator
 "?>" @operator
 "&&" @operator
@@ -98,6 +100,10 @@
 
 ; Field access — the accessed name
 (field_access (identifier) @property .)
+
+; Do-notation — monad name and bound variables
+(do_expr monad: (type_identifier) @type)
+(do_stmt pattern: (pattern (identifier) @variable))
 
 ; Comments
 (doc_comment) @comment.doc

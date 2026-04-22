@@ -502,6 +502,8 @@ impl<'a> Cx<'a> {
                     ir::Expr::Let(ir::Pat::Wild, Box::new(e), Box::new(acc))
                 })
             }
+
+            ExprKind::Do { stmts, tail, .. } => self.lower_do(stmts, *tail),
         }
     }
 
@@ -512,6 +514,73 @@ impl<'a> Cx<'a> {
             body: self.expr(arm.body),
         }
     }
+
+    /// Desugar a `do` block to nested `let`/`and_then` IR expressions.
+    ///
+    /// - `DoStmt::Let`  → `let pat = val in rest`
+    /// - `DoStmt::Seq`  → `let _ = expr in rest`
+    /// - `DoStmt::Bind` → `Monad.and_then val (pat -> rest)`
+    fn lower_do(&self, stmts: Vec<DoStmt>, tail: Expr) -> ir::Expr {
+        let mut iter = stmts.into_iter().peekable();
+        self.lower_do_iter(&mut iter, tail)
+    }
+
+    fn lower_do_iter(
+        &self,
+        stmts: &mut std::iter::Peekable<std::vec::IntoIter<DoStmt>>,
+        tail: Expr,
+    ) -> ir::Expr {
+        match stmts.next() {
+            None => self.expr(tail),
+            Some(DoStmt::Let { pattern, value }) => {
+                let rest = self.lower_do_iter(stmts, tail);
+                ir::Expr::Let(self.pat(pattern), Box::new(self.expr(value)), Box::new(rest))
+            }
+            Some(DoStmt::Seq(expr)) => {
+                let rest = self.lower_do_iter(stmts, tail);
+                ir::Expr::Let(ir::Pat::Wild, Box::new(self.expr(expr)), Box::new(rest))
+            }
+            Some(DoStmt::Bind { pattern, value }) => {
+                let val_id = value.id;
+                let val_ty = self.node_types.get(&val_id).cloned();
+                let val_ir = self.expr(value);
+                let rest = self.lower_do_iter(stmts, tail);
+                let lam = ir::Expr::Lam(self.pat(pattern), Box::new(rest));
+
+                // Resolve `Monad.and_then` by extracting the monad constructor
+                // from `val_ty` (`m a` → outer head = `m`).
+                let and_then = val_ty.as_ref().and_then(|ty| {
+                    let (head, _) = ty.flatten_app();
+                    let type_name = match head {
+                        Ty::Con(name) => Some(name.clone()),
+                        _ => None,
+                    }?;
+                    if let Some(entry) = self.global.impls.get(&("Monad".to_string(), type_name)) {
+                        let dict_expr = make_dict_ref(&entry.dict_ident, &entry.module_var);
+                        Some(ir::Expr::Field(Box::new(dict_expr), "and_then".to_string()))
+                    } else {
+                        // Fallback: try the full resolve_trait_call_with_ty path
+                        // (handles parameterized / dict-param impls).
+                        self.resolve_trait_call_with_ty("Monad", "and_then", ty)
+                    }
+                });
+
+                match and_then {
+                    Some(f) => ir::Expr::App(
+                        Box::new(ir::Expr::App(Box::new(f), Box::new(val_ir))),
+                        Box::new(lam),
+                    ),
+                    None => {
+                        // Fallback: emit `val_ir` and `lam` side-by-side (should not happen
+                        // in well-typed code; the type checker would have caught this).
+                        ir::Expr::Let(ir::Pat::Wild, Box::new(val_ir), Box::new(lam))
+                    }
+                }
+            }
+        }
+    }
+
+
 
     // ── Patterns ─────────────────────────────────────────────────────────
 

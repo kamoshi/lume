@@ -302,6 +302,15 @@ pub enum ExprKind {
     /// returning only the final expression's value.
     Sequence(Vec<Expr>),
 
+    /// `do { stmts... tail }` or `do Monad { stmts... tail }` — monadic do-notation.
+    Do {
+        /// Explicit monad with its source span, e.g. `Some(("Maybe", <span>))`.
+        /// `None` when the monad is inferred.
+        monad: Option<(String, Span)>,
+        stmts: Vec<DoStmt>,
+        tail: Box<Expr>,
+    },
+
     /// A typed hole `_` in expression position.
     /// The type checker infers the expected type and reports it as a diagnostic.
     Hole,
@@ -339,7 +348,18 @@ pub struct MatchArm {
     pub body: Expr,
 }
 
-// ── Binary / unary operators ──────────────────────────────────────────────────
+/// A statement inside a `do` block.
+#[derive(Debug, Clone)]
+pub enum DoStmt {
+    /// `let pat = val;` — pure binding, no monad
+    Let { pattern: Pattern, value: Expr },
+    /// `let pat <- val;` — monadic bind: `and_then val (pat -> ...)`
+    Bind { pattern: Pattern, value: Expr },
+    /// `expr;` — evaluate for side effects, discard result
+    Seq(Expr),
+}
+
+
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum BinOp {
@@ -674,6 +694,18 @@ fn assign_ids_expr(expr: &mut Expr, counter: &mut NodeId) {
             for e in exprs {
                 assign_ids_expr(e, counter);
             }
+        }
+        ExprKind::Do { stmts, tail, .. } => {
+            for stmt in stmts {
+                match stmt {
+                    DoStmt::Let { pattern, value } | DoStmt::Bind { pattern, value } => {
+                        assign_ids_pattern(pattern, counter);
+                        assign_ids_expr(value, counter);
+                    }
+                    DoStmt::Seq(e) => assign_ids_expr(e, counter),
+                }
+            }
+            assign_ids_expr(tail, counter);
         }
         _ => {}
     }

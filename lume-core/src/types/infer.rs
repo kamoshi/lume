@@ -1,5 +1,5 @@
 use crate::ast::{
-    self, BinOp, Binding, Expr, ExprKind, FieldType, ImplDef, ListEntry, ListPattern, Literal, MatchArm,
+    self, BinOp, Binding, DoStmt, Expr, ExprKind, FieldType, ImplDef, ListEntry, ListPattern, Literal, MatchArm,
     NodeId, Pattern, Program, RecordEntry, RecordField, RecordPattern, RecordType, TopItem, TraitDef, Type,
     UnOp, UseBinding, UseDecl,
 };
@@ -1378,6 +1378,64 @@ impl Checker {
                 }
                 Ok(ty)
             }
+
+            ExprKind::Do { monad, stmts, tail } => {
+                let mut env = env.clone();
+
+                // Single type variable representing the monad constructor `m`.
+                let m_var = self.subst.fresh_var();
+                if let Some((monad_name, monad_span)) = monad {
+                    self.unify_at(Ty::Var(m_var), Ty::Con(monad_name.clone()), &span)?;
+                    self.trait_call_constraints.push((
+                        "Monad".to_string(),
+                        m_var,
+                        monad_span.clone(),
+                    ));
+                }
+
+                for stmt in stmts {
+                    match stmt {
+                        DoStmt::Let { pattern, value } => {
+                            let val_ty = self.infer(&env, value)?;
+                            let bindings = self
+                                .infer_pattern(pattern, val_ty)
+                                .map_err(|e| TypeErrorAt::new(e, span.clone()))?;
+                            for (name, ty) in bindings {
+                                let scheme = self.generalise(&env, &ty);
+                                env.insert(name, scheme);
+                            }
+                        }
+                        DoStmt::Bind { pattern, value } => {
+                            let val_ty = self.infer(&env, value)?;
+                            let a_var = self.subst.fresh_var();
+                            // val_ty must be `m a` for some inner type `a`
+                            let expected = Ty::App(
+                                Box::new(Ty::Var(m_var)),
+                                Box::new(Ty::Var(a_var)),
+                            );
+                            self.unify_at(val_ty, expected, &value.span)?;
+                            self.constraint_map.push(("Monad".to_string(), m_var));
+                            self.trait_call_constraints.push((
+                                "Monad".to_string(),
+                                m_var,
+                                span.clone(),
+                            ));
+                            let bindings = self
+                                .infer_pattern(pattern, Ty::Var(a_var))
+                                .map_err(|e| TypeErrorAt::new(e, span.clone()))?;
+                            for (name, ty) in bindings {
+                                let scheme = self.generalise(&env, &ty);
+                                env.insert(name, scheme);
+                            }
+                        }
+                        DoStmt::Seq(expr) => {
+                            self.infer(&env, expr)?;
+                        }
+                    }
+                }
+
+                self.infer(&env, tail)
+            }
         }
     }
 
@@ -1990,6 +2048,12 @@ impl Checker {
                     self.infer(env, expr)?;
                 }
                 self.check(env, last, expected)
+            }
+            // ── Do in check mode: propagate expected type to tail ─────────────
+            ExprKind::Do { .. } => {
+                let inferred = self.infer(env, expr)?;
+                let inferred = self.subst.apply(&inferred);
+                self.unify_at(inferred, expected, span)
             }
             // ── Bare match arms in check mode: propagate function type ────
             ExprKind::Match(arms) => {
