@@ -64,8 +64,12 @@ pub struct Builtin {
 }
 
 impl Builtin {
-    pub fn lua_name(&self) -> String { format!("__{}", self.name) }
-    pub fn js_name(&self)  -> String { format!("__{}", self.name) }
+    pub fn lua_name(&self) -> String {
+        format!("__{}", self.name)
+    }
+    pub fn js_name(&self) -> String {
+        format!("__{}", self.name)
+    }
 }
 
 pub static BUILTINS: &[Builtin] = &[
@@ -100,7 +104,30 @@ pub static BUILTINS: &[Builtin] = &[
         ),
         js: "(a) => (b) => [...a, ...b]",
     },
-
+    Builtin {
+        name: "float_add",
+        ty: ty!(Num -> Num -> Num),
+        lua: "function(a) return function(b) return a + b end end",
+        js: "(a) => (b) => a + b",
+    },
+    Builtin {
+        name: "float_sub",
+        ty: ty!(Num -> Num -> Num),
+        lua: "function(a) return function(b) return a - b end end",
+        js: "(a) => (b) => a - b",
+    },
+    Builtin {
+        name: "float_mul",
+        ty: ty!(Num -> Num -> Num),
+        lua: "function(a) return function(b) return a * b end end",
+        js: "(a) => (b) => a * b",
+    },
+    Builtin {
+        name: "float_div",
+        ty: ty!(Num -> Num -> Num),
+        lua: "function(a) return function(b) return a / b end end",
+        js: "(a) => (b) => a / b",
+    },
 ];
 
 /// Map-primitive builtins — only injected into the `lume:map` stdlib module.
@@ -256,13 +283,13 @@ pub static MAP_BUILTINS: &[Builtin] = &[
 
 /// Built-in type constructor arities used to seed `build_arity_env`.
 pub const BUILTIN_TYPE_ARITIES: &[(&str, usize)] = &[
-    ("Num",    0),
-    ("Text",   0),
-    ("Bool",   0),
-    ("List",   1),
-    ("Maybe",  1),
+    ("Num", 0),
+    ("Text", 0),
+    ("Bool", 0),
+    ("List", 1),
+    ("Maybe", 1),
     ("Result", 2),
-    ("Map",    2),
+    ("Map", 2),
 ];
 
 pub fn populate_env(s: &mut Subst, env: &mut TypeEnv) {
