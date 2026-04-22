@@ -438,15 +438,15 @@ pub fn builtin_env(s: &mut Subst) -> (TypeEnv, VariantEnv) {
         Scheme::mono(Ty::Func(Box::new(Ty::Text), Box::new(result_text.clone()))),
     );
 
-    // writeFile : Text -> Text -> Result {} Text
+    // writeFile : Text -> Text -> Result Text {}
     let result_unit = Ty::mk_con(
         "Result",
         &[
+            Ty::Text,
             Ty::Record(Row {
                 fields: vec![],
                 tail: RowTail::Closed,
             }),
-            Ty::Text,
         ],
     );
     env.insert(
@@ -510,14 +510,14 @@ pub fn builtin_env(s: &mut Subst) -> (TypeEnv, VariantEnv) {
     env.insert("startsWith".into(), Scheme::mono(t2bool.clone()));
     env.insert("endsWith".into(), Scheme::mono(t2bool));
 
-    // Result helpers: unwrap : Result a e -> a
+    // Result helpers: unwrap : Result e a -> a  (extracts the Ok/success value)
     env.insert(
         "unwrap".into(),
         mk_scheme(
             vec![v0, v1],
             Ty::Func(
                 Box::new(Ty::mk_con("Result", &[Ty::Var(v0), Ty::Var(v1)])),
-                Box::new(Ty::Var(v0)),
+                Box::new(Ty::Var(v1)),
             ),
         ),
     );
@@ -535,7 +535,7 @@ pub fn builtin_env(s: &mut Subst) -> (TypeEnv, VariantEnv) {
             ),
         ),
     );
-    // mapErr : (e -> f) -> Result a e -> Result a f
+    // mapErr : (e -> f) -> Result e a -> Result f a  (transforms the Err/error value)
     let me_a = s.fresh_var();
     let me_e = s.fresh_var();
     let me_f = s.fresh_var();
@@ -546,8 +546,8 @@ pub fn builtin_env(s: &mut Subst) -> (TypeEnv, VariantEnv) {
             Ty::Func(
                 Box::new(Ty::Func(Box::new(Ty::Var(me_e)), Box::new(Ty::Var(me_f)))),
                 Box::new(Ty::Func(
-                    Box::new(Ty::mk_con("Result", &[Ty::Var(me_a), Ty::Var(me_e)])),
-                    Box::new(Ty::mk_con("Result", &[Ty::Var(me_a), Ty::Var(me_f)])),
+                    Box::new(Ty::mk_con("Result", &[Ty::Var(me_e), Ty::Var(me_a)])),
+                    Box::new(Ty::mk_con("Result", &[Ty::Var(me_f), Ty::Var(me_a)])),
                 )),
             ),
         ),
@@ -571,13 +571,14 @@ pub fn builtin_env(s: &mut Subst) -> (TypeEnv, VariantEnv) {
         },
     );
 
-    // Result variants: Ok a, Err b
+    // Result variants: Result e a = Ok a | Err e  (error param first, Ok param second)
+    // This mirrors Haskell's Either: partial application `Result err` maps over Ok.
     var_env.insert(
         "Ok".into(),
         VariantInfo {
             type_name: "Result".into(),
             type_params: vec!["a".into(), "b".into()],
-            wraps: Some(ast::Type::Var("a".into())),
+            wraps: Some(ast::Type::Var("b".into())),
         },
     );
     var_env.insert(
@@ -585,7 +586,7 @@ pub fn builtin_env(s: &mut Subst) -> (TypeEnv, VariantEnv) {
         VariantInfo {
             type_name: "Result".into(),
             type_params: vec!["a".into(), "b".into()],
-            wraps: Some(ast::Type::Var("b".into())),
+            wraps: Some(ast::Type::Var("a".into())),
         },
     );
 
@@ -1228,7 +1229,7 @@ impl Checker {
                     .map_err(|e| TypeErrorAt::new(e, span.clone()))?;
                 let wt = wraps_ty.ok_or_else(|| {
                     TypeErrorAt::new(
-                        TypeError::UnboundVariant(format!("{} is a unit variant", name)),
+                        TypeError::UnitVariantWithPayload(name.to_string()),
                         span.clone(),
                     )
                 })?;
@@ -1347,10 +1348,12 @@ impl Checker {
                             )),
                         }
                     }
-                    None => {
-                        // Trait not yet known (e.g. cross-module); fall back to fresh var.
-                        Ok(Ty::Var(self.subst.fresh_var()))
-                    }
+                    None => Err(TypeErrorAt::new(
+                        TypeError::UndeclaredTrait {
+                            trait_name: trait_name.clone(),
+                        },
+                        span.clone(),
+                    )),
                 }
             }
 
@@ -1419,7 +1422,7 @@ impl Checker {
                             let resolved_val = self.subst.apply(&val_ty);
                             let is_bare = matches!(
                                 &resolved_val,
-                                Ty::Num | Ty::Text | Ty::Bool | Ty::Con(_) | Ty::Func(..)
+                                Ty::Num | Ty::Text | Ty::Bool | Ty::Con(_) | Ty::Func(..) | Ty::Record(_)
                             );
                             if is_bare {
                                 // Try to resolve the monad name for the hint.
@@ -1440,7 +1443,7 @@ impl Checker {
                             self.trait_call_constraints.push((
                                 "Monad".to_string(),
                                 m_var,
-                                span.clone(),
+                                value.span.clone(),
                             ));
                             let bindings = self
                                 .infer_pattern(pattern, Ty::Var(a_var))

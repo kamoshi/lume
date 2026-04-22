@@ -1,15 +1,15 @@
 -- Tests the Result pipe (?>) operator with curried App types.
 -- Ensures the result pipe correctly unifies Result types.
 
-let parse : Text -> Result Num Text =
+let parse : Text -> Result Text Num =
   | "one" -> Ok 1
   | "two" -> Ok 2
   | other -> Err ("unknown: " ++ other)
 
-let double : Num -> Result Num Text =
+let double : Num -> Result Text Num =
   n -> Ok (n * 2)
 
-let show : Result Num Text -> Text =
+let show : Result Text Num -> Text =
   | Ok n -> "ok: " ++ showNum n
   | Err msg -> "err: " ++ msg
 

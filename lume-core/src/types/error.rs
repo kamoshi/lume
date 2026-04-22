@@ -185,14 +185,14 @@ impl fmt::Display for TypeError {
                 write!(f, "duplicate field '{}'", field)
             }
             TypeError::UnitVariantWithPayload(name) => {
-                write!(f, "variant '{}' takes no payload, but a pattern was given", name)
+                write!(f, "variant '{}' takes no payload, but a value was given", name)
             }
             TypeError::BindNotMonadic { got, monad } => {
                 match monad {
                     Some(m) => write!(
                         f,
-                        "`<-` expects a `{} _` value, got `{}` - wrap it: `{} {}`",
-                        m, got, m, got
+                        "`<-` expects a `{} _` value, got `{}` - wrap it in a `{}` constructor",
+                        m, got, m
                     ),
                     None => write!(
                         f,

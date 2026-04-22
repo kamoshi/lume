@@ -18,11 +18,11 @@ let safeSecond : List a -> Maybe a =
   | _          -> None
 
 -- Safe division
-let safeDivide : Num -> Num -> Result Num Text = a -> b ->
+let safeDivide : Num -> Num -> Result Text Num = a -> b ->
   if b == 0 then Err "division by zero" else Ok (a / b)
 
 -- Safe square root (non-negative only)
-let safeSqrt : Num -> Result Num Text = n ->
+let safeSqrt : Num -> Result Text Num = n ->
   if n < 0 then Err "negative input" else Ok n
 
 -- Chain two safe divisions with ?>

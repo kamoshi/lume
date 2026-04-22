@@ -1,14 +1,14 @@
 -- Tests curried type application for multi-parameter ADTs.
--- Result is a 2-arity constructor: Result a e = Ok a | Err e
--- Ensures that App(App(Con("Result"), Num), Text) works end-to-end.
+-- Result is a 2-arity constructor: Result e a = Err e | Ok a
+-- Ensures that App(App(Con("Result"), Text), Num) works end-to-end.
 
-let safeDivide : Num -> Num -> Result Num Text =
+let safeDivide : Num -> Num -> Result Text Num =
   dividend -> divisor ->
     if divisor == 0
       then Err "division by zero"
       else Ok (dividend / divisor)
 
-let showResult : Result Num Text -> Text =
+let showResult : Result Text Num -> Text =
   | Ok n -> "ok: " ++ showNum n
   | Err msg -> "err: " ++ msg
 

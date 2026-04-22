@@ -185,11 +185,11 @@ output = "None : Maybe a"
 
 [tests.type_ok_constructor]
 steps = [":type Ok"]
-output = "Ok : a -> Result a b"
+output = "Ok : a -> Result b a"
 
 [tests.type_err_constructor]
 steps = [":type Err"]
-output = "Err : a -> Result b a"
+output = "Err : a -> Result a b"
 
 [tests.type_some_applied]
 steps = [":type Some 42"]
@@ -201,7 +201,7 @@ output = "[1, 2, 3] : List Num"
 
 [tests.type_ok_applied]
 steps = [":type Ok 1"]
-output = "Ok 1 : Result Num a"
+output = "Ok 1 : Result a Num"
 
 [tests.type_map_builtin]
 steps = [":type map"]

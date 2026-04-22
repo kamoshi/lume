@@ -494,6 +494,14 @@ path = "tests/lume/hkt_functor_result.lume"
 expect = "error"
 error_contains = "expects 2 type argument(s) but was given 1"
 
+[tests.hkt_functor_result_partial]
+path = "tests/lume/hkt_functor_result_partial.lume"
+expect = "typecheck"
+output = """
+10
+oops
+"""
+
 [tests.trait_bare_method]
 path = "tests/lume/trait_bare_method.lume"
 expect = "typecheck"

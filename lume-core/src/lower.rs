@@ -883,13 +883,28 @@ fn find_type_param_in_ast_type(ast_ty: &Type, param_name: &str, concrete: &Ty) -
         Type::App { .. } => {
             let (ast_base, ast_args) = flatten_ast_app_lower(ast_ty);
             let (ty_head, ty_args) = concrete.flatten_app();
-            // Check the base (e.g. `f` matching `Con("List")` for HKTs)
-            find_type_param_in_ast_type(ast_base, param_name, ty_head)
-                .or_else(|| {
-                    ast_args.iter()
-                        .zip(ty_args.iter())
-                        .find_map(|(a, c)| find_type_param_in_ast_type(a, param_name, c))
-                })
+            // When the trait signature has fewer applied args than the concrete type
+            // (e.g., `f a` vs `Result Text Num`), the extra Ty args belong to the
+            // base `f`.  Zip from the *right* so `f → Result Text`, `a → Num`.
+            if ast_args.len() <= ty_args.len() {
+                let extra = ty_args.len() - ast_args.len();
+                let partial_head = ty_args[..extra]
+                    .iter()
+                    .fold(ty_head.clone(), |acc, arg| Ty::App(Box::new(acc), Box::new((*arg).clone())));
+                find_type_param_in_ast_type(ast_base, param_name, &partial_head)
+                    .or_else(|| {
+                        ast_args.iter()
+                            .zip(ty_args[extra..].iter())
+                            .find_map(|(a, c)| find_type_param_in_ast_type(a, param_name, c))
+                    })
+            } else {
+                find_type_param_in_ast_type(ast_base, param_name, ty_head)
+                    .or_else(|| {
+                        ast_args.iter()
+                            .zip(ty_args.iter())
+                            .find_map(|(a, c)| find_type_param_in_ast_type(a, param_name, c))
+                    })
+            }
         }
         Type::Record(rt) => {
             if let Ty::Record(row) = concrete {
@@ -922,13 +937,28 @@ fn find_ty_at_param(ast_ty: &Type, param_name: &str, concrete: &Ty) -> Option<Ty
         Type::App { .. } => {
             let (ast_base, ast_args) = flatten_ast_app_lower(ast_ty);
             let (ty_head, ty_args) = concrete.flatten_app();
-            // Check the base (e.g. `f` matching `Con("List")` for HKTs)
-            find_ty_at_param(ast_base, param_name, ty_head)
-                .or_else(|| {
-                    ast_args.iter()
-                        .zip(ty_args.iter())
-                        .find_map(|(a, c)| find_ty_at_param(a, param_name, c))
-                })
+            // When the trait signature has fewer applied args than the concrete type
+            // (e.g., `f a` vs `Result Text Num`), the extra Ty args belong to the
+            // base `f`.  Zip from the *right* so `f → Result Text`, `a → Num`.
+            if ast_args.len() <= ty_args.len() {
+                let extra = ty_args.len() - ast_args.len();
+                let partial_head = ty_args[..extra]
+                    .iter()
+                    .fold(ty_head.clone(), |acc, arg| Ty::App(Box::new(acc), Box::new((*arg).clone())));
+                find_ty_at_param(ast_base, param_name, &partial_head)
+                    .or_else(|| {
+                        ast_args.iter()
+                            .zip(ty_args[extra..].iter())
+                            .find_map(|(a, c)| find_ty_at_param(a, param_name, c))
+                    })
+            } else {
+                find_ty_at_param(ast_base, param_name, ty_head)
+                    .or_else(|| {
+                        ast_args.iter()
+                            .zip(ty_args.iter())
+                            .find_map(|(a, c)| find_ty_at_param(a, param_name, c))
+                    })
+            }
         }
         Type::Record(rt) => {
             if let Ty::Record(row) = concrete {

@@ -1,5 +1,5 @@
 -- Tests trait implementations on applied types with multi-param ADTs.
--- Implements Show for Maybe Num and Result Num Text.
+-- Implements Show for Maybe Num and Result Text Num.
 
 trait Show a {
   let show : a -> Text
@@ -15,7 +15,7 @@ use Show in Maybe Num {
     | Some x -> "Just(" ++ Show.show x ++ ")"
 }
 
-use Show in Result Num Text {
+use Show in Result Text Num {
   let show =
     | Ok n -> "Ok(" ++ Show.show n ++ ")"
     | Err msg -> "Err(" ++ msg ++ ")"
@@ -27,8 +27,8 @@ let _ = Show.show a |> print
 let b : Maybe Num = None
 let _ = Show.show b |> print
 
-let c : Result Num Text = Ok 99
+let c : Result Text Num = Ok 99
 let _ = Show.show c |> print
 
-let d : Result Num Text = Err "fail"
+let d : Result Text Num = Err "fail"
 let _ = Show.show d |> print

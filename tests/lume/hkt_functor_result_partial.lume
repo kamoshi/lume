@@ -1,0 +1,22 @@
+-- lume internal no_prelude
+-- Functor for partially-applied Result: `Result e` has kind * -> *
+-- Maps over the Ok (success) branch, passes Err through unchanged.
+-- Convention: Result e a = Err e | Ok a  (error param first, like Haskell's Either)
+
+trait Functor f {
+  let map : (a -> b) -> f a -> f b
+}
+
+-- Partial application fixes the error type, leaving the ok type free.
+use Functor in Result Text {
+  let map = f ->
+    | Ok x  -> Ok (f x)
+    | Err e -> Err e
+}
+
+-- Map over Ok values
+let a : Result Text Num = Ok 5
+let b : Result Text Num = Err "oops"
+
+let _ = Functor.map (x -> x * 2) a |> (| Ok n -> print (showNum n) | Err e -> print e)
+let _ = Functor.map (x -> x * 2) b |> (| Ok n -> print (showNum n) | Err e -> print e)
