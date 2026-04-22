@@ -7,44 +7,42 @@ use lume_core::types;
 use crate::compile::{collect_new_dep_modules, compile_repl, is_module_import, strip_pub_export};
 use crate::helper::{refresh_completions, DIM, RESET};
 
-pub(crate) const SHOW_HELPER: &str = concat!(
-    "function _show(x)\n",
-    "  local t = type(x)\n",
-    "  if t == \"string\" then return '\"' .. x .. '\"' end\n",
-    "  if t == \"number\" then\n",
-    "    if x == math.floor(x) then return tostring(math.floor(x)) else return tostring(x) end\n",
-    "  end\n",
-    "  if t == \"boolean\" then return x and \"true\" or \"false\" end\n",
-    "  if t == \"nil\" then return \"()\" end\n",
-    "  if t == \"table\" then\n",
-    "    if x._tag ~= nil then\n",
-    "      local parts = {}\n",
-    "      for k, v in pairs(x) do\n",
-    "        if k ~= \"_tag\" then parts[#parts+1] = _show(v) end\n",
-    "      end\n",
-    "      if #parts == 0 then return x._tag end\n",
-    "      return x._tag .. \" \" .. parts[1]\n",
-    "    end\n",
-    "    local n = 0\n",
-    "    for _ in pairs(x) do n = n + 1 end\n",
-    "    local is_list = true\n",
-    "    for k, _ in pairs(x) do\n",
-    "      if type(k) ~= \"number\" then is_list = false; break end\n",
-    "    end\n",
-    "    if is_list then\n",
-    "      local parts = {}\n",
-    "      for _, v in ipairs(x) do parts[#parts+1] = _show(v) end\n",
-    "      return \"[\" .. table.concat(parts, \", \") .. \"]\"\n",
-    "    end\n",
-    "    local parts = {}\n",
-    "    for k, v in pairs(x) do parts[#parts+1] = k .. \": \" .. _show(v) end\n",
-    "    table.sort(parts)\n",
-    "    if #parts == 0 then return \"{}\" end\n",
-    "    return \"{ \" .. table.concat(parts, \", \") .. \" }\"\n",
-    "  end\n",
-    "  return tostring(x)\n",
-    "end\n",
-);
+pub(crate) const SHOW_HELPER: &str = r#"
+function _show(x)
+  local t = type(x)
+  if t == "string" then return '"' .. x .. '"' end
+  if t == "number" then
+    if x == math.floor(x) then return tostring(math.floor(x)) else return tostring(x) end
+  end
+  if t == "boolean" then return x and "true" or "false" end
+  if t == "nil" then return "()" end
+  if t == "table" then
+    if x._tag ~= nil then
+      local parts = {}
+      for k, v in pairs(x) do
+        if k ~= "_tag" then parts[#parts+1] = _show(v) end
+      end
+      if #parts == 0 then return x._tag end
+      return x._tag .. " " .. parts[1]
+    end
+    local is_list = true
+    for k, _ in pairs(x) do
+      if type(k) ~= "number" then is_list = false; break end
+    end
+    if is_list then
+      local parts = {}
+      for _, v in ipairs(x) do parts[#parts+1] = _show(v) end
+      return "[" .. table.concat(parts, ", ") .. "]"
+    end
+    local parts = {}
+    for k, v in pairs(x) do parts[#parts+1] = k .. ": " .. _show(v) end
+    table.sort(parts)
+    if #parts == 0 then return "{}" end
+    return "{ " .. table.concat(parts, ", ") .. " }"
+  end
+  return tostring(x)
+end
+"#;
 
 pub(crate) enum EvalAction {
     None,
@@ -74,7 +72,7 @@ pub(crate) fn eval_input(
         return EvalAction::None;
     }
     if let Some(name) = trimmed.strip_prefix(":kind ").or_else(|| trimmed.strip_prefix(":k ")) {
-        kind_of(name.trim(), defs, base_dir);
+        kind_of(name.trim(), defs);
         return EvalAction::None;
     }
     if trimmed == ":kind" || trimmed == ":k" {
@@ -226,7 +224,7 @@ pub(crate) fn type_of(expr: &str, defs: &str, base_dir: &Path) {
 /// Parses the accumulated REPL definitions to build the arity environment,
 /// then parses `expr` as a type and computes its kind using star notation
 /// (e.g., `Maybe : * -> *`, `Box Num : *`, `Result : * -> * -> *`).
-pub(crate) fn kind_of(expr: &str, defs: &str, base_dir: &Path) {
+pub(crate) fn kind_of(expr: &str, defs: &str) {
     use lume_core::ast::Type;
     use lume_core::lexer::Lexer;
     use lume_core::parser;
@@ -247,7 +245,6 @@ pub(crate) fn kind_of(expr: &str, defs: &str, base_dir: &Path) {
         Err(e) => { eprintln!("  parse error: {e}"); return; }
     };
 
-    let _ = base_dir;
     let arity_env = build_arity_env(&program.items);
 
     // Parse `expr` as a type expression (wrap in a dummy binding so the lexer

@@ -17,19 +17,25 @@ const FG_RED: &str = "\x1b[31m";
 
 pub(crate) const KEYWORDS: &[&str] = &[
     "let", "pub", "type", "use", "if", "then", "else", "and",
-    "not", "in", "trait", "match", "true", "false",
+    "not", "in", "do", "trait", "match", "true", "false",
     "infix", "infixl", "infixr",
 ];
 
-/// Rebuild the completion list from current defs + static keywords + builtins.
-pub(crate) fn refresh_completions(defs: &str, completions: &Arc<RwLock<Vec<String>>>) {
+fn static_completions() -> Vec<String> {
     use lume_core::builtin::BUILTINS;
-    use lume_core::lexer::{Lexer, Token};
-
     let mut names: Vec<String> = KEYWORDS.iter().map(|s| s.to_string()).collect();
     for b in BUILTINS {
         names.push(b.name.to_string());
     }
+    names.sort();
+    names
+}
+
+/// Rebuild the completion list from current defs + static keywords + builtins.
+pub(crate) fn refresh_completions(defs: &str, completions: &Arc<RwLock<Vec<String>>>) {
+    use lume_core::lexer::{Lexer, Token};
+
+    let mut names = static_completions();
 
     if !defs.is_empty() {
         if let Ok(tokens) = Lexer::new(defs).tokenize() {
@@ -87,30 +93,40 @@ fn highlight_line(line: &str) -> String {
         cursor = end;
 
         let colored = match tok {
+            // Keywords — blue bold
             Token::Let | Token::Pub | Token::Type | Token::Use
             | Token::If | Token::Then | Token::Else | Token::In
-            | Token::Trait | Token::Match | Token::And | Token::Not => {
+            | Token::Do | Token::Trait | Token::Match | Token::And | Token::Not => {
                 format!("{FG_BLUE}{BOLD}{lexeme}{RESET}")
             }
             Token::Ident(name) if matches!(name.as_str(), "infix" | "infixl" | "infixr") => {
                 format!("{FG_BLUE}{BOLD}{lexeme}{RESET}")
             }
-            Token::True | Token::False => format!("{FG_CYAN}{lexeme}{RESET}"),
+            // Literals — cyan
+            Token::True | Token::False | Token::Number(_) => format!("{FG_CYAN}{lexeme}{RESET}"),
+            // Type/variant names — yellow
             Token::TypeIdent(_) => format!("{FG_YELLOW}{lexeme}{RESET}"),
+            // String literals — green
             Token::Text(_) => format!("{FG_GREEN}{lexeme}{RESET}"),
-            Token::Number(_) => format!("{FG_CYAN}{lexeme}{RESET}"),
+            // Doc comments — dim
             Token::DocComment(_) => format!("{DIM}{lexeme}{RESET}"),
+            // Pipe operator (|>) — magenta
             Token::Pipe => format!("{FG_MAGENTA}{lexeme}{RESET}"),
-            Token::Arrow | Token::FatArrow => format!("{FG_RED}{lexeme}{RESET}"),
+            // Arrows — red
+            Token::Arrow | Token::FatArrow | Token::LeftArrow => format!("{FG_RED}{lexeme}{RESET}"),
+            // Operators and punctuation — dim
             Token::Plus | Token::Minus | Token::Star | Token::Slash
             | Token::EqEq | Token::BangEq | Token::Lt | Token::Gt
             | Token::LtEq | Token::GtEq | Token::Concat
             | Token::AmpAmp | Token::PipePipe | Token::Operator(_)
-            | Token::Equal
-            | Token::Colon | Token::Bar | Token::DotDot | Token::Dot => {
+            | Token::Equal | Token::Colon | Token::Bar | Token::DotDot | Token::Dot
+            | Token::Question | Token::Semicolon => {
                 format!("{DIM}{lexeme}{RESET}")
             }
-            _ => lexeme.to_string(),
+            // Delimiters — pass through unstyled
+            Token::LParen | Token::RParen | Token::LBrace | Token::RBrace
+            | Token::LBracket | Token::RBracket | Token::Comma => lexeme.to_string(),
+            Token::Ident(_) | Token::Eof => lexeme.to_string(),
         };
         out.push_str(&colored);
     }
@@ -155,6 +171,30 @@ mod tests {
         let highlighted = highlight_line(":help");
         assert_eq!(highlighted, format!("{FG_MAGENTA}{BOLD}:help{RESET}"));
     }
+
+    #[test]
+    fn do_is_keyword_highlighted() {
+        let highlighted = highlight_line("let r = do Maybe {");
+        assert!(highlighted.contains(&format!("{FG_BLUE}{BOLD}do{RESET}")));
+    }
+
+    #[test]
+    fn left_arrow_is_highlighted() {
+        let highlighted = highlight_line("let a <- Some 10;");
+        let red = "\x1b[31m";
+        assert!(highlighted.contains(&format!("{red}<-{RESET}")));
+    }
+
+    #[test]
+    fn semicolon_is_dimmed() {
+        let highlighted = highlight_line("let a <- Some 10;");
+        assert!(highlighted.contains(&format!("{DIM};{RESET}")));
+    }
+
+    #[test]
+    fn do_is_in_keywords() {
+        assert!(KEYWORDS.contains(&"do"));
+    }
 }
 
 // ── TypeHint ──────────────────────────────────────────────────────────────────
@@ -169,19 +209,18 @@ impl rustyline::hint::Hint for TypeHint {
 // ── LumeHelper ────────────────────────────────────────────────────────────────
 
 pub(crate) struct LumeHelper {
-    pub completions: Arc<RwLock<Vec<String>>>,
-    pub defs: Arc<RwLock<String>>,
-    pub base_dir: std::path::PathBuf,
+    completions: Arc<RwLock<Vec<String>>>,
+    defs: Arc<RwLock<String>>,
+    base_dir: std::path::PathBuf,
 }
 
 impl LumeHelper {
     pub(crate) fn new(defs: Arc<RwLock<String>>, base_dir: std::path::PathBuf) -> Self {
-        use lume_core::builtin::BUILTINS;
-        let mut names: Vec<String> = KEYWORDS.iter().map(|s| s.to_string()).collect();
-        for b in BUILTINS {
-            names.push(b.name.to_string());
+        LumeHelper {
+            completions: Arc::new(RwLock::new(static_completions())),
+            defs,
+            base_dir,
         }
-        LumeHelper { completions: Arc::new(RwLock::new(names)), defs, base_dir }
     }
 
     pub(crate) fn completions_handle(&self) -> Arc<RwLock<Vec<String>>> {
@@ -419,27 +458,17 @@ impl rustyline::validate::Validator for LumeHelper {
         }
 
         let src = format!("{input}\npub {{}}\n");
-        let result = Lexer::new(&src)
+        let parse_err = Lexer::new(&src)
             .tokenize()
-            .map_err(|_| ())
-            .and_then(|tokens| parser::parse_program(&tokens).map_err(|_| ()));
+            .ok()
+            .and_then(|tokens| parser::parse_program(&tokens).err());
 
-        match result {
-            Ok(_) => Ok(rustyline::validate::ValidationResult::Valid(None)),
-            Err(_) => {
-                let src2 = format!("{input}\npub {{}}\n");
-                let is_eof = Lexer::new(&src2)
-                    .tokenize()
-                    .ok()
-                    .and_then(|tokens| parser::parse_program(&tokens).err())
-                    .map(|e| matches!(e.kind, ParseErrorKind::UnexpectedEof))
-                    .unwrap_or(false);
-                if is_eof {
-                    Ok(rustyline::validate::ValidationResult::Incomplete)
-                } else {
-                    Ok(rustyline::validate::ValidationResult::Valid(None))
-                }
+        match parse_err {
+            None => Ok(rustyline::validate::ValidationResult::Valid(None)),
+            Some(e) if matches!(e.kind, ParseErrorKind::UnexpectedEof) => {
+                Ok(rustyline::validate::ValidationResult::Incomplete)
             }
+            Some(_) => Ok(rustyline::validate::ValidationResult::Valid(None)),
         }
     }
 }

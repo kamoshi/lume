@@ -50,6 +50,38 @@ pub(crate) struct NewDeps {
     pub lua_src: String,
 }
 
+/// Lower a collected bundle and emit Lua for any modules not yet in `loaded`.
+///
+/// Shared by `collect_new_dep_modules` and `compile_prelude_deps`.
+fn emit_new_deps(
+    all_bundle: Vec<bundle::BundleModule>,
+    loaded: &HashMap<PathBuf, String>,
+) -> Result<NewDeps, String> {
+    if !all_bundle.iter().any(|m| !loaded.contains_key(&m.canonical)) {
+        return Ok(NewDeps { mods: vec![], lua_src: String::new() });
+    }
+
+    let (ir_modules, variant_env) =
+        lower_bundle(all_bundle).ok_or_else(|| "dep compilation failed".to_string())?;
+
+    let mut module_vars: HashMap<PathBuf, String> = loaded.clone();
+    for ir_mod in &ir_modules {
+        module_vars
+            .entry(ir_mod.canonical.clone())
+            .or_insert_with(|| ir_mod.var.clone());
+    }
+
+    let new_ir_mods: Vec<&codegen::IrModule> = ir_modules
+        .iter()
+        .filter(|m| !loaded.contains_key(&m.canonical))
+        .collect();
+
+    let mods = new_ir_mods.iter().map(|m| (m.canonical.clone(), m.var.clone())).collect();
+    let lua_src = codegen::lua::emit_dep_modules(&new_ir_mods, module_vars, variant_env);
+
+    Ok(NewDeps { mods, lua_src })
+}
+
 /// Collect and compile any imported modules not yet present in `loaded`.
 ///
 /// Returns the Lua to load into globals plus the `(canonical, var)` pairs so
@@ -61,7 +93,6 @@ pub(crate) fn collect_new_dep_modules(
 ) -> Result<NewDeps, String> {
     use lume_core::loader::{resolve_path, stdlib_path, stdlib_source};
 
-    // Gather full transitive dep bundles for all use declarations.
     let mut all_bundle: Vec<bundle::BundleModule> = Vec::new();
     let mut seen: HashSet<PathBuf> = HashSet::new();
 
@@ -69,88 +100,23 @@ pub(crate) fn collect_new_dep_modules(
         let canonical = if stdlib_source(&u.path).is_some() {
             stdlib_path(&u.path)
         } else {
-            resolve_path(&u.path, base_dir)
-                .map_err(|e| format!("import error: {e}"))?
+            resolve_path(&u.path, base_dir).map_err(|e| format!("import error: {e}"))?
         };
-
-        let dep_bundle = bundle::collect_dep(&canonical)?;
-        for m in dep_bundle {
+        for m in bundle::collect_dep(&canonical)? {
             if seen.insert(m.canonical.clone()) {
                 all_bundle.push(m);
             }
         }
     }
 
-    // Check whether any of these modules are new.
-    let has_new = all_bundle.iter().any(|m| !loaded.contains_key(&m.canonical));
-    if !has_new {
-        return Ok(NewDeps { mods: vec![], lua_src: String::new() });
-    }
-
-    // Type-check and lower the full dep chain (needed for cross-module trait dispatch).
-    let (ir_modules, variant_env) =
-        lower_bundle(all_bundle).ok_or_else(|| "dep compilation failed".to_string())?;
-
-    // Build a complete module_vars map: already-loaded + new.
-    let mut module_vars: HashMap<PathBuf, String> = loaded.clone();
-    for ir_mod in &ir_modules {
-        module_vars
-            .entry(ir_mod.canonical.clone())
-            .or_insert_with(|| ir_mod.var.clone());
-    }
-
-    // Collect references to new IrModules in order.
-    let new_ir_mods: Vec<&codegen::IrModule> = ir_modules
-        .iter()
-        .filter(|m| !loaded.contains_key(&m.canonical))
-        .collect();
-
-    let mods: Vec<(PathBuf, String)> = new_ir_mods
-        .iter()
-        .map(|m| (m.canonical.clone(), m.var.clone()))
-        .collect();
-
-    let lua_src = codegen::lua::emit_dep_modules(&new_ir_mods, module_vars, variant_env);
-
-    Ok(NewDeps { mods, lua_src })
+    emit_new_deps(all_bundle, loaded)
 }
 
 /// Compile and return the prelude (and its transitive deps) so the REPL can
 /// load them into the Lua runtime at startup.
-pub(crate) fn compile_prelude_deps(
-    loaded: &HashMap<PathBuf, String>,
-) -> Result<NewDeps, String> {
-    let prelude_canonical = lume_core::loader::prelude_path();
-    let dep_bundle = bundle::collect_dep(&prelude_canonical)?;
-
-    let has_new = dep_bundle.iter().any(|m| !loaded.contains_key(&m.canonical));
-    if !has_new {
-        return Ok(NewDeps { mods: vec![], lua_src: String::new() });
-    }
-
-    let (ir_modules, variant_env) =
-        lower_bundle(dep_bundle).ok_or_else(|| "prelude compilation failed".to_string())?;
-
-    let mut module_vars: HashMap<PathBuf, String> = loaded.clone();
-    for ir_mod in &ir_modules {
-        module_vars
-            .entry(ir_mod.canonical.clone())
-            .or_insert_with(|| ir_mod.var.clone());
-    }
-
-    let new_ir_mods: Vec<&codegen::IrModule> = ir_modules
-        .iter()
-        .filter(|m| !loaded.contains_key(&m.canonical))
-        .collect();
-
-    let mods: Vec<(PathBuf, String)> = new_ir_mods
-        .iter()
-        .map(|m| (m.canonical.clone(), m.var.clone()))
-        .collect();
-
-    let lua_src = codegen::lua::emit_dep_modules(&new_ir_mods, module_vars, variant_env);
-
-    Ok(NewDeps { mods, lua_src })
+pub(crate) fn compile_prelude_deps(loaded: &HashMap<PathBuf, String>) -> Result<NewDeps, String> {
+    let dep_bundle = bundle::collect_dep(&lume_core::loader::prelude_path())?;
+    emit_new_deps(dep_bundle, loaded)
 }
 
 /// Compile a new REPL input to Lua.
