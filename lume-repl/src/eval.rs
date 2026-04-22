@@ -80,7 +80,16 @@ pub(crate) fn eval_input(
         return EvalAction::None;
     }
 
-    let first_line = input.lines().find(|l| !l.trim().is_empty()).unwrap_or(input);
+    let first_line = input
+        .lines()
+        .map(|l| l.trim())
+        .find(|l| !l.is_empty() && !l.starts_with("--"))
+        .unwrap_or("");
+
+    if first_line.is_empty() {
+        return EvalAction::None;
+    }
+
     let is_definition = first_line.starts_with("let ")
         || first_line.starts_with("type ")
         || first_line.starts_with("trait ")

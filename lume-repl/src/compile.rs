@@ -178,8 +178,9 @@ pub(crate) fn compile_repl(
     let tokens = Lexer::new(&full_src)
         .tokenize()
         .map_err(|e| format!("parse error: {e}"))?;
-    let program = parser::parse_program(&tokens)
+    let mut program = parser::parse_program(&tokens)
         .map_err(|e| format!("parse error: {e}"))?;
+    program.pragmas = lume_core::loader::parse_pragmas(&full_src).0;
 
     // Pass base_dir so the type checker can resolve `use` imports.
     let (node_types, type_env, resolved_trait_methods, resolved_op_types) =
@@ -202,36 +203,57 @@ pub(crate) fn compile_repl(
         }
     }
 
-    // Inject prelude traits/impls so the lowerer can resolve Functor etc.
-    if let Ok(prelude_bundle) = bundle::collect_dep(&lume_core::loader::prelude_path()) {
-        for m in &prelude_bundle {
-            for item in &m.program.items {
-                match item {
-                    TopItem::TraitDef(td) => {
-                        global.traits.insert(td.name.clone(), td.clone());
-                    }
-                    TopItem::ImplDef(id) => {
-                        let dict = lower::dict_name(&id.trait_name, &id.type_name);
-                        let var = Some(m.var.clone());
-                        if id.impl_constraints.is_empty() {
-                            global.impls.entry((id.trait_name.clone(), id.type_name.clone()))
-                                .or_insert(lower::ImplEntry { module_var: var, dict_ident: dict });
-                        } else {
-                            global.param_impls.push(lower::ParamImplEntry {
-                                trait_name: id.trait_name.clone(),
-                                target_type: id.target_type.clone(),
-                                constraints: id.impl_constraints.clone(),
-                                module_var: var,
-                                dict_ident: dict,
-                            });
+    // Inject traits/impls from all imported modules (prelude + explicit uses).
+    // This allows the lowerer to resolve trait methods (like `+`) to the correct
+    // dictionary access even if they come from a dependency like `lume:complex`.
+    let mut deps_to_scan = program.uses.iter().map(|u| u.path.clone()).collect::<Vec<_>>();
+    if !program.pragmas.no_prelude {
+        deps_to_scan.push("lume:prelude".into());
+    }
+
+    let mut seen_deps = HashSet::new();
+    for path in deps_to_scan {
+        let canonical = if let Some(_) = lume_core::loader::stdlib_source(&path) {
+            lume_core::loader::stdlib_path(&path)
+        } else {
+            lume_core::loader::resolve_path(&path, base_dir).unwrap_or_else(|_| PathBuf::from(&path))
+        };
+
+        if let Ok(deps) = bundle::collect_dep(&canonical) {
+            for m in deps {
+                if !seen_deps.insert(m.canonical.clone()) {
+                    continue;
+                }
+                for item in &m.program.items {
+                    match item {
+                        TopItem::TraitDef(td) => {
+                            global.traits.insert(td.name.clone(), td.clone());
                         }
+                        TopItem::ImplDef(id) => {
+                            let dict = lower::dict_name(&id.trait_name, &id.type_name);
+                            // If this module was already loaded, it has a global variable in Lua.
+                            let var = module_vars.get(&m.canonical).cloned();
+                            if id.impl_constraints.is_empty() {
+                                global.impls.entry((id.trait_name.clone(), id.type_name.clone()))
+                                    .or_insert(lower::ImplEntry { module_var: var, dict_ident: dict });
+                            } else {
+                                global.param_impls.push(lower::ParamImplEntry {
+                                    trait_name: id.trait_name.clone(),
+                                    target_type: id.target_type.clone(),
+                                    constraints: id.impl_constraints.clone(),
+                                    module_var: var,
+                                    dict_ident: dict,
+                                });
+                            }
+                        }
+                        _ => {}
                     }
-                    _ => {}
                 }
             }
         }
     }
 
+    // Add traits/impls/variants defined locally in the REPL (the accumulated `defs`).
     for item in &program.items {
         match item {
             TopItem::TraitDef(td) => {

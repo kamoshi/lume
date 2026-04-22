@@ -86,14 +86,17 @@ pub fn run(path: &str) -> Result<(), String> {
 /// environment before the interactive session begins.
 pub fn run_repl(file: Option<&str>) {
     use rustyline::error::ReadlineError;
-    use rustyline::{Config, Editor};
+    use rustyline::{CompletionType, Config, EditMode, Editor};
 
     let base_dir: PathBuf = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let mut loaded_modules: HashMap<PathBuf, String> = HashMap::new();
 
     let (lua, repl_env, mut defs) = match init_lua_env(file, &mut loaded_modules) {
         Ok(r) => r,
-        Err(e) => { eprintln!("{e}"); return; }
+        Err(e) => {
+            eprintln!("{e}");
+            return;
+        }
     };
 
     let defs_lock: Arc<RwLock<String>> = Arc::new(RwLock::new(defs.clone()));
@@ -103,8 +106,15 @@ pub fn run_repl(file: Option<&str>) {
         refresh_completions(&defs, &completions);
     }
 
-    let mut rl: Editor<LumeHelper, _> = Editor::with_config(Config::default())
-        .expect("failed to initialise terminal");
+    let config = Config::builder()
+        .history_ignore_space(true)
+        .completion_type(CompletionType::List)
+        .edit_mode(EditMode::Emacs)
+        .bracketed_paste(true)
+        .build();
+
+    let mut rl: Editor<LumeHelper, _> =
+        Editor::with_config(config).expect("failed to initialise terminal");
     rl.set_helper(Some(helper));
 
     let mut vi_mode = false;

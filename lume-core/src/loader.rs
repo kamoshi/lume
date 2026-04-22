@@ -21,6 +21,7 @@ use crate::types::{
 pub const STDLIB_MODULES: &[&str] = &[
     "lume:core",
     "lume:ops",
+    "lume:complex",
     "lume:list",
     "lume:map",
     "lume:math",
@@ -139,6 +140,7 @@ pub fn stdlib_source(name: &str) -> Option<&'static str> {
     match name {
         "lume:core" => Some(include_str!("../../std/core.lume")),
         "lume:ops" => Some(include_str!("../../std/ops.lume")),
+        "lume:complex" => Some(include_str!("../../std/complex.lume")),
         "lume:list" => Some(include_str!("../../std/list.lume")),
         "lume:map" => Some(include_str!("../../std/map.lume")),
         "lume:text" => Some(include_str!("../../std/text.lume")),

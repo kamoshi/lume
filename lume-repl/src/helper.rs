@@ -75,6 +75,14 @@ fn highlight_line(line: &str) -> String {
     let mut out = String::with_capacity(line.len() + 64);
     let mut cursor = 0usize;
 
+    // Pre-compute line start offsets to map (line, col) to byte offsets.
+    let mut line_starts = vec![0];
+    for (i, b) in line.as_bytes().iter().enumerate() {
+        if *b == b'\n' {
+            line_starts.push(i + 1);
+        }
+    }
+
     for spanned in &tokens {
         let tok = &spanned.token;
         if matches!(tok, Token::Eof) {
@@ -82,14 +90,22 @@ fn highlight_line(line: &str) -> String {
         }
 
         let span = &spanned.span;
-        let col = span.col.saturating_sub(1);
+        let line_idx = span.line.saturating_sub(1);
+        if line_idx >= line_starts.len() {
+            break;
+        }
+
+        let offset = line_starts[line_idx] + span.col.saturating_sub(1);
         let len = span.len;
 
-        if col > cursor {
-            out.push_str(&line[cursor..col]);
+        if offset > cursor && offset <= line.len() {
+            out.push_str(&line[cursor..offset]);
         }
-        let end = (col + len).min(line.len());
-        let lexeme = &line[col..end];
+        let end = (offset + len).min(line.len());
+        if end < offset {
+            continue;
+        }
+        let lexeme = &line[offset..end];
         cursor = end;
 
         let colored = match tok {
@@ -457,6 +473,10 @@ impl rustyline::validate::Validator for LumeHelper {
             return Ok(rustyline::validate::ValidationResult::Valid(None));
         }
 
+        // We append a sentinel 'pub {}' to the input. If the input is a complete
+        // top-level item, the parser will successfully parse it and then see
+        // 'pub {}' as a second item. If the input is incomplete (e.g. an unclosed
+        // brace), the parser will hit 'pub' where it didn't expect it.
         let src = format!("{input}\npub {{}}\n");
         let parse_err = Lexer::new(&src)
             .tokenize()
@@ -465,10 +485,20 @@ impl rustyline::validate::Validator for LumeHelper {
 
         match parse_err {
             None => Ok(rustyline::validate::ValidationResult::Valid(None)),
-            Some(e) if matches!(e.kind, ParseErrorKind::UnexpectedEof) => {
-                Ok(rustyline::validate::ValidationResult::Incomplete)
-            }
-            Some(_) => Ok(rustyline::validate::ValidationResult::Valid(None)),
+            Some(e) => match e.kind {
+                ParseErrorKind::UnexpectedEof => {
+                    Ok(rustyline::validate::ValidationResult::Incomplete)
+                }
+                // If we hit our sentinel 'pub' unexpectedly, the input is incomplete.
+                ParseErrorKind::UnexpectedToken { found, .. } if found == "Pub" => {
+                    Ok(rustyline::validate::ValidationResult::Incomplete)
+                }
+                // These also indicate we need more input for a valid definition.
+                ParseErrorKind::EmptyTypeVariants | ParseErrorKind::EmptyMatch => {
+                    Ok(rustyline::validate::ValidationResult::Incomplete)
+                }
+                _ => Ok(rustyline::validate::ValidationResult::Valid(None)),
+            },
         }
     }
 }
